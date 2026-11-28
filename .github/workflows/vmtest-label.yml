@@ -22,9 +22,10 @@ jobs:
       group: vmtest-label-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: Rerun CI for the head SHA
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}

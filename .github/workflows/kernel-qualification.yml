@@ -28,6 +28,7 @@ jobs:
       STATE: pending
     steps:
       - name: Publish the driver outcome
+        timeout-minutes: 2
         run: &publish-driver-outcome |
           case "$FLAVOUR" in standard|lts) ;; *) exit 1 ;; esac
           if [[ ! "$DIGEST" =~ ^v[0-9]+:[a-f0-9]{64}$ ]]; then
@@ -50,7 +51,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 100
     env:
       KATL_FLAVOUR: ${{ inputs.flavour }}
       KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
@@ -67,11 +68,15 @@ jobs:
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/kernel-journey
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 2
       - name: Restore pinned extension sources
+        timeout-minutes: 5
+        continue-on-error: true
         id: extension-sources
         uses: actions/cache/restore@v6
         with:
@@ -84,9 +89,11 @@ jobs:
         with:
           flavour: ${{ inputs.flavour }}
       - uses: ./.github/actions/mkosi-builder
+        timeout-minutes: 2
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Select the committed kernel lock
+        timeout-minutes: 2
         run: |
           case "$KATL_FLAVOUR" in standard|lts) ;; *) exit 1 ;; esac
           lock="kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json"
@@ -94,22 +101,28 @@ jobs:
           echo "KATL_KERNEL_LOCK=$GITHUB_WORKSPACE/$lock" >> "$GITHUB_ENV"
           echo "KATL_VERSION=$(date -u +%Y.%-m).0-dev.0" >> "$GITHUB_ENV"
       - name: Install module inspection tools
+        timeout-minutes: 2
         run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
       - name: Build both boot artifacts and every release recipe
+        timeout-minutes: 34
         run: |
           scripts/mkosi build-runtime
           scripts/mkosi build-installer
           scripts/build-release-extensions
       - name: Save pinned extension sources
+        timeout-minutes: 2
         if: github.ref == 'refs/heads/main' && steps.extension-sources.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: _build/mkosi/kernel-sources
           key: ${{ steps.extension-sources.outputs.cache-primary-key }}
       - name: Assemble release extensions
+        timeout-minutes: 2
         run: scripts/assemble-release-extensions
       - uses: ./.github/actions/hosted-vmtest
+        timeout-minutes: 2
       - name: Exercise the production DRBD driver
+        timeout-minutes: 33
         run: |
           KATL_EXTENSION_RELEASE=_build/mkosi/release-extensions.json \
             scripts/mkosi build-katlos-upgrade-image
@@ -122,8 +135,9 @@ jobs:
           go run ./cmd/katl-mkosi-artifacts path katlos-install-image >/dev/null
           .github/scripts/hosted-vmtest-measure drbd .github/scripts/hosted-vmtest-run \
             --artifact-set=install --no-rebuild ./internal/vmtest \
-            -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 40m
+            -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 30m
       - name: Record the qualified commit and inputs
+        timeout-minutes: 2
         id: record-qualification
         env:
           INPUT_DIGEST: ${{ inputs.input-digest }}
@@ -138,10 +152,12 @@ jobs:
             printf '%s\n' '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Collect VM diagnostics
+        timeout-minutes: 2
         id: diagnostics
         if: always()
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
+        timeout-minutes: 2
         id: upload-diagnostics
         if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         with:
@@ -164,4 +180,5 @@ jobs:
       STATE: ${{ needs.drivers.result == 'success' && 'success' || 'failure' }}
     steps:
       - name: Publish the driver outcome
+        timeout-minutes: 2
         run: *publish-driver-outcome

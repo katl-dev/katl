@@ -17,10 +17,13 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 2
       - id: plan
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
         run: echo "matrix=$(go run ./cmd/katl-kubernetes-release discover)" >> "$GITHUB_OUTPUT"
@@ -36,10 +39,13 @@ jobs:
         release: ${{ fromJSON(needs.plan.outputs.matrix).include }}
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 2
       - name: Resolve through the operator compatibility path
+        timeout-minutes: 2
         id: bundle
         env:
           PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
@@ -52,10 +58,12 @@ jobs:
           scripts/check-public-kubernetes-bundle "$image" "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Authenticate provenance client
+        timeout-minutes: 2
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
       - name: Verify provenance
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
           MANIFEST_DIGEST: ${{ steps.bundle.outputs.digest }}

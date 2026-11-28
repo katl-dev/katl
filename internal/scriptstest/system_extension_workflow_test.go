@@ -161,11 +161,11 @@ func TestSystemExtensionPublishJob(t *testing.T) {
 	var uploaded, downloaded string
 	for _, job := range workflow.Jobs {
 		for _, step := range job.Steps {
-			switch {
-			case strings.HasPrefix(step.Uses, "actions/upload-artifact@"):
+			if strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
 				uploaded = step.With["name"]
-			case strings.HasPrefix(step.Uses, "actions/download-artifact@"):
-				downloaded = step.With["name"]
+			}
+			if _, name, _, ok := hostedDownload(step); ok {
+				downloaded = name
 			}
 		}
 	}

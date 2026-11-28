@@ -21,7 +21,7 @@ jobs:
     name: Cache
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       actions: write
       contents: read
@@ -29,7 +29,7 @@ jobs:
     # measure its own entries.
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           ref: main
           persist-credentials: false

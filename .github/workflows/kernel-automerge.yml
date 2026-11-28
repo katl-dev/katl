@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/create-github-app-token@v3
+        timeout-minutes: 2
         id: app-token
         with:
           client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
@@ -31,6 +32,7 @@ jobs:
           permission-actions: read
       # Never check out or execute the proposal in this privileged workflow.
       - name: Enable auto-merge for the qualified automation-only revision
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}

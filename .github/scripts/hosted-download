@@ -1,21 +1,32 @@
 #!/usr/bin/env bash
-# Downloads a large workflow input with a bounded attempt and jittered
-# exponential backoff, so one stalled transfer cannot consume a job's budget.
+# Downloads a workflow input with a bounded attempt and jittered exponential
+# backoff, so one stalled transfer cannot consume a job's budget.
 #
 #   hosted-download artifact NAME DEST [RUN_ID]
-#   hosted-download release TAG DEST
+#   hosted-download --id ID artifact NAME DEST RUN_ID
+#   hosted-download artifacts PATTERN DEST [RUN_ID]
+#   hosted-download release TAG DEST [PATTERN]
 #
-# scripts/retry runs every attempt under KATL_DOWNLOAD_ATTEMPT_SECONDS
-# (default 360), kills one that ignores SIGTERM KATL_DOWNLOAD_KILL_AFTER_SECONDS
-# (default 5) later, and makes KATL_DOWNLOAD_ATTEMPTS (default 3) attempts,
-# sleeping between them for a random time in [b, 2b) where b doubles from
-# KATL_DOWNLOAD_BACKOFF_SECONDS (default 15). With the defaults the worst case
-# is 3 * (360 + 5) s + (15..30 s) + (30..60 s) < 20 minutes, which is why
-# callers give the step 20 minutes. scripts/retry reports the final failure.
+# RUN_ID defaults to this run. By name or pattern, each name selects its
+# newest unexpired artifact in the run, as actions/download-artifact does, so
+# a re-run attempt gets its own artifacts rather than an earlier attempt's.
+# With --id, the artifact is the one with that ID, which must be named NAME
+# and belong to run RUN_ID: callers that bind an earlier attempt's artifacts
+# pass their IDs. An artifact's files land directly in DEST; every artifact
+# matching PATTERN lands in DEST/<artifact name>, as actions/download-artifact
+# places them. DEST may already exist: a completed download is merged into
+# it, and the owner fails rather than replace a path that is already there.
+#
+# scripts/retry bounds each attempt, which selects and downloads everything
+# the call asks for, and allows five seconds by default before SIGKILL. The
+# default backoff starts at 1/24 of the attempt limit. The three-attempt step
+# budgets are 20 minutes for 360-second attempts, 10 for 180 and 5 for 60.
+# An ID that does not exist, has expired or names another artifact fails
+# once, without retrying.
 set -euo pipefail
 
 usage() {
-    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | release TAG DEST' >&2
+    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | --id ID artifact NAME DEST RUN_ID | artifacts PATTERN DEST [RUN_ID] | release TAG DEST [PATTERN]' >&2
     exit 2
 }
 
@@ -24,64 +35,198 @@ fail() {
     exit 1
 }
 
-# One attempt, run by scripts/retry under its time limit. It writes into its
-# own staging directory and moves only a complete download to DEST, so a
-# partial or interrupted transfer never reaches the caller. staging is global
-# so the EXIT trap still sees it after the function returns. Once DEST is
-# complete the attempt ignores SIGTERM, so a late timeout cannot report a
-# finished download as failed.
-attempt() {
-    local dest="$1"
-    shift
-    staging=$(mktemp -d "$dest.attempt-XXXXXX")
-    trap 'rm -rf -- "$staging"' EXIT
-    trap 'exit 143' TERM
-    "$@" --dir "$staging"
-    trap '' TERM
-    mv -T -- "$staging" "$dest"
-    trap - EXIT
-}
-
+# The parent owns cleanup even if the downloader is killed. Each attempt
+# starts with empty staging, and files are delivered only after retry succeeds.
 if [[ "${1:-}" == --attempt ]]; then
-    shift
-    attempt "$@"
+    staging=$2
+    shift 2
+    rm -rf -- "$staging"
+    mkdir -- "$staging"
+    exec "$@" --dir "$staging"
+fi
+
+# One attempt of an artifact download: --attempt-artifacts STAGING PERMANENT
+# REPO RUN_ID (id ID NAME | name NAME | pattern PATTERN). A failure that a
+# retry cannot change is written to PERMANENT and the attempt succeeds, so
+# the parent fails once instead of retrying.
+if [[ "${1:-}" == --attempt-artifacts ]]; then
+    staging=$2 permanent=$3 repo=$4 run_id=$5 selector=$6 subject=$7
+    # Bash runs this trap only after the running command exits, so the
+    # attempt outlives a gh that ignores SIGTERM and timeout's SIGKILL still
+    # reaches both; exiting at once would orphan gh past the attempt limit.
+    trap 'exit 143' TERM
+    rm -rf -- "$staging" "$permanent" "$staging.err" "$staging.status" "$staging.zip"
+    mkdir -- "$staging"
+
+    permanently() {
+        printf '%s\n' "$*" > "$permanent"
+        exit 0
+    }
+    # gh api reports the HTTP status as "(HTTP 404)" on stderr.
+    api() {
+        local status=0
+        gh api "$@" 2> "$staging.err" || status=$?
+        if ((status != 0)); then
+            cat -- "$staging.err" >&2
+            grep -Eo 'HTTP [0-9]{3}' "$staging.err" | tail -n 1 > "$staging.status" || true
+        fi
+        return "$status"
+    }
+    fetch() {
+        local id=$1 into=$2 status=0
+        api "repos/$repo/actions/artifacts/$id/zip" > "$staging.zip" || status=$?
+        if ((status != 0)); then
+            case "$(cat -- "$staging.status" 2> /dev/null)" in
+                'HTTP 404' | 'HTTP 410') permanently "artifact $id is missing or has expired" ;;
+            esac
+            exit "$status"
+        fi
+        mkdir -p -- "$into"
+        unzip -q -d "$into" "$staging.zip"
+        rm -f -- "$staging.zip"
+    }
+
+    if [[ "$selector" == id ]]; then
+        id=$subject name=$8 status=0
+        metadata="$(api "repos/$repo/actions/artifacts/$id")" || status=$?
+        if ((status != 0)); then
+            [[ "$(cat -- "$staging.status" 2> /dev/null)" != 'HTTP 404' ]] || permanently "artifact $id does not exist"
+            exit "$status"
+        fi
+        found="$(jq -r '"\(.name) from run \(.workflow_run.id)"' <<< "$metadata")"
+        [[ "$found" == "$name from run $run_id" ]] || permanently "the ID names $found"
+        [[ "$(jq -r '.expired' <<< "$metadata")" != true ]] || permanently "artifact $id has expired"
+        fetch "$id" "$staging"
+        exit 0
+    fi
+
+    # The newest unexpired artifact of each name wins, ties going to the
+    # higher ID, which is how actions/download-artifact selects within a run.
+    # The C locale keeps the order independent of the runner's locale. The
+    # selection runs before the loop so that its own failure is reported as
+    # such rather than as a run with no matching artifact.
+    listing="$(api --paginate "repos/$repo/actions/runs/$run_id/artifacts?per_page=100")"
+    selection="$(jq -rs '.[].artifacts[] | select(.expired | not) | [.name, .created_at, .id] | @tsv' <<< "$listing" |
+        LC_ALL=C sort -t $'\t' -k1,1 -k2,2r -k3,3nr | LC_ALL=C sort -t $'\t' -k1,1 -u -s)" || {
+        echo "could not select artifacts from the listing of run $run_id" >&2
+        exit 1
+    }
+    chosen=()
+    if [[ -n "$selection" ]]; then
+        while IFS=$'\t' read -r name _ id; do
+            # shellcheck disable=SC2053 # A pattern matches as a glob.
+            if [[ "$selector" == name && "$name" == "$subject" || "$selector" == pattern && "$name" == $subject ]]; then
+                chosen+=("$id" "$name")
+            fi
+        done <<< "$selection"
+    fi
+    if ((${#chosen[@]} == 0)); then
+        echo "run $run_id has no unexpired artifact matching $subject" >&2
+        exit 1
+    fi
+    if [[ "$selector" == name ]]; then
+        fetch "${chosen[0]}" "$staging"
+    else
+        for ((i = 0; i < ${#chosen[@]}; i += 2)); do
+            fetch "${chosen[i]}" "$staging/${chosen[i + 1]}"
+        done
+    fi
     exit 0
+fi
+
+artifact_id=""
+if [[ "${1:-}" == --id ]]; then
+    [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || usage
+    artifact_id=$2
+    shift 2
+    # An ID names exactly one artifact of one run, so it cannot combine with
+    # a pattern or release, and the run is never implied.
+    [[ "${1:-}" == artifact && $# -eq 4 && "$4" =~ ^[1-9][0-9]*$ ]] || usage
 fi
 
 [[ $# -ge 3 ]] || usage
 kind=$1 subject=$2 dest=$3
 case "$kind" in
-    artifact)
+    artifact | artifacts)
         [[ $# -le 4 ]] || usage
         run_id=${4:-${GITHUB_RUN_ID:?}}
-        what="artifact $subject from run $run_id"
+        if [[ -n "$artifact_id" ]]; then
+            what="artifact $artifact_id ($subject) from run $run_id"
+            select=(id "$artifact_id" "$subject")
+        elif [[ "$kind" == artifact ]]; then
+            what="artifact $subject from run $run_id"
+            select=(name "$subject")
+        else
+            what="artifacts matching $subject from run $run_id"
+            select=(pattern "$subject")
+        fi
         ;;
     release)
-        [[ $# -eq 3 ]] || usage
+        [[ $# -le 4 ]] || usage
         what="release $subject"
+        select=()
+        if [[ $# -eq 4 ]]; then
+            what="assets matching $4 from release $subject"
+            select=(--pattern "$4")
+        fi
         ;;
     *) usage ;;
 esac
 
+attempt_seconds=${KATL_DOWNLOAD_ATTEMPT_SECONDS:-360}
+backoff=${KATL_DOWNLOAD_BACKOFF_SECONDS:-0}
+if [[ -z "${KATL_DOWNLOAD_BACKOFF_SECONDS:-}" && "$attempt_seconds" =~ ^[0-9]+$ ]]; then
+    backoff=$((10#$attempt_seconds / 24))
+fi
 repo=${GITHUB_REPOSITORY:?}
 command -v gh >/dev/null || fail 'gh is not installed on this runner'
 
 mkdir -p "$(dirname -- "$dest")"
-[[ ! -e "$dest" ]] || fail "destination $dest already exists"
+[[ ! -e "$dest" || -d "$dest" ]] || fail "destination $dest is not a directory"
 
-if [[ "$kind" == artifact ]]; then
-    command=(gh run download "$run_id" --repo "$repo" --name "$subject")
+deliver() {
+    local staging=$1
+    if [[ ! -e "$dest" ]]; then
+        mv -T -- "$staging" "$dest"
+        return
+    fi
+    local path collisions=()
+    while IFS= read -r -d '' path; do
+        path=${path#"$staging"/}
+        # Directories present on both sides merge; any other existing path
+        # would be replaced.
+        if [[ -e "$dest/$path" || -L "$dest/$path" ]] && ! [[ -d "$staging/$path" && -d "$dest/$path" ]]; then
+            collisions+=("$dest/$path")
+        fi
+    done < <(find "$staging" -mindepth 1 -print0)
+    if ((${#collisions[@]} > 0)); then
+        rm -rf -- "$staging"
+        fail "would replace ${collisions[*]}"
+    fi
+    # Hard links keep the merge cheap: staging and DEST are on one filesystem.
+    cp -a --link -- "$staging/." "$dest/"
+    rm -rf -- "$staging"
+}
+
+scratch=$(mktemp -d "$dest.attempt-XXXXXX")
+trap 'rm -rf -- "$scratch"' EXIT
+if [[ "$kind" == release ]]; then
+    attempt=("${BASH_SOURCE[0]}" --attempt "$scratch/download" gh release download "$subject" --repo "$repo" "${select[@]}")
 else
-    command=(gh release download "$subject" --repo "$repo")
+    for tool in jq unzip; do
+        command -v "$tool" >/dev/null || fail "$tool is not installed on this runner"
+    done
+    attempt=("${BASH_SOURCE[0]}" --attempt-artifacts "$scratch/download" "$scratch/permanent" "$repo" "$run_id" "${select[@]}")
 fi
 
-# An attempt killed with SIGKILL cannot run its own EXIT trap, so its staging
-# directory is removed here once scripts/retry returns.
-trap 'rm -rf -- "$dest".attempt-*' EXIT
 "$(dirname -- "${BASH_SOURCE[0]}")/../../scripts/retry" \
     --attempts "${KATL_DOWNLOAD_ATTEMPTS:-3}" \
-    --timeout "${KATL_DOWNLOAD_ATTEMPT_SECONDS:-360}" \
+    --timeout "$attempt_seconds" \
     --kill-after "${KATL_DOWNLOAD_KILL_AFTER_SECONDS:-5}" \
-    --backoff "${KATL_DOWNLOAD_BACKOFF_SECONDS:-15}" \
+    --backoff "$backoff" \
     --title 'Download' --what "hosted-download: $what" \
-    -- "${BASH_SOURCE[0]}" --attempt "$dest" "${command[@]}"
+    -- "${attempt[@]}"
+if [[ -e "$scratch/permanent" ]]; then
+    fail "$(cat -- "$scratch/permanent")"
+fi
+deliver "$scratch/download"

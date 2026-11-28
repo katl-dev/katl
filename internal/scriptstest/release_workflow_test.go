@@ -155,7 +155,8 @@ func TestProductionBuildRuntimeHandoff(t *testing.T) {
 	for _, consumer := range []string{"extensions", "assemble"} {
 		received := false
 		for _, step := range workflow.Jobs[consumer].Steps {
-			received = received || (strings.HasPrefix(step.Uses, "actions/download-artifact@") && step.With["name"] == runtimeInputsName)
+			kind, name, _, ok := hostedDownload(step)
+			received = received || (ok && kind == "artifact" && name == runtimeInputsName)
 		}
 		if !received {
 			t.Errorf("%s job must consume its runtime's build inputs", consumer)
@@ -226,8 +227,9 @@ func TestProductionBuildEmbedsKernelExtensions(t *testing.T) {
 func TestProductionBuildIsUnprivileged(t *testing.T) {
 	workflow, source := readWorkflow(t, productionBuild)
 
-	if len(workflow.Permissions) != 1 || workflow.Permissions["contents"] != "read" {
-		t.Errorf("workflow permissions = %v, want contents: read only", workflow.Permissions)
+	// actions: read lets hosted-download fetch this run's build handoffs.
+	if len(workflow.Permissions) != 2 || workflow.Permissions["contents"] != "read" || workflow.Permissions["actions"] != "read" {
+		t.Errorf("workflow permissions = %v, want only contents: read and actions: read", workflow.Permissions)
 	}
 	if workflow.Concurrency.Kind != 0 {
 		t.Error("callers own concurrency; the reusable build must not set it")
@@ -588,7 +590,7 @@ func TestReleaseUploadGuardsPublishedAssets(t *testing.T) {
 			}
 			found = true
 			upload := strings.Index(step.Run, "gh release upload")
-			download := strings.Index(step.Run, "gh release download")
+			download := strings.Index(step.Run, "hosted-download release")
 			compare := strings.Index(step.Run, "cmp -s")
 			fail := strings.Index(step.Run, "exit 1")
 			if download < 0 || compare < download || fail < compare || upload < fail {

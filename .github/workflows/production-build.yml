@@ -25,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  actions: read # hosted-download reads this run's build handoffs.
 
 env:
   KATL_FLAVOUR: ${{ inputs.flavour }}
@@ -41,13 +42,14 @@ jobs:
   runtime:
     name: Build And Verify Runtime
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
     outputs:
       mkosi-version: ${{ steps.mkosi-version.outputs.version }}
       extensions: ${{ steps.extensions.outputs.extensions }}
 
     steps:
       - name: Validate flavour
+        timeout-minutes: 2
         shell: bash
         run: |
           case "$KATL_FLAVOUR" in
@@ -59,11 +61,13 @@ jobs:
           esac
 
       - name: Check out repository
+        timeout-minutes: 2
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Set up Go
+        timeout-minutes: 2
         uses: ./.github/actions/setup-go
 
       - name: Restore image build caches
@@ -74,19 +78,23 @@ jobs:
           flavour: ${{ inputs.flavour }}
 
       - name: Prepare pinned builder
+        timeout-minutes: 3
         uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
 
       - name: Build runtime
+        timeout-minutes: 18
         shell: bash
         run: scripts/mkosi build-runtime
 
       - name: Build endpoint advertiser sysext
+        timeout-minutes: 2
         shell: bash
         run: scripts/build-endpoint-advertiser-sysext
 
       - name: Resolve mkosi version
+        timeout-minutes: 2
         id: mkosi-version
         shell: bash
         run: |
@@ -99,6 +107,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Verify runtime
+        timeout-minutes: 2
         shell: bash
         run: |
           docker run --rm \
@@ -111,6 +120,7 @@ jobs:
             '
 
       - name: Upload runtime build inputs
+        timeout-minutes: 2
         uses: actions/upload-artifact@v7
         with:
           name: katl-runtime-${{ inputs.flavour }}-${{ github.sha }}
@@ -127,6 +137,7 @@ jobs:
 
 
       - name: Inventory release extensions
+        timeout-minutes: 2
         id: extensions
         shell: bash
         run: |
@@ -136,10 +147,11 @@ jobs:
   installer:
     name: Build And Verify Installer
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
 
     steps:
       - name: Validate flavour
+        timeout-minutes: 2
         shell: bash
         run: |
           case "$KATL_FLAVOUR" in
@@ -151,11 +163,13 @@ jobs:
           esac
 
       - name: Check out repository
+        timeout-minutes: 2
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Set up Go
+        timeout-minutes: 2
         uses: ./.github/actions/setup-go
 
       - name: Restore image build caches
@@ -166,15 +180,18 @@ jobs:
           flavour: ${{ inputs.flavour }}
 
       - name: Prepare pinned builder
+        timeout-minutes: 3
         uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
 
       - name: Build installer
+        timeout-minutes: 11
         shell: bash
         run: scripts/mkosi build-installer
 
       - name: Verify installer
+        timeout-minutes: 2
         shell: bash
         run: |
           docker run --rm \
@@ -184,6 +201,7 @@ jobs:
             scripts/check-installer-image
 
       - name: Upload installer intermediates
+        timeout-minutes: 2
         uses: actions/upload-artifact@v7
         with:
           name: katl-installer-${{ inputs.flavour }}-${{ github.sha }}
@@ -206,7 +224,7 @@ jobs:
     name: Build Extension (${{ matrix.extension }})
     needs: runtime
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -214,6 +232,7 @@ jobs:
 
     steps:
       - name: Validate flavour
+        timeout-minutes: 2
         shell: bash
         run: |
           case "$KATL_FLAVOUR" in
@@ -225,23 +244,31 @@ jobs:
           esac
 
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 2
       - uses: ./.github/actions/mkosi-builder
+        timeout-minutes: 5
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Download runtime build inputs
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-runtime-${{ inputs.flavour }}-${{ github.sha }}
-          path: _build/mkosi
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 180
+          RUNTIME_INPUTS: katl-runtime-${{ inputs.flavour }}-${{ github.sha }}
+        run: .github/scripts/hosted-download artifact "$RUNTIME_INPUTS" _build/mkosi
       - name: Install module inspection tools
+        timeout-minutes: 5
         run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
 
       - name: Build and verify release recipe
+        timeout-minutes: 15
         run: scripts/build-release-extensions "${{ matrix.extension }}"
       - name: Upload verified extension closure
+        timeout-minutes: 2
         uses: actions/upload-artifact@v7
         with:
           name: katl-extension-${{ inputs.flavour }}-${{ matrix.extension }}-${{ github.sha }}
@@ -255,13 +282,14 @@ jobs:
     name: Assemble And Verify Katl Release
     needs: [runtime, extensions, installer]
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 75
     outputs:
       artifact: ${{ steps.names.outputs.artifact }}
       extension-bundles: ${{ steps.names.outputs.extension-bundles }}
 
     steps:
       - name: Validate flavour
+        timeout-minutes: 2
         shell: bash
         run: |
           case "$KATL_FLAVOUR" in
@@ -273,38 +301,51 @@ jobs:
           esac
 
       - name: Check out repository
+        timeout-minutes: 2
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Go
+        timeout-minutes: 2
         uses: ./.github/actions/setup-go
 
       - name: Prepare pinned builder
+        timeout-minutes: 2
         uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
 
       - name: Download runtime build inputs
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-runtime-${{ inputs.flavour }}-${{ github.sha }}
-          path: _build/mkosi
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 180
+          RUNTIME_INPUTS: katl-runtime-${{ inputs.flavour }}-${{ github.sha }}
+        run: .github/scripts/hosted-download artifact "$RUNTIME_INPUTS" _build/mkosi
 
       - name: Install assembly tools
+        timeout-minutes: 2
         run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools dosfstools mtools xorriso
 
       - name: Download release extension closures
-        uses: actions/download-artifact@v8
-        with:
-          pattern: katl-extension-${{ inputs.flavour }}-*-${{ github.sha }}
-          path: _build/mkosi/release-extensions
-          merge-multiple: true
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 180
+          EXTENSIONS: katl-extension-${{ inputs.flavour }}-*-${{ github.sha }}
+        run: |
+          .github/scripts/hosted-download artifacts "$EXTENSIONS" _build/import/release-extensions
+          # Each closure artifact holds one extension's directory.
+          mkdir -p _build/mkosi/release-extensions
+          mv -t _build/mkosi/release-extensions _build/import/release-extensions/*/*
       - name: Assemble and verify complete extension selection
+        timeout-minutes: 2
         run: scripts/assemble-release-extensions
 
       - name: Package install and upgrade images concurrently
+        timeout-minutes: 9
         shell: bash
         env:
           KATL_EXTENSION_RELEASE: _build/mkosi/release-extensions.json
@@ -320,6 +361,7 @@ jobs:
           ((install_status == 0 && upgrade_status == 0))
 
       - name: Verify KatlOS images
+        timeout-minutes: 2
         shell: bash
         run: |
           scripts/check-katlos-install-image
@@ -336,18 +378,22 @@ jobs:
           done
 
       - name: Download installer intermediates
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-installer-${{ inputs.flavour }}-${{ github.sha }}
-          path: _build/mkosi
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 180
+          INSTALLER: katl-installer-${{ inputs.flavour }}-${{ github.sha }}
+        run: .github/scripts/hosted-download artifact "$INSTALLER" _build/mkosi
 
       - name: Build katlctl
+        timeout-minutes: 2
         shell: bash
         run: |
           scripts/katl-release-artifacts build-katlctl "$KATL_VERSION"
           scripts/katl-release-artifacts verify-katlctl "$KATL_VERSION"
 
       - name: Assemble and verify installer ISO
+        timeout-minutes: 2
         shell: bash
         run: |
           scripts/build-installer-iso >/dev/null
@@ -355,6 +401,7 @@ jobs:
           scripts/check-installer-iso
 
       - name: Record release build inputs
+        timeout-minutes: 2
         shell: bash
         env:
           MKOSI_VERSION: ${{ needs.runtime.outputs.mkosi-version }}
@@ -370,12 +417,14 @@ jobs:
             -package-set katlos-install-image
 
       - name: Stage supported publication artifacts
+        timeout-minutes: 2
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/katl-release-artifacts stage "$KATL_VERSION" dist
 
       - name: Resolve artifact names
+        timeout-minutes: 2
         id: names
         shell: bash
         run: |
@@ -383,6 +432,7 @@ jobs:
           echo "extension-bundles=katl-extension-bundles-${KATL_FLAVOUR}-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Upload GitHub Actions artifact
+        timeout-minutes: 6
         uses: actions/upload-artifact@v7
         with:
           name: katl-assembled-${{ inputs.flavour }}-${{ github.sha }}
@@ -392,6 +442,7 @@ jobs:
           compression-level: 0
 
       - name: Upload extension publication inputs
+        timeout-minutes: 2
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.names.outputs.extension-bundles }}
@@ -403,5 +454,6 @@ jobs:
           compression-level: 0
 
       - name: Record disk margin
+        timeout-minutes: 2
         if: always()
         run: df -h /

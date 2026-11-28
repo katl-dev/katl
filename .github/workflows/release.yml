@@ -24,6 +24,7 @@ jobs:
   decide:
     name: Decide
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -44,12 +45,15 @@ jobs:
     steps:
       - &checkout
         uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - &setup-go
         uses: ./.github/actions/setup-go
+        timeout-minutes: 2
       - name: Decide the release action
         id: decision
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           RETRY: ${{ inputs.retry }}
@@ -82,6 +86,7 @@ jobs:
       needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate' ||
       needs.decide.outputs.action == 'final' || needs.decide.outputs.action == 'retry-final'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
       statuses: write
@@ -90,6 +95,7 @@ jobs:
     steps:
       - &attempt-guard
         name: Require a decision from this attempt
+        timeout-minutes: 2
         env:
           DECISION_ATTEMPT: ${{ needs.decide.outputs.attempt }}
         run: |
@@ -100,10 +106,12 @@ jobs:
       - *checkout
       - *setup-go
       - name: Record the start of the build
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/katl-release record "$VERSION" building
       - name: Create the candidate tag
+        timeout-minutes: 2
         if: needs.decide.outputs.action == 'candidate'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -138,6 +146,7 @@ jobs:
       (needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate' ||
       needs.decide.outputs.action == 'final' || needs.decide.outputs.action == 'retry-final')
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read
@@ -153,6 +162,7 @@ jobs:
       - *checkout
       - *setup-go
       - name: Require a validated bundle
+        timeout-minutes: 2
         id: validation
         env:
           VALIDATION: ${{ needs.build.outputs.validation }}
@@ -169,11 +179,13 @@ jobs:
             exit 1
           fi
       - name: Download the validated bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build.outputs.artifact }}
-          path: dist
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ needs.build.outputs.artifact }}
+        run: .github/scripts/hosted-download artifact "$BUNDLE" dist
       - name: Verify, summarize and record qualification
+        timeout-minutes: 3
         id: qualification
         env:
           GH_TOKEN: ${{ github.token }}
@@ -204,6 +216,7 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           scripts/katl-release record "$VERSION" qualified "$DIGEST"
       - name: Record failure before qualification
+        timeout-minutes: 2
         if: failure() && steps.qualification.outcome != 'success' && needs.decide.outputs.attempt == github.run_attempt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -218,6 +231,7 @@ jobs:
       ((needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate') &&
       needs.qualify.result == 'success'))
     runs-on: ubuntu-24.04
+    timeout-minutes: 105
     permissions:
       contents: write
       packages: write
@@ -232,14 +246,17 @@ jobs:
       - *checkout
       - *setup-go
       - name: Require a release candidate
+        timeout-minutes: 2
         run: scripts/katl-release require-candidate "$VERSION"
       - &bundle-name
         name: Resolve the bundle name
+        timeout-minutes: 2
         id: bundle
         run: |
           name="$(scripts/katl-release bundle-name "$VERSION" "$COMMIT")"
           echo "name=$name" >> "$GITHUB_OUTPUT"
       - name: Find artifacts of the recorded build attempt
+        timeout-minutes: 2
         id: recorded
         if: needs.decide.outputs.action == 'resume-candidate'
         env:
@@ -248,17 +265,28 @@ jobs:
           BUILD_ATTEMPT: ${{ needs.decide.outputs.build-attempt }}
         run: |
           artifacts="$(scripts/katl-release candidate-artifacts "$VERSION" "$COMMIT" "$BUILD_RUN" "$BUILD_ATTEMPT")"
-          jq -r '"bundle=\(.bundle)\nextensions=\(.standard),\(.lts)"' <<< "$artifacts" >> "$GITHUB_OUTPUT"
+          jq -r '"bundle=\(.bundle)\nstandard=\(.standard)\nlts=\(.lts)"' <<< "$artifacts" >> "$GITHUB_OUTPUT"
       - name: Download the candidate bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ steps.recorded.outputs.bundle == '' && steps.bundle.outputs.name || '' }}
-          artifact-ids: ${{ steps.recorded.outputs.bundle }}
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.decide.outputs.build-run || github.run_id }}
-          path: dist
+        if: steps.recorded.outputs.bundle == ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.bundle.outputs.name }}
+        run: .github/scripts/hosted-download artifact "$BUNDLE" dist
+      # A resume downloads by the IDs candidate-artifacts bound to the recorded
+      # build attempt, because names can recur in another attempt of that run.
+      - name: Download the recorded candidate bundle
+        if: steps.recorded.outputs.bundle != ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.bundle.outputs.name }}
+          BUNDLE_ID: ${{ steps.recorded.outputs.bundle }}
+          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
+        run: .github/scripts/hosted-download --id "$BUNDLE_ID" artifact "$BUNDLE" dist "$BUILD_RUN"
       - &check-digest
         name: Confirm the qualified bundle digest
+        timeout-minutes: 2
         run: |
           actual="$(sha256sum dist/SHA256SUMS)"
           if [[ ! "$DIGEST" =~ ^[0-9a-f]{64}$ || "${actual%% *}" != "$DIGEST" ]]; then
@@ -266,15 +294,33 @@ jobs:
             exit 1
           fi
       - name: Download candidate extension publication inputs
-        uses: actions/download-artifact@v8
-        with:
-          pattern: ${{ steps.recorded.outputs.extensions == '' && format('katl-extension-bundles-*-{0}', github.sha) || '' }}
-          artifact-ids: ${{ steps.recorded.outputs.extensions }}
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.decide.outputs.build-run || github.run_id }}
-          path: artifacts
+        if: steps.recorded.outputs.bundle == ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLES: katl-extension-bundles-*-${{ github.sha }}
+        run: .github/scripts/hosted-download artifacts "$BUNDLES" artifacts
+      - name: Download recorded standard extension publication inputs
+        if: steps.recorded.outputs.bundle != ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS: katl-extension-bundles-standard-${{ needs.decide.outputs.commit }}
+          INPUTS_ID: ${{ steps.recorded.outputs.standard }}
+          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
+        run: .github/scripts/hosted-download --id "$INPUTS_ID" artifact "$INPUTS" "artifacts/$INPUTS" "$BUILD_RUN"
+      - name: Download recorded LTS extension publication inputs
+        if: steps.recorded.outputs.bundle != ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS: katl-extension-bundles-lts-${{ needs.decide.outputs.commit }}
+          INPUTS_ID: ${{ steps.recorded.outputs.lts }}
+          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
+        run: .github/scripts/hosted-download --id "$INPUTS_ID" artifact "$INPUTS" "artifacts/$INPUTS" "$BUILD_RUN"
       - &check-extensions
         name: Compare extension inputs with the bundle
+        timeout-minutes: 5
         run: |
           for flavour in standard lts; do
             directory="artifacts/katl-extension-bundles-${flavour}-${COMMIT}"
@@ -282,16 +328,19 @@ jobs:
               "$directory/release-extensions.json" "$directory/extension-bundles"
           done
       - name: Draft the pre-release
+        timeout-minutes: 7
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/katl-release draft "$VERSION" "$COMMIT" dist
       - &registry-login
         name: Authenticate registry publication
+        timeout-minutes: 2
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - &push-extensions
         name: Publish qualified extension bundles
+        timeout-minutes: 5
         run: |
           for flavour in standard lts; do
             directory="artifacts/katl-extension-bundles-${flavour}-${COMMIT}"
@@ -299,6 +348,7 @@ jobs:
               "$directory/release-extensions.json" "$directory/extension-bundles"
           done
       - name: Publish the pre-release
+        timeout-minutes: 7
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/katl-release publish "$VERSION" "$COMMIT" dist
@@ -308,6 +358,9 @@ jobs:
     needs: [decide, qualify]
     if: needs.decide.outputs.action == 'final' || needs.decide.outputs.action == 'retry-final'
     runs-on: ubuntu-24.04
+    # GitHub starts this budget when the job is assigned a runner, after the
+    # release environment's approval, so the approval wait is not counted here.
+    timeout-minutes: 90
     environment: release
     permissions:
       contents: write
@@ -324,49 +377,59 @@ jobs:
       - *attempt-guard
       - *checkout
       - name: Verify the publishing credential
+        timeout-minutes: 2
         id: credential
         uses: ./.github/actions/release-credential
         with:
           app-id: ${{ vars.KATL_RELEASE_APP_ID }}
           private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
       - name: Summarize the publishing credential
+        timeout-minutes: 2
         run: |
           echo "Publishing credential: katl-release App." >> "$GITHUB_STEP_SUMMARY"
       - *setup-go
       - name: Confirm the final decision after approval
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/katl-release confirm-final "$VERSION" "$COMMIT" "$DIGEST"
       - *bundle-name
       - name: Download the qualified bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ steps.bundle.outputs.name }}
-          path: dist
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.bundle.outputs.name }}
+        run: .github/scripts/hosted-download artifact "$BUNDLE" dist
       - *check-digest
       - name: Download both qualification records
-        uses: actions/download-artifact@v8
-        with:
-          pattern: katl-qualified-*-${{ github.sha }}
-          path: evidence
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 60
+          QUALIFIED: katl-qualified-*-${{ github.sha }}
+        run: .github/scripts/hosted-download artifacts "$QUALIFIED" evidence
       - name: Confirm the bytes qualified by Production VM
+        timeout-minutes: 2
         run: |
           scripts/katl-release equivalent dist \
             "standard=evidence/katl-qualified-standard-$COMMIT/SHA256SUMS" \
             "lts=evidence/katl-qualified-lts-$COMMIT/SHA256SUMS"
       - name: Download final extension publication inputs
-        uses: actions/download-artifact@v8
-        with:
-          pattern: katl-extension-bundles-*-${{ github.sha }}
-          path: artifacts
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLES: katl-extension-bundles-*-${{ github.sha }}
+        run: .github/scripts/hosted-download artifacts "$BUNDLES" artifacts
       - *check-extensions
       - name: Draft the final release
+        timeout-minutes: 7
         env:
           GH_TOKEN: ${{ steps.credential.outputs.token }}
         run: scripts/katl-release draft "$VERSION" "$COMMIT" dist
       - *registry-login
       - *push-extensions
       - name: Publish the final release and tag
+        timeout-minutes: 7
         env:
           GH_TOKEN: ${{ steps.credential.outputs.token }}
         run: scripts/katl-release publish "$VERSION" "$COMMIT" dist

@@ -16,13 +16,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: actions/setup-go@v6
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
           cache: false
       - name: Report duplicate candidates and unaudited recurrences
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

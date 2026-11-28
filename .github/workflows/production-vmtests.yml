@@ -47,12 +47,10 @@ jobs:
   qualification:
     name: Production VM (${{ inputs.flavour }})
     runs-on: ubuntu-24.04
-    # Every step has a budget so that go test's -timeout 75m, inside its
-    # 80-minute step, fires before this timeout whenever setup stays within
-    # budget: checkout 5, Go 10, host 15, candidate 20, previous release 20,
-    # checksums 5, qualification 80, qualified sums 5, diagnostics 5 and
-    # evidence 10 sum to 175 minutes.
-    timeout-minutes: 180
+    # Every step has a budget, so go test's -timeout 12m fires inside its
+    # 14-minute step and before this timeout whenever setup stays within
+    # budget.
+    timeout-minutes: 75
     env:
       KATL_FLAVOUR: ${{ inputs.flavour }}
       KATL_VMTEST_KVM: 'on'
@@ -66,13 +64,13 @@ jobs:
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/production-vmtest
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - uses: ./.github/actions/hosted-vmtest
-        timeout-minutes: 15
+        timeout-minutes: 6
       - name: Download the candidate bundle
         timeout-minutes: 20
         env:
@@ -87,7 +85,7 @@ jobs:
           PREVIOUS_TAG: ${{ inputs.previous-tag }}
         run: .github/scripts/hosted-download release "$PREVIOUS_TAG" previous
       - name: Verify candidate and previous release checksums
-        timeout-minutes: 5
+        timeout-minutes: 2
         env:
           PREVIOUS_TAG: ${{ inputs.previous-tag }}
         run: |
@@ -95,14 +93,14 @@ jobs:
           scripts/katl-release checksums previous
           printf 'Upgrade source: %s\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
       - name: Qualify production installation, reboot, upgrade, and rollback
-        timeout-minutes: 80
+        timeout-minutes: 14
         run: |
           .github/scripts/hosted-vmtest-measure production .github/scripts/hosted-vmtest-run \
             --artifact-set=none --no-rebuild ./internal/vmtest \
-            -run '^TestReleaseLifecycle$' -count=1 -json -timeout 75m
+            -run '^TestReleaseLifecycle$' -count=1 -json -timeout 12m
       - uses: actions/upload-artifact@v7
         if: success() && inputs.run-id == 0
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           name: katl-qualified-${{ inputs.flavour }}-${{ github.sha }}
           overwrite: true
@@ -112,11 +110,11 @@ jobs:
       - name: Collect diagnostics
         id: diagnostics
         if: always()
-        timeout-minutes: 5
+        timeout-minutes: 2
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
-        timeout-minutes: 10
+        timeout-minutes: 2
         with:
           name: production-vmtest-${{ inputs.flavour }}-${{ github.run_id }}
           path: ${{ steps.diagnostics.outputs.upload-dir }}

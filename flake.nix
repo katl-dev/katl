@@ -160,6 +160,7 @@
           sops
           squashfsTools
           systemdUkify
+          unzip
           util-linux
           xorriso
           zstd
