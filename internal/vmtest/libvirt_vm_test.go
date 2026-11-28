@@ -1377,6 +1377,45 @@ func TestVMSerialIdleTimeout(t *testing.T) {
 	})
 }
 
+func TestVMSerialIdleBlockIO(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		result, config := vmFixture(t)
+		config.Expect = "runtime ready"
+		config.Timeout = time.Hour
+		config.PollInterval = 100 * time.Millisecond
+		config.SerialIdleTimeout = 10 * time.Second
+		started := time.Now()
+		runner := VMRunner{
+			Executor: blockIOExec{vmExec: vmExec{write: "Boot0002\n", waitForCancel: true}},
+			probe: probe{
+				lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+				stat:     os.Stat,
+				access:   func(string) error { return nil },
+			},
+		}
+
+		result = runner.Run(context.Background(), result, config)
+		if result.Status != StatusFailed {
+			t.Fatalf("Status = %q", result.Status)
+		}
+		if !strings.Contains(result.FailureSummary, "bound while guest block I/O kept advancing") || !strings.Contains(result.FailureSummary, "Boot0002") {
+			t.Fatalf("FailureSummary = %q", result.FailureSummary)
+		}
+		if elapsed := time.Since(started); elapsed < serialIOBound {
+			t.Fatalf("failed after %s, before the %s bound", elapsed, serialIOBound)
+		}
+	})
+}
+
+// blockIOExec is a guest whose block I/O advances on every sample.
+type blockIOExec struct {
+	vmExec
+}
+
+func (blockIOExec) blockStats(context.Context) (blockStats, error) {
+	return blockStats{WriteReqs: uint64(time.Now().UnixNano())}, nil
+}
+
 func TestLibvirtTimeoutSummaryWithoutSerial(t *testing.T) {
 	if got := libvirtTimeoutSummary(filepath.Join(t.TempDir(), "missing.log")); got != "libvirt domain timed out" {
 		t.Fatalf("libvirtTimeoutSummary() = %q", got)

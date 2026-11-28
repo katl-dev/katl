@@ -529,6 +529,8 @@ type VMHandle struct {
 	runner        VMRunner
 	preservation  *DomainPreservation
 	notify        *notifyRecorder
+	// blockStats is nil when the executor cannot sample guest block I/O.
+	blockStats blockStatsSource
 }
 
 // notifyEvents returns what the guest's PID 1 has reported so far, in order.
@@ -675,6 +677,7 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 		preservation:  preservation,
 		notify:        recorder,
 	}
+	handle.blockStats, _ = executor.(blockStatsSource)
 	// libvirt assigns auto CIDs when the domain starts. Consumers read the CID
 	// from the handle, so it must be known before the handle is returned.
 	_, reportsCID := executor.(interface{ reportsGuestCID() })
@@ -788,12 +791,13 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 	hooksRun := make([]bool, len(h.Config.SerialHooks))
 	handoffRun := make([]bool, len(h.Config.HandoffHooks))
 	lastSerialLen := -1
-	lastSerialProgress := time.Now().UTC()
+	idle := newSerialIdleWatch(h.Config.SerialIdleTimeout, serialIOBound, time.Now())
+	var lastBlockSample time.Time
 	for {
 		serialText := readSerial(h.Plan.SerialLog)
 		if len(serialText) != lastSerialLen {
 			lastSerialLen = len(serialText)
-			lastSerialProgress = time.Now().UTC()
+			idle.serialProgress(time.Now())
 		}
 		if err := h.runner.runSerialHooks(h.ctx, h.Result, h.Config, h.Plan, serialText, hooksRun); err != nil {
 			return err
@@ -830,8 +834,18 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 		case <-h.ctx.Done():
 			return errors.New(libvirtTimeoutSummary(h.Plan.SerialLog))
 		case <-ticker.C:
-			if h.Config.SerialIdleTimeout > 0 && time.Since(lastSerialProgress) >= h.Config.SerialIdleTimeout {
-				return errors.New(libvirtSerialIdleSummary(h.Plan.SerialLog, h.Config.SerialIdleTimeout))
+			if h.Config.SerialIdleTimeout <= 0 {
+				continue
+			}
+			if h.blockStats != nil && time.Since(lastBlockSample) >= blockStatsInterval {
+				sampleCtx, cancel := context.WithTimeout(h.ctx, blockStatsTimeout)
+				stats, err := h.blockStats.blockStats(sampleCtx)
+				cancel()
+				lastBlockSample = time.Now()
+				idle.blockSample(lastBlockSample, stats, err)
+			}
+			if summary, expired := idle.expired(time.Now()); expired {
+				return errors.New(libvirtSerialIdleSummary(h.Plan.SerialLog, summary))
 			}
 		}
 	}
@@ -935,8 +949,7 @@ func libvirtTimeoutSummary(serialLog string) string {
 	return prefix + "; serial tail:\n" + tail
 }
 
-func libvirtSerialIdleSummary(serialLog string, idle time.Duration) string {
-	prefix := fmt.Sprintf("libvirt domain serial idle timed out after %s", idle)
+func libvirtSerialIdleSummary(serialLog string, prefix string) string {
 	tail := serialTail(serialLog, 12, 4000)
 	if tail == "" {
 		return prefix
