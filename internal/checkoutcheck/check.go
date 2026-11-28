@@ -14,6 +14,12 @@ import (
 
 const mainRef = "refs/remotes/origin/main"
 
+// TestSuppress names the environment variable that test environments set to 1
+// so that tools run by tests do not report on the developer's checkout. The
+// report depends on the developer's remote-tracking refs, which a test must
+// neither read nor depend on.
+const TestSuppress = "KATL_TEST_SUPPRESS_CHECKOUT_CHECK"
+
 const worktreeAdvice = "Refresh the checkout or use a fresh detached worktree at origin/main under ${XDG_STATE_HOME:-$HOME/.local/state}/katl-dev/worktrees."
 
 type Tool string
@@ -42,6 +48,9 @@ func Root(ctx context.Context) string {
 // Warn writes a diagnostic to out if the checkout is behind. With no tool
 // specified, it checks all three tools for the session-start report.
 func Warn(ctx context.Context, out io.Writer, tools ...Tool) {
+	if os.Getenv(TestSuppress) == "1" {
+		return
+	}
 	root := Root(ctx)
 	if root == "" {
 		if len(tools) == 0 {
