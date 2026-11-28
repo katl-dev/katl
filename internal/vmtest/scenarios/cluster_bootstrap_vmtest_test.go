@@ -872,7 +872,7 @@ func upgradeFixtureVersion(repo string) (string, error) {
 	if strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")) != "" {
 		return publishedKubernetesUpgradeVersion(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION"))
 	}
-	buildDir, err := vmtest.MkosiBuildDir(repo)
+	buildDir, err := vmtest.MkosiDir(repo)
 	if err != nil {
 		return "", err
 	}
@@ -897,7 +897,7 @@ func runKubernetesUpgradeCLIProof(t *testing.T, ctx context.Context, repoRoot, b
 	artifactArgs := []string{"--bundle", bundle}
 	var localMetadata artifact.LocalMeta
 	if bundle == "" {
-		buildDir, err := vmtest.MkosiBuildDir(repoRoot)
+		buildDir, err := vmtest.MkosiDir(repoRoot)
 		if err != nil {
 			return err
 		}
@@ -2358,7 +2358,7 @@ func ensureKubernetesImageFixture(ctx context.Context, repo, kubernetesVersion s
 }
 
 func kubernetesImageReferences(ctx context.Context, repo, version string) ([]string, error) {
-	buildDir, err := vmtest.MkosiBuildDir(repo)
+	buildDir, err := vmtest.MkosiDir(repo)
 	if err != nil {
 		return nil, err
 	}

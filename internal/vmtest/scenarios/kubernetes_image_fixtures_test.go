@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/vmtest"
 	"github.com/katl-dev/katl/internal/workstationtest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -74,7 +75,7 @@ func writeSysextFixture(t *testing.T, version, image string, sectorSize int, lay
 	if output, err := exec.Command("mkfs.erofs", part, root).CombinedOutput(); err != nil {
 		t.Fatalf("build EROFS fixture: %v\n%s", err, output)
 	}
-	build := filepath.Join(repo, "_build/mkosi")
+	build := (vmtest.World{}).MkosiDir(repo)
 	if err := os.MkdirAll(build, 0o755); err != nil {
 		t.Fatal(err)
 	}

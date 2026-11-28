@@ -124,7 +124,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	originalHostKeyDigest := guestFileSHA256(t, ctx, guest, "original-ssh-host-key", hostKeyPath)
 	guestCommand(t, ctx, guest, "corrupt-ssh-host-key", "dd", "if=/etc/os-release", "of="+hostKeyPath, "bs=4096", "count=1", "conv=fsync")
 
-	upgrade := discoverBuiltUpgradeImage(t, previousSpec.RuntimeVersion)
+	upgrade := pinnedUpgradeImage(t, RequireWorld(t), previousSpec.RuntimeVersion)
 	endpoint := katlcEndpoint(t, node, "")
 	candidateGeneration := "host-upgrade-" + strings.ReplaceAll(upgrade.Version, ".", "-")
 	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, spec.Name)
@@ -761,67 +761,18 @@ type builtUpgradeImage struct {
 	SizeBytes uint64
 }
 
-func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeImage {
+func pinnedUpgradeImage(t *testing.T, world World, baseVersion string) builtUpgradeImage {
 	t.Helper()
-	buildDir, err := MkosiBuildDir(repoRoot(t))
+	upgrade := requirePinnedArtifact(t, world, "katlos-upgrade-image")
+	root := requirePinnedArtifact(t, world, "runtime-root")
+	metadata, err := katlosimage.ReadArtifactMetadata(upgrade.Path+".json", katlosimage.RoleUpgrade)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeData, err := os.ReadFile(filepath.Join(buildDir, "katl-runtime-root.squashfs.json"))
-	if err != nil {
-		t.Fatalf("read current runtime artifact metadata: %v", err)
+	if metadata.Version == baseVersion {
+		t.Fatalf("pinned KatlOS upgrade image has the installed version %s", baseVersion)
 	}
-	var runtimeMetadata struct {
-		BuildID string `json:"generation"`
-		SHA256  string `json:"sha256"`
-	}
-	if err := json.Unmarshal(runtimeData, &runtimeMetadata); err != nil || runtimeMetadata.BuildID == "" || runtimeMetadata.SHA256 == "" {
-		t.Fatalf("decode current runtime artifact identity: %v", err)
-	}
-	matches, err := filepath.Glob(filepath.Join(buildDir, "katlos-upgrade-*-x86_64.squashfs.json"))
-	if err != nil {
-		t.Fatalf("discover KatlOS upgrade image metadata: %v", err)
-	}
-	var metadata struct {
-		ImageRole string `json:"imageRole"`
-		Version   string `json:"version"`
-		BuildID   string `json:"buildID"`
-		Path      string `json:"path"`
-		SizeBytes uint64 `json:"sizeBytes"`
-		SHA256    string `json:"sha256"`
-	}
-	metadataPath := ""
-	for _, candidate := range matches {
-		data, readErr := os.ReadFile(candidate)
-		if readErr != nil {
-			t.Fatalf("read KatlOS upgrade image metadata: %v", readErr)
-		}
-		found := metadata
-		if err := json.Unmarshal(data, &found); err != nil {
-			t.Fatalf("decode KatlOS upgrade image metadata: %v", err)
-		}
-		if found.BuildID == runtimeMetadata.BuildID && found.Version != baseVersion {
-			if metadataPath != "" {
-				t.Fatalf("multiple upgrade images match current runtime build %s: %s and %s", runtimeMetadata.BuildID, metadataPath, candidate)
-			}
-			metadataPath, metadata = candidate, found
-		}
-	}
-	if metadataPath == "" {
-		t.Fatalf("no next-version KatlOS upgrade image matches current runtime build %s and base version %s; candidates: %v", runtimeMetadata.BuildID, baseVersion, matches)
-	}
-	if metadata.ImageRole != string(katlosimage.RoleUpgrade) || metadata.Version == "" || metadata.Path == "" || metadata.SizeBytes == 0 || len(metadata.SHA256) != 64 {
-		t.Fatalf("incomplete KatlOS upgrade image metadata: %+v", metadata)
-	}
-	path := filepath.Join(filepath.Dir(metadataPath), metadata.Path)
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat KatlOS upgrade image: %v", err)
-	}
-	if uint64(info.Size()) != metadata.SizeBytes {
-		t.Fatalf("KatlOS upgrade image size = %d, metadata = %d", info.Size(), metadata.SizeBytes)
-	}
-	indexData, err := exec.Command("unsquashfs", "-cat", path, "katlos/image.json").Output()
+	indexData, err := exec.Command("unsquashfs", "-cat", upgrade.Path, metadata.EmbeddedIndexPath).Output()
 	if err != nil {
 		t.Fatalf("read KatlOS upgrade image index: %v", err)
 	}
@@ -831,21 +782,25 @@ func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeIma
 	}
 	rootMatches := false
 	for _, component := range index.Components {
-		if component.Role == katlosimage.ComponentRuntimeRoot && component.SHA256 == runtimeMetadata.SHA256 {
+		if component.Role == katlosimage.ComponentRuntimeRoot && component.SHA256 == root.Digest {
 			rootMatches = true
 		}
 	}
 	if !rootMatches {
 		t.Fatal("KatlOS upgrade image does not contain the current runtime root; rebuild the upgrade image")
 	}
-	digest, err := fileSHA256(path)
-	if err != nil {
-		t.Fatalf("hash KatlOS upgrade image: %v", err)
+	return builtUpgradeImage{Path: upgrade.Path, Version: metadata.Version, SHA256: upgrade.Digest, SizeBytes: uint64(upgrade.SizeBytes)}
+}
+
+func requirePinnedArtifact(t *testing.T, world World, name string) WorldArtifact {
+	t.Helper()
+	for _, artifact := range world.Artifacts {
+		if artifact.Name == name && artifact.Pinned {
+			return artifact
+		}
 	}
-	if digest != metadata.SHA256 {
-		t.Fatalf("KatlOS upgrade image SHA-256 = %s, metadata = %s", digest, metadata.SHA256)
-	}
-	return builtUpgradeImage{Path: path, Version: metadata.Version, SHA256: metadata.SHA256, SizeBytes: metadata.SizeBytes}
+	t.Fatalf("VM test world did not pin %s; build the required artifacts before using --no-rebuild", name)
+	return WorldArtifact{}
 }
 
 func assertBootedGenerationIdentity(t *testing.T, ctx context.Context, guest *GuestControl, spec generation.GenerationSpec) {

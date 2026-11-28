@@ -210,6 +210,7 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	lockPath := flags.String("lock", defaultLockPath, "package lock path")
 	mkosiDir := flags.String("mkosi-dir", "_build/mkosi", "mkosi output directory")
 	pinDir := flags.String("pin-dir", "", "directory to pin the mkosi outputs into; the manifest then records the pinned files")
+	upgradeMetadata := flags.String("upgrade-metadata", "", "metadata emitted by this run's upgrade build; defaults to the build directory's upgrade receipt")
 	runtimeRoot := flags.String("runtime-root", "", "runtime root directory containing an RPM database")
 	mode := flags.String("mode", "record", "package inventory mode: record, strict, or refresh")
 	runID := flags.String("run-id", "", "resource-test run id")
@@ -237,10 +238,16 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if *runtimeRoot == "" {
 		*runtimeRoot = filepath.Join(*mkosiDir, "katl-runtime-root")
 	}
+	var upgrade resourcetest.Artifact
 	if *pinDir != "" {
 		// Everything below reads and records the pinned files, so the manifest
 		// describes the bytes the run boots.
 		if err := pinMkosiOutputs(*mkosiDir, *pinDir); err != nil {
+			return err
+		}
+		var err error
+		upgrade, err = pinUpgradeImage(*mkosiDir, *pinDir, *upgradeMetadata)
+		if err != nil {
 			return err
 		}
 		*mkosiDir = *pinDir
@@ -269,6 +276,9 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := addMkosiArtifacts(&manifest, *mkosiDir); err != nil {
 		return err
+	}
+	if upgrade.Path != "" {
+		manifest.Artifacts = upsertArtifact(manifest.Artifacts, upgrade)
 	}
 	if *pinDir != "" {
 		if err := verifyPinnedIndex(*pinDir, manifest.Artifacts); err != nil {
@@ -563,30 +573,16 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 }
 
 func addMkosiArtifacts(manifest *resourcetest.Manifest, mkosiDir string) error {
-	candidates := []struct {
-		Name string
-		Kind string
-		Path string
-	}{
-		{Name: "installer-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
-		{Name: "installer-kernel", Kind: "linux-kernel", Path: filepath.Join(mkosiDir, "katl-installer.vmlinuz")},
-		{Name: "installer-initrd", Kind: "initrd", Path: filepath.Join(mkosiDir, "katl-installer.initrd")},
-		{Name: "installer-iso", Kind: "iso", Path: filepath.Join(mkosiDir, "katl-installer.iso")},
-		{Name: "runtime-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-runtime.efi")},
-		{Name: "runtime-root", Kind: "squashfs", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
-		{Name: "kubernetes-sysext", Kind: "sysext", Path: filepath.Join(mkosiDir, "katl-kubernetes.raw")},
-	}
-	if katlos, err := findKatlOSImage(mkosiDir); err == nil && katlos != "" {
-		candidates = append(candidates, struct {
-			Name string
-			Kind string
-			Path string
-		}{Name: "katlos-install-image", Kind: "squashfs", Path: katlos})
-	} else if err != nil {
+	katlos, err := findKatlOSImage(mkosiDir)
+	if err != nil {
 		return err
 	}
+	candidates := slices.Clone(mkosiOutputs)
+	if katlos != "" {
+		candidates = append(candidates, mkosiOutput{"katlos-install-image", "squashfs", filepath.Base(katlos)})
+	}
 	for _, candidate := range candidates {
-		artifact, ok, err := artifactFromPath(candidate.Name, candidate.Kind, candidate.Path)
+		artifact, ok, err := artifactFromPath(candidate.name, candidate.kind, filepath.Join(mkosiDir, candidate.file))
 		if err != nil {
 			return err
 		}

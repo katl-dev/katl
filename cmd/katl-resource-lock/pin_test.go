@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/resourcetest"
 )
 
@@ -35,6 +36,9 @@ func pinTestBuild(t *testing.T) (mkosiDir string) {
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime-v1")
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime.efi"), "runtime-uki-v1")
 	writeFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes-v1")
+	writeFile(t, filepath.Join(mkosiDir, "katl-kubernetes-upgrade.raw"), "kubernetes-upgrade-target")
+	writeFile(t, filepath.Join(mkosiDir, "katl-kubernetes-upgrade-source.raw"), "kubernetes-upgrade-source")
+	writeFile(t, filepath.Join(mkosiDir, "katl-vmtest-drbd-tools.raw"), "drbd-tools")
 	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.0-150500.1.1")
 	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-installer.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
 	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-runtime.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
@@ -46,10 +50,10 @@ func pinTestBuild(t *testing.T) (mkosiDir string) {
 	return mkosiDir
 }
 
-func prepareMkosiPinned(t *testing.T, mkosiDir, pinDir string) (resourcetest.Manifest, error) {
+func prepareMkosiPinned(t *testing.T, mkosiDir, pinDir string, extraArgs ...string) (resourcetest.Manifest, error) {
 	t.Helper()
 	manifestPath := filepath.Join(filepath.Dir(pinDir), "resource-manifest.json")
-	err := run([]string{
+	err := run(append([]string{
 		"prepare-mkosi",
 		"--manifest", manifestPath,
 		"--mkosi-dir", mkosiDir,
@@ -60,7 +64,7 @@ func prepareMkosiPinned(t *testing.T, mkosiDir, pinDir string) (resourcetest.Man
 		"--git-revision", "test",
 		"--fedora-repository", "fedora=https://example.invalid/fedora/44",
 		"--mkosi-version", "26",
-	}, &bytes.Buffer{}, &bytes.Buffer{})
+	}, extraArgs...), &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		return resourcetest.Manifest{}, err
 	}
@@ -74,6 +78,80 @@ func prepareMkosiPinned(t *testing.T, mkosiDir, pinDir string) (resourcetest.Man
 func sha256Hex(data string) string {
 	sum := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(sum[:])
+}
+
+func TestPrepareMkosiPinsBuildsUpgradeImage(t *testing.T) {
+	stubPrepareMkosi(t)
+	mkosiDir := pinTestBuild(t)
+	const stale = "katlos-upgrade-0.0.0-dev.1-x86_64.squashfs"
+	const selected = "katlos-upgrade-0000.0.0-dev.1-x86_64.squashfs"
+	writeUpgrade := func(name, version, contents string) string {
+		t.Helper()
+		data, err := json.Marshal(katlosimage.ArtifactMetadata{
+			APIVersion: katlosimage.APIVersion, Kind: katlosimage.ArtifactMetadataKind,
+			ImageRole: katlosimage.RoleUpgrade, Format: katlosimage.FormatSquashFS,
+			Version: version, BuildID: "0.0.0-dev", Architecture: "x86_64",
+			RuntimeInterface: "katl-runtime-1", Path: name, SizeBytes: int64(len(contents)),
+			SHA256: sha256Hex(contents), ChecksumPath: name + ".sha256",
+			EmbeddedIndexPath: "katlos/image.json", CreatedAt: "2026-11-26T00:00:00Z",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(mkosiDir, name), contents)
+		writeFile(t, filepath.Join(mkosiDir, name+".json"), string(data))
+		return string(data)
+	}
+	staleMetadata := writeUpgrade(stale, "0.0.0-dev.1", "leftover")
+	selectedMetadata := writeUpgrade(selected, "0000.0.0-dev.1", "this build")
+	sharedReceipt := filepath.Join(mkosiDir, "katlos-upgrade.json")
+
+	for _, tc := range []struct {
+		name     string
+		useBuild bool
+	}{
+		{name: "prebuilt inputs"},
+		{name: "receipt from this run's build", useBuild: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pinDir := filepath.Join(t.TempDir(), "artifacts")
+			writeFile(t, sharedReceipt, selectedMetadata)
+			writeFile(t, filepath.Join(mkosiDir, selected), "this build")
+			var args []string
+			if tc.useBuild {
+				receipt := filepath.Join(t.TempDir(), "receipt.json")
+				writeFile(t, receipt, selectedMetadata)
+				// Another build published a receipt before this run started pinning.
+				writeFile(t, sharedReceipt, staleMetadata)
+				args = []string{"--upgrade-metadata", receipt}
+			}
+			manifest, err := prepareMkosiPinned(t, mkosiDir, pinDir, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			writeFile(t, sharedReceipt, staleMetadata)
+			replacement := filepath.Join(mkosiDir, "replacement")
+			writeFile(t, replacement, "next build")
+			if err := os.Rename(replacement, filepath.Join(mkosiDir, selected)); err != nil {
+				t.Fatal(err)
+			}
+
+			image := artifactNamed(t, manifest, "katlos-upgrade-image")
+			if image.Path != filepath.Join(pinDir, selected) || image.Digest != sha256Hex("this build") {
+				t.Fatalf("run bound upgrade image %+v, want %s from this build", image, selected)
+			}
+			if got, err := os.ReadFile(image.Path); err != nil || string(got) != "this build" {
+				t.Fatalf("pinned upgrade image = %q, %v", got, err)
+			}
+			if got, err := os.ReadFile(image.Path + ".json"); err != nil || string(got) != selectedMetadata {
+				t.Fatalf("pinned upgrade metadata = %q, %v", got, err)
+			}
+			if _, err := os.Stat(filepath.Join(pinDir, stale)); !os.IsNotExist(err) {
+				t.Fatalf("stale upgrade image should be absent from the pin, stat error = %v", err)
+			}
+		})
+	}
 }
 
 // A build that replaces an output after the run pinned it must not change

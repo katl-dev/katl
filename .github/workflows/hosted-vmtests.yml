@@ -345,9 +345,8 @@ jobs:
       - name: Derive component and proof inputs from the install image
         timeout-minutes: 5
         run: |
-          images=(_build/mkosi/katlos-install-*-x86_64.squashfs)
-          test "${#images[@]}" = 1
-          unsquashfs -no-progress -d _build/mkosi/katlos-install-root "${images[0]}"
+          image="$(jq -er '.artifacts[] | select(.kind == "katlos-install-image") | .path' _build/mkosi/artifacts.json)"
+          unsquashfs -no-progress -d _build/mkosi/katlos-install-root "$image"
           # The install image owns these bytes; do not transfer loose duplicates or builder trees.
           ln -s "$GITHUB_WORKSPACE/_build/mkosi/katlos-install-root/components/runtime/root.squashfs" \
             _build/mkosi/katl-runtime-root.squashfs
