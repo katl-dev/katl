@@ -382,6 +382,7 @@ jobs:
         with:
           app-id: ${{ vars.KATL_RELEASE_APP_ID }}
           private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
+          environment: release
       - name: Summarize the publishing credential
         timeout-minutes: 2
         run: |

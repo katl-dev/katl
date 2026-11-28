@@ -27,14 +27,18 @@ var releaseExceptions = []releaseException{
 	{workflowSite{".github/actions/mkosi-builder/action.yml", "(composite)", "Configure build downloads"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{".github/actions/mkosi-builder/action.yml", "(composite)", "builder"}, "gap", 935, "", []string{"shell"}},
 
-	// The release App credential needs the release environment's App secret.
-	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Mint the katl-release token"}, "credential", 0, releaseRehearsal, []string{"reach"}},
-	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Mint the katl-release token"}, "credential", 0, "TestReleaseCredentialScope", []string{
+	// The App credential needs an environment's App secret.
+	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Mint the App token"}, "credential", 0, releaseRehearsal, []string{"reach"}},
+	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Mint the App token"}, "credential", 0, "TestReleaseCredentialScope", []string{
 		"with.app-id ${{ inputs.app-id }}",
 		"with.private-key ${{ inputs.private-key }}",
 		"with.repositories ${{ github.event.repository.name }}",
 	}},
-	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Verify installation scope and repository access"}, "credential", 0, "TestReleaseCredentialScope", []string{"reach", "shell"}},
+	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Verify installation scope and repository access"}, "credential", 0, "TestReleaseCredentialScope", []string{
+		"reach",
+		"shell",
+		"env.ENVIRONMENT ${{ inputs.environment }}",
+	}},
 
 	{workflowSite{".github/actions/setup-go/action.yml", "(composite)", "Resolve Go cache"}, "gap", 935, "", []string{"shell"}},
 

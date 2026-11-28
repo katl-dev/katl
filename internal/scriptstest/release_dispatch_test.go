@@ -112,17 +112,63 @@ func TestReleaseWriters(t *testing.T) {
 	}
 }
 
-// requireCredential checks that step mints the App token through the shared
-// action, the only place a caller may reference the App credential.
-func requireCredential(t *testing.T, step workflowStep) {
+// releaseApps maps each credentialed environment to the prefix of the App ID
+// variable and private key secret that its jobs pass to the shared action.
+var releaseApps = map[string]string{
+	releasestate.ReleaseEnvironment: "KATL_RELEASE_APP",
+	"release-cut":                   "KATL_RELEASE_CUT_APP",
+}
+
+// requireCredential checks that step mints the token of environment's App
+// through the shared action, the only place a caller may reference an App
+// credential.
+func requireCredential(t *testing.T, step workflowStep, environment string) {
 	t.Helper()
+	app := releaseApps[environment]
 	wantInputs := map[string]string{
-		"app-id":      "${{ vars.KATL_RELEASE_APP_ID }}",
-		"private-key": "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
+		"app-id":      "${{ vars." + app + "_ID }}",
+		"private-key": "${{ secrets." + app + "_PRIVATE_KEY }}",
+		"environment": environment,
 	}
-	if step.Uses != "./.github/actions/release-credential" || !maps.Equal(step.With, wantInputs) ||
+	if app == "" || step.Uses != "./.github/actions/release-credential" || !maps.Equal(step.With, wantInputs) ||
 		step.Run != "" || step.If != "" || step.ContinueOnError {
-		t.Errorf("credential step = %+v, want a mandatory shared App credential", step)
+		t.Errorf("credential step = %+v, want a mandatory shared credential with %v", step, wantInputs)
+	}
+}
+
+// Each job that uses the credential action passes the App of the environment
+// it runs in. Release publication and its check use the release App, and
+// the cut uses the cut App. No job passes an App credential to anything else.
+func TestReleaseAppCredentials(t *testing.T) {
+	want := map[string]string{
+		"cut-release.yml:cut":                                    "release-cut",
+		"release-credential.yml:check":                           releasestate.ReleaseEnvironment,
+		filepath.Base(releasestate.ReleaseWorkflow) + ":publish": releasestate.ReleaseEnvironment,
+	}
+	got := map[string]string{}
+	allWorkflows(t, func(file string, workflow workflowFile) {
+		for id, job := range workflow.Jobs {
+			for _, step := range job.Steps {
+				if passesAppCredential(step) && step.Uses != "./.github/actions/release-credential" {
+					t.Errorf("%s:%s passes an App credential to %q instead of the shared credential action", file, id, step.Uses)
+				}
+				if step.Uses != "./.github/actions/release-credential" {
+					continue
+				}
+				site := file + ":" + id
+				if _, seen := got[site]; seen {
+					t.Errorf("%s has more than one credential step", site)
+				}
+				if job.Environment.Kind != yaml.ScalarNode {
+					t.Errorf("%s uses the credential action without a named environment", site)
+				}
+				got[site] = job.Environment.Value
+				requireCredential(t, step, job.Environment.Value)
+			}
+		}
+	})
+	if !maps.Equal(got, want) {
+		t.Errorf("credentialed jobs = %v, want %v", got, want)
 	}
 }
 
@@ -147,7 +193,7 @@ func TestReleaseCredential(t *testing.T) {
 	if len(job.Steps) != 3 || !strings.HasPrefix(job.Steps[0].Uses, "actions/checkout@") || job.Steps[2].Uses != "" {
 		t.Fatal("credential check must only check out the repository, verify the credential and write the summary")
 	}
-	requireCredential(t, job.Steps[1])
+	requireCredential(t, job.Steps[1], releasestate.ReleaseEnvironment)
 	secretReferences := regexp.MustCompile(`(?i)\bsecrets\s*[.\[]`)
 	if refs := secretReferences.FindAllString(source, -1); len(refs) != 1 {
 		t.Errorf("%s references %d secrets, want only the release App private key", checkFile, len(refs))
@@ -175,7 +221,7 @@ func TestReleaseCredential(t *testing.T) {
 				t.Fatal("more than one credential step")
 			}
 			credential = i
-			requireCredential(t, step)
+			requireCredential(t, step, releasestate.ReleaseEnvironment)
 		}
 		if writesRelease(step) || apiWrites(step.Run, "/git/refs") {
 			writes++
@@ -208,9 +254,9 @@ func TestReleaseCredential(t *testing.T) {
 }
 
 func TestReleaseAppReferences(t *testing.T) {
-	// TestReleaseCredential and TestCutReleaseWorkflow pin both references to
-	// the shared action's inputs. Any additional reference, including in a
-	// different YAML field, is invalid.
+	// TestReleaseAppCredentials pins each workflow's two references to the
+	// shared action's inputs. Any additional reference to either App's
+	// credential, including in a different YAML field, is invalid.
 	allowed := map[string]int{
 		"workflows/cut-release.yml":                                2,
 		"workflows/release-credential.yml":                         2,
@@ -235,7 +281,7 @@ func TestReleaseAppReferences(t *testing.T) {
 			t.Fatalf("parse %s: %v", path, err)
 		}
 		if got, want := releaseAppReferences(document), allowed[path]; got != want {
-			t.Errorf("%s has %d KATL_RELEASE_APP_ references, want %d", path, got, want)
+			t.Errorf("%s has %d App credential references, want %d", path, got, want)
 		}
 		return nil
 	})
@@ -244,11 +290,24 @@ func TestReleaseAppReferences(t *testing.T) {
 	}
 }
 
+var appCredential = regexp.MustCompile(`KATL_RELEASE_(?:CUT_)?APP_`)
+
+// passesAppCredential reports whether step passes a release or cut App
+// credential to the action or command it runs.
+func passesAppCredential(step workflowStep) bool {
+	for _, value := range slices.Concat(slices.Collect(maps.Values(step.With)), slices.Collect(maps.Values(step.Env))) {
+		if appCredential.MatchString(strings.ToUpper(value)) {
+			return true
+		}
+	}
+	return false
+}
+
 func releaseAppReferences(value any) int {
 	var count int
 	switch value := value.(type) {
 	case string:
-		return strings.Count(strings.ToUpper(value), "KATL_RELEASE_APP_")
+		return len(appCredential.FindAllString(strings.ToUpper(value), -1))
 	case []any:
 		for _, item := range value {
 			count += releaseAppReferences(item)
@@ -319,6 +378,9 @@ func TestReleaseCredentialScope(t *testing.T) {
 		if step.Env["GH_TOKEN"] == "${{ steps.mint.outputs.token }}" {
 			checks++
 			verify = step.Run
+			if step.Env["ENVIRONMENT"] != "${{ inputs.environment }}" {
+				t.Error("verification must name the environment from the action input")
+			}
 			if step.If.Kind != 0 {
 				t.Error("repository scope and access verification must run after minting succeeds")
 			}
@@ -355,12 +417,12 @@ esac
 				t.Fatal(err)
 			}
 			out, err := runReleaseStep(dir, verify, "PATH="+dir+":"+os.Getenv("PATH"), "GITHUB_REPOSITORY="+repo,
-				"INSTALLATION_REPOSITORIES="+tc.repos, "REPOSITORY_READ_STATUS="+tc.readStatus)
+				"ENVIRONMENT=release-cut", "INSTALLATION_REPOSITORIES="+tc.repos, "REPOSITORY_READ_STATUS="+tc.readStatus)
 			if tc.wantError == "" {
 				if err != nil {
 					t.Fatalf("verification failed: %v: %s", err, out)
 				}
-			} else if err == nil || !strings.Contains(string(out), tc.wantError) {
+			} else if err == nil || !strings.Contains(string(out), tc.wantError) || !strings.Contains(string(out), "release-cut environment") {
 				t.Fatalf("verification output = %q, %v, want error containing %q", out, err, tc.wantError)
 			}
 		})

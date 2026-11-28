@@ -40,7 +40,7 @@ jobs:
         timeout-minutes: 2
         with:
           persist-credentials: false
-      # This job holds the release App token, so it restores no cache and
+      # This job holds the cut App token, so it restores no cache and
       # runs only a katl-release built here from the checked-out source.
       - uses: actions/setup-go@v6
         timeout-minutes: 2
@@ -55,8 +55,9 @@ jobs:
         timeout-minutes: 2
         uses: ./.github/actions/release-credential
         with:
-          app-id: ${{ vars.KATL_RELEASE_APP_ID }}
-          private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.KATL_RELEASE_CUT_APP_ID }}
+          private-key: ${{ secrets.KATL_RELEASE_CUT_APP_PRIVATE_KEY }}
+          environment: release-cut
       - name: Cut the branch
         timeout-minutes: 2
         env:
