@@ -17,7 +17,6 @@ usage() {
     cat >&2 <<'EOF'
 usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VERSION]
        scripts/katl-release-artifacts upgrade-baseline [REV]
-       scripts/katl-release-artifacts previous-tag BASE_REF
        scripts/katl-release-artifacts dev-version STABLE_TAG
        scripts/katl-release-artifacts notes VERSION
        scripts/katl-release-artifacts build-katlctl VERSION
@@ -336,24 +335,6 @@ production_upgrade_baseline() {
     printf '%s\n' "$tag"
 }
 
-# A pull request qualifies upgrades within the release series of its base.
-previous_stable_tag() {
-    local base="$1" candidate
-    git rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
-        fail "base ref does not exist: $base"
-
-    candidate="$(git tag --merged "$base" --list 'v[0-9]*' --sort=-version:refname)" ||
-        fail "cannot list the tags merged into $base"
-    candidate="$(stable_tags "$candidate")" || exit 1
-    candidate="${candidate%%$'\n'*}"
-    if [[ -n "$candidate" ]]; then
-        printf '%s\n' "$candidate"
-        return
-    fi
-
-    fail "no stable release tag is reachable from $base"
-}
-
 # Prints the development version that sorts directly above a stable release, for
 # builds that qualify production bytes without publishing them.
 dev_version_above() {
@@ -524,10 +505,6 @@ case "${1:-}" in
     upgrade-baseline)
         [[ $# -le 2 ]] || usage
         production_upgrade_baseline "${2:-}"
-        ;;
-    previous-tag)
-        [[ $# -eq 2 ]] || usage
-        previous_stable_tag "$2"
         ;;
     dev-version)
         [[ $# -eq 2 ]] || usage

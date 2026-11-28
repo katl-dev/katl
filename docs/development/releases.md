@@ -42,7 +42,9 @@ publication under the
    the App that the workflow uses can create release branches. See the
    [release rulesets](release-rulesets.md).
 
-   After the cut, check the journey gate with the previous final release tag.
+   After the cut, check the journey gate with the previous final release tag,
+   which `scripts/production-upgrade-baseline.txt` names on the release branch
+   (`scripts/katl-release-artifacts upgrade-baseline`).
 
    ```sh
    scripts/katl-release journeys 2026.12.1 v2026.12.0

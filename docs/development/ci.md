@@ -34,10 +34,10 @@ The assembled bytes remain available for one day as `katl-assembled-<flavour>-<s
 The `vmtest` label on other pull requests selects regression VMs. Production
 builds on pull requests are reserved for release series branches.
 
-The build carries a development version above its upgrade source. The merge
-queue uses `scripts/production-upgrade-baseline.txt`, which the release process
-updates after publication. A pull request into a release series branch uses the
-newest stable tag reachable from its base. The notes renderer uses the earlier
+The build carries a development version above its upgrade source. Pull
+requests, pushes and the merge queue all take the upgrade source from
+`scripts/production-upgrade-baseline.txt` at the tested commit, as release runs
+do; the release process updates the pin after publication. The notes renderer uses the earlier
 upgrade baseline pinned at the tested commit when available. Otherwise it starts
 at the highest published stable version below the build version, including
 releases tagged on sibling branches.

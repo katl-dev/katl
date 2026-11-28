@@ -177,15 +177,11 @@ jobs:
         id: production
         if: steps.plan.outputs.full-plan == 'true' || github.event_name != 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           PRODUCTION_FLAVOURS: ${{ steps.plan.outputs.production-flavours }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            upgrade_baseline="$(scripts/katl-release-artifacts previous-tag "${BASE_SHA:-HEAD}")"
-          else
-            upgrade_baseline="$(scripts/katl-release-artifacts upgrade-baseline)"
-          fi
+          # The pin at the tested commit names the previous release for every event.
+          upgrade_baseline="$(scripts/katl-release-artifacts upgrade-baseline)"
           version="$(scripts/katl-release-artifacts dev-version "$upgrade_baseline")"
           {
             echo "previous-tag=$upgrade_baseline"
