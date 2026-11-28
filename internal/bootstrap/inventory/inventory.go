@@ -13,6 +13,7 @@ import (
 
 	"github.com/distribution/reference"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig/inputpath"
+	"github.com/katl-dev/katl/internal/redact"
 )
 
 type SystemRole string
@@ -565,17 +566,15 @@ var (
 	bootstrapTokenPattern     = regexp.MustCompile(`\b[a-z0-9]{6}\.[a-z0-9]{16}\b`)
 	discoveryTokenHashPattern = regexp.MustCompile(`(?i)\b(discovery-token-ca-cert-hash\s+)?sha256:[a-f0-9]{64}\b`)
 	certificateKeyPattern     = regexp.MustCompile(`(?i)\b(certificate[-_ ]?key=?|certificateKey=?)\s*[a-f0-9]{64}\b`)
-	kubeconfigDataPattern     = regexp.MustCompile(`(?im)^(\s*(?:client-certificate-data|client-key-data):\s*)\S+`)
 	bearerTokenPattern        = regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]+`)
-	privateKeyPattern         = regexp.MustCompile(`(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
 )
 
 func Redact(value string) string {
-	value = privateKeyPattern.ReplaceAllString(value, "[REDACTED PRIVATE KEY]")
+	value = redact.PrivateKeys(value)
 	value = bootstrapTokenPattern.ReplaceAllString(value, "[REDACTED BOOTSTRAP TOKEN]")
 	value = discoveryTokenHashPattern.ReplaceAllString(value, "${1}[REDACTED DISCOVERY TOKEN HASH]")
 	value = certificateKeyPattern.ReplaceAllString(value, "${1}[REDACTED]")
-	value = kubeconfigDataPattern.ReplaceAllString(value, "${1}[REDACTED]")
+	value = redact.KubeconfigData(value)
 	value = bearerTokenPattern.ReplaceAllString(value, "${1}[REDACTED]")
 	return urlPattern.ReplaceAllStringFunc(value, redactURL)
 }

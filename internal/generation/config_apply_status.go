@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/redact"
 )
 
 const (
@@ -331,11 +333,10 @@ var (
 	configApplyBootstrapTokenPattern     = regexp.MustCompile(`\b[a-z0-9]{6}\.[a-z0-9]{16}\b`)
 	configApplyDiscoveryTokenHashPattern = regexp.MustCompile(`(?i)\b(discovery-token-ca-cert-hash\s+)?sha256:[a-f0-9]{64}\b`)
 	configApplyBearerTokenPattern        = regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]+`)
-	configApplyPrivateKeyPattern         = regexp.MustCompile(`(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
 )
 
 func RedactConfigApplyMessage(value string) string {
-	value = configApplyPrivateKeyPattern.ReplaceAllString(value, "[REDACTED PRIVATE KEY]")
+	value = redact.PrivateKeys(value)
 	value = configApplyBootstrapTokenPattern.ReplaceAllString(value, "[REDACTED BOOTSTRAP TOKEN]")
 	value = configApplyDiscoveryTokenHashPattern.ReplaceAllString(value, "${1}[REDACTED DISCOVERY TOKEN HASH]")
 	value = configApplyBearerTokenPattern.ReplaceAllString(value, "${1}[REDACTED]")

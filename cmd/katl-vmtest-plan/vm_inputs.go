@@ -35,6 +35,7 @@ var hostedGoTargets = []string{
 	"./cmd/katl-ssh-host-keys",
 	"./cmd/katl-system-disk-generator",
 	"./cmd/katl-vmtest-agent",
+	"./cmd/katl-vmtest-evidence",
 	"./cmd/katl-vmtest-health",
 	"./cmd/katl-vmtest-plan",
 	"./cmd/katl-vmtest-ran",

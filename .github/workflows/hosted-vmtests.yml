@@ -238,24 +238,15 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       - name: Collect host diagnostics
+        id: diagnostics
         if: always()
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-producer-evidence-${{ github.run_id }}
-          path: |
-            _build/hosted-evidence/
-            _build/hosted-agent/**/*.log
-            _build/hosted-agent/**/*.json
-            _build/hosted-agent/**/*.xml
-            _build/hosted-agent/**/*.txt
-            _build/hosted-agent/**/*.stdout
-            _build/hosted-agent/**/*.stderr
-            _build/hosted-agent/**/stdout
-            _build/hosted-agent/**/stderr
-            _build/hosted-agent/**/*-network-evidence/**
+          path: ${{ steps.diagnostics.outputs.upload-dir }}
           retention-days: 3
       # This job is the only saver of the image build caches, and only on
       # scheduled runs: it builds every image, so its caches hold what every
@@ -360,24 +351,15 @@ jobs:
             --artifact-set="$ARTIFACT_SET" --no-rebuild "$TEST_PACKAGE" \
             -run "^($TEST_NAMES)$" -count=1 -json -timeout 75m
       - name: Collect host diagnostics
+        id: diagnostics
         if: always()
         timeout-minutes: 5
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         timeout-minutes: 10
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-${{ matrix.name }}-evidence-${{ github.run_id }}
-          path: |
-            _build/hosted-evidence/
-            _build/hosted-scenario/**/*.log
-            _build/hosted-scenario/**/*.json
-            _build/hosted-scenario/**/*.xml
-            _build/hosted-scenario/**/*.txt
-            _build/hosted-scenario/**/*.stdout
-            _build/hosted-scenario/**/*.stderr
-            _build/hosted-scenario/**/stdout
-            _build/hosted-scenario/**/stderr
-            _build/hosted-scenario/**/*-network-evidence/**
+          path: ${{ steps.diagnostics.outputs.upload-dir }}
           retention-days: 3
