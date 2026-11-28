@@ -21,6 +21,6 @@ For an internal-only change, write "None: internal".
 <!--
 Record the katldev journey for this workflow here: the commands and outcomes.
 Whoever runs it then adds `journey: passed`, or `journey: gap` plus a link to
-the release-blocker fix. It runs alongside the merge queue and must pass before
-the next release candidate.
+the fix issue or PR labelled `release-blocker` and `journey: gap`. The journey runs
+alongside the merge queue and must pass before the next release candidate.
 -->

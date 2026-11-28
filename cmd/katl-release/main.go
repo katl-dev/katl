@@ -54,7 +54,7 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release release VERSION [--retry REASON]\n       scripts/katl-release wait VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release require-candidate VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n       "+mergeMilestoneUsage+"\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release journeys VERSION PREVIOUS_TAG\n       scripts/katl-release status VERSION\n       scripts/katl-release release VERSION [--retry REASON]\n       scripts/katl-release wait VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release require-candidate VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n       "+mergeMilestoneUsage+"\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -76,6 +76,8 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 		return status(context.Background(), args[1:], stdout, newGitHubReader(call))
 	}
 	switch args[0] {
+	case "journeys":
+		return journeys(context.Background(), args[1:], stdout, newGitHubReader(call))
 	case "release":
 		return release(context.Background(), args[1:], stdout, stderr, newGitHubReader(call), call)
 	case "wait":

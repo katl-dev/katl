@@ -209,15 +209,11 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 		return in, nil
 	}
 	defer r.provenance.close()
-	head, err := r.refs(ctx, "heads/"+releasestate.Branch(version))
+	head, err := r.refCommit(ctx, releasestate.Ref(version))
 	if err != nil {
 		return in, err
 	}
-	for _, branch := range head {
-		if branch.Ref == releasestate.Ref(version) {
-			in.Head = branch.Object.SHA
-		}
-	}
+	in.Head = head
 	if in.Head == "" {
 		return in, nil
 	}
@@ -238,12 +234,10 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 		in.Tags = append(in.Tags, releasestate.Tag{Name: name, Commit: commit})
 	}
 	for _, pair := range releasestate.AncestryQueries(version, in.Head, in.Tags) {
-		// GitHub compares base...head: "ahead" means head descends from base.
-		status, err := r.compare(ctx, pair[0], pair[1])
+		in.Ancestry[pair], err = r.isAncestor(ctx, pair[0], pair[1])
 		if err != nil {
 			return in, err
 		}
-		in.Ancestry[pair] = status == "identical" || status == "ahead"
 	}
 
 	if err := r.records(ctx, version, &in); err != nil {
@@ -257,6 +251,39 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 	}
 	in.ExtensionReferences, err = r.extensions(ctx, version)
 	return in, err
+}
+
+func (r *reader) refCommit(ctx context.Context, name string) (string, error) {
+	refs, err := r.refs(ctx, strings.TrimPrefix(name, "refs/"))
+	if err != nil {
+		return "", err
+	}
+	for _, ref := range refs {
+		if ref.Ref == name {
+			commit, err := r.peel(ctx, ref)
+			if err == nil && !fullSHA.MatchString(commit) {
+				return "", fmt.Errorf("%s has no full commit SHA", name)
+			}
+			return commit, err
+		}
+	}
+	return "", nil
+}
+
+func (r *reader) isAncestor(ctx context.Context, ancestor, head string) (bool, error) {
+	// GitHub compares base...head: "ahead" means head descends from base.
+	status, err := r.compare(ctx, ancestor, head)
+	if err != nil {
+		return false, err
+	}
+	switch status {
+	case "ahead", "identical":
+		return true, nil
+	case "behind", "diverged":
+		return false, nil
+	default:
+		return false, fmt.Errorf("GitHub returned unknown comparison status %q for %s...%s", status, ancestor, head)
+	}
 }
 
 // refs lists the refs that start with the prefix; GitHub matches by prefix,
