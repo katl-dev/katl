@@ -33,13 +33,17 @@ func NewClientCredentials(config *tls.Config) *clientCredentials {
 	return &clientCredentials{TransportCredentials: credentials.NewTLS(config)}
 }
 
+// ManagementAuthorityRemedy is what to do when a node presents a certificate
+// that the configured management authority did not sign.
+const ManagementAuthorityRemedy = "after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or, if they are lost, run katlctl management identity recover --config CLUSTER.yaml"
+
 func (c *clientCredentials) ClientHandshake(ctx context.Context, authority string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
 	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, authority, conn)
 	var wrongName x509.HostnameError
 	var plaintext tls.RecordHeaderError
 	switch {
 	case unknownServerAuthority(err):
-		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or, if they are lost, run katlctl management identity recover --config CLUSTER.yaml: %w", err)
+		return nil, nil, fmt.Errorf("node uses a different management authority; %s: %w", ManagementAuthorityRemedy, err)
 	case errors.As(err, &plaintext) && plaintext.Conn != nil:
 		return nil, nil, fmt.Errorf("management endpoint answered without TLS, so the node still serves trusted-network management. Run or rerun `katlctl management enable-mtls` to move it to mTLS, or set `managementAuthentication: trusted-network` to keep managing it that way. Otherwise check that management.address points at the node's katlc agent on %d: %w", inventory.ManagementPort, err)
 	case errors.As(err, &wrongName):

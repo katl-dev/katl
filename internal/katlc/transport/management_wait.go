@@ -200,8 +200,9 @@ type (
 	noManagementAdviceKey struct{}
 )
 
-// WithoutManagementAdvice lets trust-changing commands report uncertainty
-// without the transport's normal hints about which credentials to select.
+// WithoutManagementAdvice lets commands that explain a failure themselves
+// report it without the transport's normal hints about which credentials to
+// select or how to wait for a refusing endpoint.
 func WithoutManagementAdvice(ctx context.Context) context.Context {
 	return context.WithValue(ctx, noManagementAdviceKey{}, true)
 }
@@ -270,7 +271,7 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 		if w, ok := ctx.Value(managementProgressKey{}).(io.Writer); ok && w != nil {
 			progress = w
 		}
-		options = append(options, managementReadyDialOptions(progress, node, endpoint)...)
+		options = append(options, managementReadyDialOptions(progress, node, endpoint, !noAdvice)...)
 	}
 	return append(
 		options,
@@ -312,20 +313,20 @@ func (s managementRPCStream) CloseSend() error {
 	return managementRPCResult(s.ctx, s.ClientStream.CloseSend())
 }
 
-func managementReadyDialOptions(progress io.Writer, node, endpoint string) []grpc.DialOption {
+func managementReadyDialOptions(progress io.Writer, node, endpoint string, advise bool) []grpc.DialOption {
 	return []grpc.DialOption{
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff:           backoff.Config{BaseDelay: 500 * time.Millisecond, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 2 * time.Second},
 			MinConnectTimeout: 20 * time.Second,
 		}),
 		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-			return awaitManagementEndpoint(ctx, progress, node, endpoint, func(p *peer.Peer) error {
+			return awaitManagementEndpoint(ctx, progress, node, endpoint, advise, func(p *peer.Peer) error {
 				return invoker(ctx, method, req, reply, cc, append(opts[:len(opts):len(opts)], grpc.Peer(p))...)
 			})
 		}),
 		grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 			var stream grpc.ClientStream
-			err := awaitManagementEndpoint(ctx, progress, node, endpoint, func(p *peer.Peer) (err error) {
+			err := awaitManagementEndpoint(ctx, progress, node, endpoint, advise, func(p *peer.Peer) (err error) {
 				stream, err = streamer(ctx, desc, cc, method, append(opts[:len(opts):len(opts)], grpc.Peer(p))...)
 				return err
 			})
@@ -364,13 +365,17 @@ func refusedBeforeConnect(err error, p *peer.Peer) bool {
 
 // awaitManagementEndpoint runs attempt until it stops failing with a refused
 // connection. Any other error is returned at once, unchanged, except that a
-// context which ends after a refusal reports the refusal with its guidance.
-func awaitManagementEndpoint(ctx context.Context, progress io.Writer, node, endpoint string, attempt func(*peer.Peer) error) error {
+// context which ends after a refusal reports the refusal, with guidance when
+// advise is set.
+func awaitManagementEndpoint(ctx context.Context, progress io.Writer, node, endpoint string, advise bool, attempt func(*peer.Peer) error) error {
 	start := time.Now()
 	readyCtx, cancel := context.WithDeadline(ctx, start.Add(managementReady.bound))
 	defer cancel()
 
 	giveUp := func(err error) error {
+		if !advise {
+			return fmt.Errorf("node %s management endpoint %s refused connections for %s: %w", node, endpoint, time.Since(start).Round(time.Second), err)
+		}
 		return fmt.Errorf("node %s management endpoint %s refused connections for %s: katlc-agent is not listening; the node may still be booting, so wait and rerun this command, and if it persists check the address and run 'systemctl status katlc-agent' on the node console: %w", node, endpoint, time.Since(start).Round(time.Second), err)
 	}
 

@@ -118,7 +118,7 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 		status, err := runManagementAuthoritySSH(ctx, *node, opts)
 		if err != nil {
 			return fmt.Errorf("inspect %s: %w; no node credentials were changed; rerun the same command", node.name,
-				managementTrustChangeError("the node's installed management authority", trustPreviousAuthority, err))
+				managementTrustChangeError(managementCheck{claim: "the node's installed management authority"}, trustPreviousAuthority, err))
 		}
 		node.machineID = status.MachineID
 		installed[node.name] = status.Authority
@@ -159,7 +159,7 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 		fmt.Fprintf(stderr, "Preflight replacement identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, true); err != nil {
 			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s and rerun the same command", node.name,
-				managementTrustChangeError("the node is ready to install the replacement authority", trustPreviousAuthority, err), outputPath)
+				managementTrustChangeError(managementCheck{claim: "the node is ready to install the replacement authority"}, trustPreviousAuthority, err), outputPath)
 		}
 	}
 	client, err := managementidentity.Client(next, time.Now().UTC())
@@ -176,7 +176,7 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 			}
 			if status != nil || grpcstatus.Code(err) != codes.Unavailable {
 				return fmt.Errorf("%s: %w; keep %s and rerun the same command", node.name,
-					managementTrustChangeError("the node accepts the replacement authority", trustPreviousAuthority, err), outputPath)
+					managementTrustChangeError(managementCheck{claim: "the node accepts the replacement authority"}, trustPreviousAuthority, err), outputPath)
 			}
 			// The disk already has the replacement. Bind the SSH retry so it
 			// can only reload, even if disk state changes.
@@ -189,11 +189,11 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 		}
 		if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
 			return fmt.Errorf("recover %s: %w; keep %s and rerun the same command", node.name,
-				managementTrustChangeError("the replacement was installed and reloaded", trustPreviousAuthority, err), outputPath)
+				managementTrustChangeError(managementCheck{claim: "the replacement was installed and reloaded"}, trustPreviousAuthority, err), outputPath)
 		}
 		if _, err := waitManagementCredential(ctx, node, client, nextInfo.Fingerprint, opts.timeout); err != nil {
 			return fmt.Errorf("%s: %w; keep %s and rerun the same command", node.name,
-				managementTrustChangeError("the node accepts the replacement authority", trustPreviousAuthority, err), outputPath)
+				managementTrustChangeError(managementCheck{claim: "the node accepts the replacement authority"}, trustPreviousAuthority, err), outputPath)
 		}
 		recovered++
 		fmt.Fprintf(stderr, "Verified the new authority on %s\n", node.name)

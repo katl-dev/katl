@@ -29,9 +29,13 @@ type contextSaveOptions struct {
 	replacementNode []string
 	selectedNodes   []string
 	endpoints       map[string]inventory.HostPort
-	observeStatus   func(context.Context, string, inventory.HostPort) (*agentapi.NodeStatus, error)
-	timeout         time.Duration
-	output          string
+	// endpointSource says whether endpoints are bound to their nodes. A node
+	// without one is checked at its ClusterConfig address, which is bound only
+	// when the saved context records the same endpoint.
+	endpointSource managementAddress
+	observeStatus  func(context.Context, string, inventory.HostPort) (*agentapi.NodeStatus, error)
+	timeout        time.Duration
+	output         string
 }
 
 type contextSaveNodeReport struct {
@@ -247,13 +251,16 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, rerun string) 
 	if err != nil {
 		return workstation.Config{}, contextSaveReport{}, err
 	}
-	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, func(err error) error {
-		return fmt.Errorf("%w; check the address and node reachability, then rerun %s",
-			managementReadError("the node answers with the configured management credentials", err), rerun)
+	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, func(check managementCheck, err error) error {
+		check.claim, check.rerun = "the node answers with the configured management credentials", rerun
+		return managementReadError(check, err)
 	})
 }
 
-func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials, confirmationError func(error) error) (workstation.Config, contextSaveReport, error) {
+// prepareContextWithCredentials observes every selected node. confirmationError
+// explains a failed observation; the check it receives names the node's
+// address and where that address came from.
+func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials, confirmationError func(managementCheck, error) error) (workstation.Config, contextSaveReport, error) {
 	// Observe the configured endpoints without compiling host payloads or
 	// acquiring artifacts. Their target release is not known until this probe.
 	inv, err := readManagementInventory(opts.configInput)
@@ -325,17 +332,19 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		var hint string
 		_, overridden := opts.endpoints[node.Name]
 		configured := node.ManagementEndpoint()
+		saved := savedEndpoint(configPath, clusterName, node.Name)
+		check := managementCheck{address: opts.endpointSource, endpoint: endpoint, timeout: opts.timeout}
+		if !overridden {
+			check.address = addressBinding(saved, endpoint)
+		}
 		switch {
-		case !addressHintApplies(err):
+		case !addressHintApplies(err, check.address):
 		case !overridden && node.SystemRole == inventory.RoleWorker:
-			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, clusterName, node.Name))
+			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, saved)
 		case overridden && !configured.IsZero() && !configured.Equal(endpoint):
 			hint = "; " + movedHint(node.Name, configured, opts.configInput)
 		}
-		if managementVerificationTimedOut(err) {
-			err = fmt.Errorf("timed out after %s: %w; try to increase --timeout", opts.timeout, err)
-		}
-		return fmt.Errorf("verify node %s management endpoint %s: %w%s", node.Name, endpoint, confirmationError(err), hint)
+		return fmt.Errorf("verify node %s management endpoint %s: %w%s", node.Name, endpoint, confirmationError(check, err), hint)
 	}
 
 	observeStatus := opts.observeStatus
@@ -443,8 +452,13 @@ func contextEndpointStatus(ctx context.Context, endpoint inventory.HostPort) (*a
 
 // addressHintApplies reports a failure for which a stale-address hint is worth
 // offering; it does not establish that the node is unreachable, which
-// transport.ClassifyManagementEvidence owns.
-func addressHintApplies(err error) bool {
+// transport.ClassifyManagementEvidence owns. Another authority's certificate at
+// a bound address came from the node, so no address hint helps; at any other
+// address it may have come from something else, and the hint stays.
+func addressHintApplies(err error, address managementAddress) bool {
+	if address == addressBound && transport.ClassifyManagementEvidence(err, nil, nil) == transport.ManagementAuthorityMismatch {
+		return false
+	}
 	return managementVerificationTimedOut(err) || grpcstatus.Code(err) == codes.Unavailable
 }
 
@@ -572,11 +586,11 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 		if path := strings.TrimSpace(opts.contextPath); path != "" {
 			rerun += " --context-file " + shellQuote(path)
 		}
-		if managementVerificationTimedOut(err) {
-			err = fmt.Errorf("%w; try to increase --timeout", err)
+		check := managementCheck{
+			claim:   "the node answers at the proposed address with the saved management credentials",
+			address: addressUnverified, endpoint: endpoint, rerun: rerun, timeout: opts.timeout,
 		}
-		return fmt.Errorf("verify proposed address %s: %w; check the address and node reachability, then rerun %s", endpoint,
-			managementReadError("the node answers at the proposed address with the saved management credentials", err), rerun)
+		return fmt.Errorf("verify proposed address %s: %w", endpoint, managementReadError(check, err))
 	}
 	if err := verifyPlannedStatus(target, status); err != nil {
 		return fmt.Errorf("verify proposed address %s: %w", endpoint, err)

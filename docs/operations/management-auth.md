@@ -74,10 +74,19 @@ configuration or applying a generation cannot make that change.
    reject the new certificates as not yet valid. Correct the node's time source
    and rerun. If preflight reports `could not confirm the node accepts the
    replacement authority` or `could not confirm the node uses trusted-network
-   management`, check the management address and reachability, then rerun the
-   command shown in the message. If the trusted-network check adds `the node
-   did not answer`, the node is down or still booting; rerun once `katlctl node
-   status` shows it up.
+   management`, follow the next step the message gives. If it adds `the node
+   did not answer`, the node is down or still booting at its saved address;
+   rerun once `katlctl node status` shows it up. If it adds `the node did not
+   answer at ADDRESS`, the saved context does not record that address for the
+   node, so check that `management.address` is right, then rerun. If the
+   endpoint presented a certificate from another authority, an earlier
+   enable-mtls attempt may have left the node on trial: rerun with that
+   attempt's secrets file, or wait for its trial window to end, when the node
+   returns to trusted-network by itself. If the node already committed to mTLS,
+   use the mTLS ClusterConfig and secrets that attempt wrote. When the saved
+   context does not record the address, the message first asks you to check
+   that it is the node's management address. Otherwise check the address and
+   node reachability, then rerun the command shown in the message.
 
 2. Back up the secrets file as soon as the command reports its path. By default
    the command creates or reuses `management-secrets.yaml` beside `cluster.yaml`.

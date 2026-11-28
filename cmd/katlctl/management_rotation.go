@@ -131,7 +131,7 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		for _, node := range nodes {
 			if _, err := checkManagementCredential(ctx, node, client, oldInfo.Fingerprint, opts.timeout); err != nil {
 				return fmt.Errorf("%s at %s: %w; keep %s, check the endpoint and rerun the same command", node.name, node.endpoint,
-					managementTrustChangeError("the node accepts the configured authority", trustPreviousAuthority, err), outputPath)
+					managementTrustChangeError(managementCheck{claim: "the node accepts the configured authority"}, trustPreviousAuthority, err), outputPath)
 			}
 		}
 		fmt.Fprintf(stdout, "Management identity for %s already uses %s on %d node(s)\n", source.Metadata.Name, oldInfo.Fingerprint, len(nodes))
@@ -166,7 +166,7 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		status, err := runManagementRotationSSH(ctx, *node, opts, true)
 		if err != nil {
 			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s and rerun the same command", node.name,
-				managementTrustChangeError("the node is ready to rotate its management identity", trustOldAuthority, err), outputPath)
+				managementTrustChangeError(managementCheck{claim: "the node is ready to rotate its management identity"}, trustOldAuthority, err), outputPath)
 		}
 		node.machineID, node.request.ExpectedMachineID = status.MachineID, status.MachineID
 	}
@@ -178,7 +178,7 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		fmt.Fprintf(stderr, "Rotating management identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
 			return fmt.Errorf("rotate %s: %w; keep %s and rerun the same command", node.name,
-				managementTrustChangeError("the replacement was installed", trustOldAuthority, err), outputPath)
+				managementTrustChangeError(managementCheck{claim: "the replacement was installed"}, trustOldAuthority, err), outputPath)
 		}
 		if err := verifyRotatedManagement(ctx, node, newClient, nextInfo.Fingerprint, oldProbe, opts.timeout); err != nil {
 			return fmt.Errorf("verify %s: %w; keep %s and rerun with the same --output", node.name, err, outputPath)
@@ -405,7 +405,7 @@ func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts man
 func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next managementidentity.ClientCredentials, authority string, oldProbe func() (managementidentity.CertificateKey, error), timeout time.Duration) error {
 	status, err := waitManagementCredential(ctx, node, next, authority, timeout)
 	if err != nil {
-		return managementTrustChangeError("the node accepts the replacement authority", trustOldAuthority, err)
+		return managementTrustChangeError(managementCheck{claim: "the node accepts the replacement authority"}, trustOldAuthority, err)
 	}
 	if status.GetManagement().GetServedClientTrust() != nil {
 		return nil
@@ -415,13 +415,13 @@ func verifyRotatedManagement(ctx context.Context, node managementRotationNode, n
 	// refusal of a fresh credential signed by the old authority.
 	probe, err := oldProbe()
 	if err != nil {
-		return managementTrustChangeError("the node stopped trusting the old authority", trustOldAuthority, err)
+		return managementTrustChangeError(managementCheck{claim: "the node stopped trusting the old authority"}, trustOldAuthority, err)
 	}
 	if err := verifyOldManagementAuthorityRejected(ctx, node, next.CACertificate, probe, min(timeout, 5*time.Second)); err != nil {
 		return err
 	}
 	if _, err := checkManagementCredential(ctx, node, next, authority, min(timeout, 5*time.Second)); err != nil {
-		return managementTrustChangeError("the node still accepts the replacement authority", trustOldAuthority, err)
+		return managementTrustChangeError(managementCheck{claim: "the node still accepts the replacement authority"}, trustOldAuthority, err)
 	}
 	return nil
 }
@@ -443,7 +443,7 @@ func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRo
 	creds, unknownAuthority := transport.ObserveUnknownClientAuthority(requestCtx, config, certificate)
 	conn, err := dialKatlcAgentWithTransport(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint.String(), creds)
 	if err != nil {
-		return managementTrustChangeError("the node stopped trusting the old authority", trustOldAuthority, err)
+		return managementTrustChangeError(managementCheck{claim: "the node stopped trusting the old authority"}, trustOldAuthority, err)
 	}
 	defer conn.Close()
 	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
@@ -456,7 +456,7 @@ func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRo
 		}
 		return fmt.Errorf("old authority still has management access; check the agent's client CA trust")
 	default:
-		return managementTrustChangeError("the node stopped trusting the old authority", trustOldAuthority, err)
+		return managementTrustChangeError(managementCheck{claim: "the node stopped trusting the old authority"}, trustOldAuthority, err)
 	}
 }
 

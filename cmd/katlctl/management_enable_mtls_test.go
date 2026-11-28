@@ -464,10 +464,22 @@ func TestEnableMTLSMovesClusterAndRerunsAsNoOp(t *testing.T) {
 
 func TestEnableMTLSPreflightChangesNothing(t *testing.T) {
 	for name, tc := range map[string]struct {
+		// saved saves a context first, which binds each node's address.
+		saved        bool
 		fault        func(*trialNode)
 		want, refuse []string
 	}{
-		"unreachable":       {fault: func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() }, want: []string{"cp-2 at", "could not confirm the node uses trusted-network management: the node did not answer; retry once 'katlctl node status' shows it up", "check the management address and node reachability"}, refuse: []string{"may still trust"}},
+		"unreachable": {
+			fault:  func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() },
+			want:   []string{"cp-2 at", "could not confirm the node uses trusted-network management: the node did not answer at 192.0.2.12:9443", "check that 192.0.2.12:9443 is the node's management address"},
+			refuse: []string{"may still trust", "reachability", "node status"},
+		},
+		"unreachable at saved address": {
+			saved:  true,
+			fault:  func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() },
+			want:   []string{"cp-2 at", "could not confirm the node uses trusted-network management: the node did not answer:", "retry once 'katlctl node status' shows it up"},
+			refuse: []string{"may still trust", "reachability", "check that"},
+		},
 		"older node":        {fault: func(n *trialNode) { n.legacy = true }, want: []string{"cp-2: the installed KatlOS release cannot move management trust", "upgrade the node with `katlctl node upgrade`, then rerun"}},
 		"missing node time": {fault: func(n *trialNode) { n.omitNodeTime = true }, want: []string{"management status did not report a valid node time", "upgrade the node with `katlctl node upgrade`, then rerun"}},
 		"clock behind":      {fault: func(n *trialNode) { n.clockOffset = -6 * time.Minute }, want: []string{"cp-2's clock is 6m0s behind", "NTP"}},
@@ -476,6 +488,11 @@ func TestEnableMTLSPreflightChangesNothing(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			world := newEnableMTLSWorld(t, "cp-1", "cp-2")
+			if tc.saved {
+				if err := run(t.Context(), []string{"context", "save", "--config", world.configPath}, io.Discard, io.Discard); err != nil {
+					t.Fatal(err)
+				}
+			}
 			tc.fault(world.nodes[1])
 			before, err := os.ReadFile(world.configPath)
 			if err != nil {
@@ -623,7 +640,7 @@ func TestEnableMTLSRefusesUnclassifiedTransport(t *testing.T) {
 	}
 
 	_, _, err = world.enable()
-	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust its previous management authority") || !strings.Contains(err.Error(), "check the management address and node reachability") {
+	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust its previous management authority") || !strings.Contains(err.Error(), "check the address and node reachability") {
 		t.Fatalf("enable-mtls = %v, want transport classification guidance", err)
 	}
 	if strings.Contains(err.Error(), "different management authority") || strings.Contains(err.Error(), "node name") {
@@ -1223,14 +1240,27 @@ func TestContextVerificationHandshakeFailure(t *testing.T) {
 				node := world.nodes[0]
 				var handshakeError string
 				// An HTTP answer is not evidence of another authority, so
-				// only an untrusted certificate names one.
-				trustClause := "the node may still trust"
-				unsafeText := []string{"managementAuthentication: trusted-network", "restore the installed authority"}
+				// only an untrusted certificate names one and its remedy.
+				// At the saved address the certificate came from the node,
+				// so it gets no address advice or rerun. At the proposed
+				// address it may have come from anything, so the address is
+				// checked before the remedy applies.
+				const remedy = "restore the installed authority"
+				want := map[string][]string{
+					"save":   {"the node may still trust", remedy},
+					"rebind": {"the endpoint at 192.0.2.91:9443 presented a certificate the configured authority did not sign", "check that 192.0.2.91:9443 is the node's management address; if it is, ", remedy},
+				}
+				unsafeText := map[string][]string{
+					"save":   {"managementAuthentication: trusted-network", "reachability", "rerun", "check that"},
+					"rebind": {"managementAuthentication: trusted-network", "reachability", "rerun", "the node may still trust"},
+				}
 				switch failure {
 				case "HTTP response":
 					handshakeError = "first record does not look like a TLS handshake"
-					unsafeText = append(unsafeText, trustClause)
-					trustClause = ""
+					for _, command := range []string{"save", "rebind"} {
+						want[command] = []string{"check the address and node reachability, then rerun katlctl context"}
+						unsafeText[command] = []string{"managementAuthentication: trusted-network", "may still trust", "presented a certificate", remedy}
+					}
 					dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 						return node.dialWithOptions(ctx, endpoint, grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 							client, server := net.Pipe()
@@ -1269,12 +1299,12 @@ func TestContextVerificationHandshakeFailure(t *testing.T) {
 					if err == nil {
 						t.Fatalf("%s accepted the endpoint", args[1])
 					}
-					for _, want := range []string{handshakeError, "could not confirm", trustClause, "rerun katlctl context " + args[1]} {
+					for _, want := range append([]string{handshakeError, "could not confirm"}, want[args[1]]...) {
 						if !strings.Contains(err.Error(), want) {
 							t.Errorf("%s error = %v, missing %q", args[1], err, want)
 						}
 					}
-					for _, unsafe := range unsafeText {
+					for _, unsafe := range unsafeText[args[1]] {
 						if strings.Contains(err.Error(), unsafe) {
 							t.Errorf("%s error = %v, contains %q", args[1], err, unsafe)
 						}

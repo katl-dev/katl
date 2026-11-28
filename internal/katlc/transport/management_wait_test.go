@@ -502,7 +502,7 @@ func TestManagementReadinessPreservesRPCBudget(t *testing.T) {
 		defer cancel()
 		attempts := 0
 
-		err := awaitManagementEndpoint(ctx, io.Discard, "cp-1", "unused", func(*peer.Peer) error {
+		err := awaitManagementEndpoint(ctx, io.Discard, "cp-1", "unused", true, func(*peer.Peer) error {
 			attempts++
 			if attempts == 1 {
 				return grpcstatus.Error(codes.Unavailable, "connect: connection refused")
