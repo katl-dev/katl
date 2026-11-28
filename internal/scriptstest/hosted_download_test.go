@@ -561,7 +561,16 @@ func (w downloadWorld) run(t *testing.T, plan []string, args ...string) (string,
 	writeArtifact(t, w.dir, "plan", strings.Join(plan, "\n")+"\n")
 	cmd := exec.Command(filepath.Join(repoRoot(t), ".github", "scripts", "hosted-download"), args...)
 	cmd.Dir = w.dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = w.env()
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
+}
+
+// env is the environment of a job in run 42 that downloads from the world.
+func (w downloadWorld) env(extra ...string) []string {
+	return append(append(os.Environ(),
 		"PATH="+filepath.Join(w.dir, "bin")+":"+os.Getenv("PATH"),
 		"GITHUB_ACTIONS=true",
 		"GITHUB_REPOSITORY=katl-dev/katl",
@@ -570,11 +579,7 @@ func (w downloadWorld) run(t *testing.T, plan []string, args ...string) (string,
 		"KATL_DOWNLOAD_ATTEMPT_SECONDS=1",
 		"KATL_DOWNLOAD_KILL_AFTER_SECONDS=1",
 		"KATL_DOWNLOAD_BACKOFF_SECONDS=0",
-	)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return stderr.String(), err
+	), extra...)
 }
 
 func (w downloadWorld) calls(t *testing.T) string {
@@ -820,6 +825,91 @@ func TestHostedDownloadSelection(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestReleaseExtensionDownloads runs the release workflow's this-run
+// extension downloads against the real hosted-download, with the inventory
+// katl-release prints, so each bundle it names must be selectable from a
+// run's artifact listing and no other artifact is fetched.
+func TestReleaseExtensionDownloads(t *testing.T) {
+	workstationtest.Tool(t, "unzip")
+	workstationtest.Tool(t, "jq")
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	inventory, err := exec.Command(buildCommand(t, t.TempDir(), "katl-release"), "extension-bundles", commit).Output()
+	if err != nil {
+		t.Fatalf("extension-bundles: %v", err)
+	}
+	var parsed struct{ Bundles []struct{ Name string } }
+	if err := json.Unmarshal(inventory, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Bundles) < 2 {
+		t.Fatalf("inventory %s names fewer than two bundles; the test needs several", inventory)
+	}
+	var bundles []fakeArtifact
+	for i, bundle := range parsed.Bundles {
+		bundles = append(bundles, fakeArtifact{ID: 10 + i, Name: bundle.Name, Files: map[string]string{"payload": bundle.Name}})
+	}
+	// Another commit's bundle of the same flavour.
+	other := fakeArtifact{ID: 90, Name: strings.Replace(bundles[0].Name, commit, strings.Repeat("f", 40), 1), Files: map[string]string{"payload": "other"}}
+
+	workflow, _ := readReleaseWorkflow(t)
+	steps := map[string]string{}
+	for job, name := range map[string]string{
+		"publish-candidate": "Download candidate extension publication inputs",
+		"publish":           "Download final extension publication inputs",
+	} {
+		for _, step := range workflow.Jobs[job].Steps {
+			if step.Name == name {
+				steps[job] = strings.ReplaceAll(step.Run, ".github/scripts/hosted-download", filepath.Join(repoRoot(t), ".github", "scripts", "hosted-download"))
+			}
+		}
+		if steps[job] == "" {
+			t.Fatalf("%s has no step %q", job, name)
+		}
+	}
+
+	for job, script := range steps {
+		t.Run(job, func(t *testing.T) {
+			t.Run("delivers every bundle", func(t *testing.T) {
+				w := newDownloadWorld(t, 42, append([]fakeArtifact{other}, bundles...)...)
+				writeArtifact(t, w.dir, "plan", strings.Repeat("ok\n", len(bundles)))
+				out, err := runStepIn(w, script, "EXTENSION_BUNDLES="+string(inventory), "RECORDED=", "BUILD_RUN=42")
+				if err != nil {
+					t.Fatalf("download failed: %v\n%s", err, out)
+				}
+				want := map[string]string{}
+				for _, bundle := range bundles {
+					want[bundle.Name+"/payload"] = bundle.Name
+				}
+				w.delivered(t, "artifacts", want)
+				if n := w.fetches(t); n != len(bundles) {
+					t.Errorf("fetched %d archives; want one per inventory bundle", n)
+				}
+			})
+
+			t.Run("fails when a bundle is missing", func(t *testing.T) {
+				w := newDownloadWorld(t, 42, other, bundles[0])
+				writeArtifact(t, w.dir, "plan", strings.Repeat("ok\n", len(bundles)))
+				out, err := runStepIn(w, script, "EXTENSION_BUNDLES="+string(inventory), "RECORDED=", "BUILD_RUN=42")
+				if err == nil {
+					t.Fatalf("download succeeded without %s:\n%s", bundles[1].Name, out)
+				}
+				if _, err := os.Stat(filepath.Join(w.dir, "artifacts", bundles[1].Name)); !os.IsNotExist(err) {
+					t.Errorf("missing bundle left a destination: %v", err)
+				}
+			})
+		})
+	}
+}
+
+// runStepIn runs a workflow step's script in the world as a job's default
+// bash shell does.
+func runStepIn(w downloadWorld, script string, env ...string) ([]byte, error) {
+	cmd := exec.Command("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script)
+	cmd.Dir = w.dir
+	cmd.Env = w.env(env...)
+	return cmd.CombinedOutput()
 }
 
 // TestHostedDownloadByID covers --id, which binds a download to one artifact

@@ -522,7 +522,7 @@ func TestReleaseDecisionCommit(t *testing.T) {
 			if err := os.Mkdir(scripts, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			const inventory = `{"pattern":"inputs-example","bundles":[{"flavour":"example","name":"inputs-example"}]}`
+			const inventory = `{"bundles":[{"flavour":"example","name":"inputs-example"}]}`
 			stub := `#!/bin/sh
 case "$*" in
   'next --retry try again')

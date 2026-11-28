@@ -298,7 +298,7 @@ jobs:
             exit 1
           fi
       # A resume downloads by the IDs candidate-artifacts bound to the recorded
-      # build attempt; otherwise the inventory pattern selects this run's.
+      # build attempt; otherwise each inventory name selects this run's.
       - name: Download candidate extension publication inputs
         timeout-minutes: 20
         env:
@@ -307,7 +307,10 @@ jobs:
           BUILD_RUN: ${{ needs.decide.outputs.build-run }}
         run: |
           if [[ -z "$RECORDED" ]]; then
-            .github/scripts/hosted-download artifacts "$(jq -r .pattern <<< "$EXTENSION_BUNDLES")" artifacts
+            jq -er '.bundles[].name' <<< "$EXTENSION_BUNDLES" |
+            while IFS= read -r name; do
+              .github/scripts/hosted-download artifact "$name" "artifacts/$name"
+            done
             exit 0
           fi
           jq -r '.bundles[] | [.flavour, .name] | @tsv' <<< "$EXTENSION_BUNDLES" |
@@ -421,7 +424,11 @@ jobs:
         timeout-minutes: 20
         env:
           GH_TOKEN: ${{ github.token }}
-        run: .github/scripts/hosted-download artifacts "$(jq -r .pattern <<< "$EXTENSION_BUNDLES")" artifacts
+        run: |
+          jq -er '.bundles[].name' <<< "$EXTENSION_BUNDLES" |
+          while IFS= read -r name; do
+            .github/scripts/hosted-download artifact "$name" "artifacts/$name"
+          done
       - *check-extensions
       - name: Draft the final release
         timeout-minutes: 7
