@@ -334,6 +334,17 @@ numbers to find the bundle and both flavours' extension inputs. This
 command prints their artifact IDs as JSON. If the bundle has expired, push
 a commit to the release branch to qualify the next candidate.
 
+### `extension-bundles`
+
+```sh
+scripts/katl-release extension-bundles "$GITHUB_SHA"
+```
+
+Supply the full source commit SHA. The command prints JSON with a
+`bundles` array containing the flavour and artifact name for each set of
+extension publication inputs. The `pattern` field matches those names for
+the GitHub Actions download step.
+
 ## Version grammar
 
 These commands let scripts use the one owner of the

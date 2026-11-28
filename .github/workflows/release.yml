@@ -42,6 +42,7 @@ jobs:
       build-attempt: ${{ steps.decision.outputs.build-attempt }}
       digest: ${{ steps.decision.outputs.digest }}
       attempt: ${{ steps.decision.outputs.attempt }}
+      extension-bundles: ${{ steps.decision.outputs.extension-bundles }}
     steps:
       - &checkout
         uses: actions/checkout@v7
@@ -73,9 +74,11 @@ jobs:
           if [[ -n "$reason" ]]; then
             printf 'Retry reason: %s\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
           fi
+          extensions="$(scripts/katl-release extension-bundles "$commit")"
           delimiter="$(cat /proc/sys/kernel/random/uuid)"
           {
             jq -r 'to_entries[] | select(.key | IN("action", "state", "version", "commit", "candidate", "build_run", "build_attempt", "digest")) | "\(.key | gsub("_"; "-"))=\(.value)"' <<< "$decision"
+            printf 'extension-bundles=%s\n' "$extensions"
             printf 'attempt=%s\nreason<<%s\n%s\n%s\n' "$GITHUB_RUN_ATTEMPT" "$delimiter" "$reason" "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
@@ -240,6 +243,7 @@ jobs:
       VERSION: ${{ needs.decide.outputs.version }}
       COMMIT: ${{ needs.decide.outputs.commit }}
       DIGEST: ${{ needs.decide.outputs.digest || needs.qualify.outputs.digest }}
+      EXTENSION_BUNDLES: ${{ needs.decide.outputs.extension-bundles }}
     steps:
       - *attempt-guard
       - *checkout
@@ -264,7 +268,8 @@ jobs:
           BUILD_ATTEMPT: ${{ needs.decide.outputs.build-attempt }}
         run: |
           artifacts="$(scripts/katl-release candidate-artifacts "$VERSION" "$COMMIT" "$BUILD_RUN" "$BUILD_ATTEMPT")"
-          jq -r '"bundle=\(.bundle)\nstandard=\(.standard)\nlts=\(.lts)"' <<< "$artifacts" >> "$GITHUB_OUTPUT"
+          jq -r '"bundle=\(.bundle)"' <<< "$artifacts" >> "$GITHUB_OUTPUT"
+          echo "extensions=$(jq -c 'del(.bundle)' <<< "$artifacts")" >> "$GITHUB_OUTPUT"
       - name: Download the candidate bundle
         if: steps.recorded.outputs.bundle == ''
         timeout-minutes: 20
@@ -292,37 +297,34 @@ jobs:
             echo "The downloaded bundle differs from the qualified bundle. Check the recorded build artifacts."
             exit 1
           fi
+      # A resume downloads by the IDs candidate-artifacts bound to the recorded
+      # build attempt; otherwise each inventory name selects this run's.
       - name: Download candidate extension publication inputs
-        if: steps.recorded.outputs.bundle == ''
-        timeout-minutes: 20
+        timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
-          BUNDLES: katl-extension-bundles-*-${{ github.sha }}
-        run: .github/scripts/hosted-download artifacts "$BUNDLES" artifacts
-      - name: Download recorded standard extension publication inputs
-        if: steps.recorded.outputs.bundle != ''
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ github.token }}
-          INPUTS: katl-extension-bundles-standard-${{ needs.decide.outputs.commit }}
-          INPUTS_ID: ${{ steps.recorded.outputs.standard }}
+          RECORDED: ${{ steps.recorded.outputs.extensions }}
           BUILD_RUN: ${{ needs.decide.outputs.build-run }}
-        run: .github/scripts/hosted-download --id "$INPUTS_ID" artifact "$INPUTS" "artifacts/$INPUTS" "$BUILD_RUN"
-      - name: Download recorded LTS extension publication inputs
-        if: steps.recorded.outputs.bundle != ''
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ github.token }}
-          INPUTS: katl-extension-bundles-lts-${{ needs.decide.outputs.commit }}
-          INPUTS_ID: ${{ steps.recorded.outputs.lts }}
-          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
-        run: .github/scripts/hosted-download --id "$INPUTS_ID" artifact "$INPUTS" "artifacts/$INPUTS" "$BUILD_RUN"
+        run: |
+          if [[ -z "$RECORDED" ]]; then
+            jq -er '.bundles[].name' <<< "$EXTENSION_BUNDLES" |
+            while IFS= read -r name; do
+              .github/scripts/hosted-download artifact "$name" "artifacts/$name"
+            done
+            exit 0
+          fi
+          jq -r '.bundles[] | [.flavour, .name] | @tsv' <<< "$EXTENSION_BUNDLES" |
+          while IFS=$'\t' read -r flavour name; do
+            id="$(jq -er --arg flavour "$flavour" '.[$flavour]' <<< "$RECORDED")"
+            .github/scripts/hosted-download --id "$id" artifact "$name" "artifacts/$name" "$BUILD_RUN"
+          done
       - &check-extensions
         name: Compare extension inputs with the bundle
         timeout-minutes: 5
         run: |
-          for flavour in standard lts; do
-            directory="artifacts/katl-extension-bundles-${flavour}-${COMMIT}"
+          jq -r '.bundles[] | [.flavour, .name] | @tsv' <<< "$EXTENSION_BUNDLES" |
+          while IFS=$'\t' read -r flavour name; do
+            directory="artifacts/$name"
             go run ./cmd/katl-mkosi-artifacts match-release-extensions dist "$flavour" \
               "$directory/release-extensions.json" "$directory/extension-bundles"
           done
@@ -341,8 +343,9 @@ jobs:
         name: Publish qualified extension bundles
         timeout-minutes: 5
         run: |
-          for flavour in standard lts; do
-            directory="artifacts/katl-extension-bundles-${flavour}-${COMMIT}"
+          jq -r '.bundles[].name' <<< "$EXTENSION_BUNDLES" |
+          while IFS= read -r name; do
+            directory="artifacts/$name"
             go run ./cmd/katl-mkosi-artifacts publish-release-extensions \
               "$directory/release-extensions.json" "$directory/extension-bundles"
           done
@@ -359,7 +362,7 @@ jobs:
     runs-on: ubuntu-24.04
     # GitHub starts this budget when the job is assigned a runner, after the
     # release environment's approval, so the approval wait is not counted here.
-    timeout-minutes: 90
+    timeout-minutes: 110
     environment: release
     permissions:
       contents: write
@@ -372,6 +375,7 @@ jobs:
       VERSION: ${{ needs.decide.outputs.version }}
       COMMIT: ${{ needs.decide.outputs.commit }}
       DIGEST: ${{ needs.qualify.outputs.digest }}
+      EXTENSION_BUNDLES: ${{ needs.decide.outputs.extension-bundles }}
     steps:
       - *attempt-guard
       - *checkout
@@ -410,15 +414,21 @@ jobs:
       - name: Confirm the bytes qualified by Production VM
         timeout-minutes: 2
         run: |
-          scripts/katl-release equivalent dist \
-            "standard=evidence/katl-qualified-standard-$COMMIT/SHA256SUMS" \
-            "lts=evidence/katl-qualified-lts-$COMMIT/SHA256SUMS"
+          records="$(jq -r '.bundles[].flavour' <<< "$EXTENSION_BUNDLES")"
+          evidence=()
+          while IFS= read -r flavour; do
+            evidence+=("$flavour=evidence/katl-qualified-$flavour-$COMMIT/SHA256SUMS")
+          done <<< "$records"
+          scripts/katl-release equivalent dist "${evidence[@]}"
       - name: Download final extension publication inputs
-        timeout-minutes: 20
+        timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
-          BUNDLES: katl-extension-bundles-*-${{ github.sha }}
-        run: .github/scripts/hosted-download artifacts "$BUNDLES" artifacts
+        run: |
+          jq -er '.bundles[].name' <<< "$EXTENSION_BUNDLES" |
+          while IFS= read -r name; do
+            .github/scripts/hosted-download artifact "$name" "artifacts/$name"
+          done
       - *check-extensions
       - name: Draft the final release
         timeout-minutes: 7

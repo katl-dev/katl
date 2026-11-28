@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       flavour:
-        description: Kernel flavour to build (standard or lts)
+        description: Kernel flavour to build
         type: string
         required: true
       version:
@@ -46,20 +46,9 @@ jobs:
     outputs:
       mkosi-version: ${{ steps.mkosi-version.outputs.version }}
       extensions: ${{ steps.extensions.outputs.extensions }}
+      extension-bundle: ${{ steps.extension-bundle.outputs.name }}
 
     steps:
-      - name: Validate flavour
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          case "$KATL_FLAVOUR" in
-            standard | lts) ;;
-            *)
-              echo "unsupported flavour: $KATL_FLAVOUR" >&2
-              exit 1
-              ;;
-          esac
-
       - name: Check out repository
         timeout-minutes: 2
         uses: actions/checkout@v7
@@ -69,6 +58,19 @@ jobs:
       - name: Set up Go
         timeout-minutes: 2
         uses: ./.github/actions/setup-go
+
+      - &resolve-extension-bundle
+        name: Resolve extension bundle for the selected flavour
+        id: extension-bundle
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          inventory="$(scripts/katl-release extension-bundles "$GITHUB_SHA")"
+          if ! name="$(jq -er --arg flavour "$KATL_FLAVOUR" '.bundles[] | select(.flavour == $flavour) | .name' <<< "$inventory")"; then
+            echo "Unsupported flavour: $KATL_FLAVOUR" >&2
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Restore image build caches
         uses: ./.github/actions/image-caches
@@ -150,18 +152,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Validate flavour
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          case "$KATL_FLAVOUR" in
-            standard | lts) ;;
-            *)
-              echo "unsupported flavour: $KATL_FLAVOUR" >&2
-              exit 1
-              ;;
-          esac
-
       - name: Check out repository
         timeout-minutes: 2
         uses: actions/checkout@v7
@@ -171,6 +161,7 @@ jobs:
       - name: Set up Go
         timeout-minutes: 2
         uses: ./.github/actions/setup-go
+      - *resolve-extension-bundle
 
       - name: Restore image build caches
         uses: ./.github/actions/image-caches
@@ -231,18 +222,6 @@ jobs:
         extension: ${{ fromJSON(needs.runtime.outputs.extensions) }}
 
     steps:
-      - name: Validate flavour
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          case "$KATL_FLAVOUR" in
-            standard | lts) ;;
-            *)
-              echo "unsupported flavour: $KATL_FLAVOUR" >&2
-              exit 1
-              ;;
-          esac
-
       - uses: actions/checkout@v7
         timeout-minutes: 2
         with:
@@ -288,18 +267,6 @@ jobs:
       extension-bundles: ${{ steps.names.outputs.extension-bundles }}
 
     steps:
-      - name: Validate flavour
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          case "$KATL_FLAVOUR" in
-            standard | lts) ;;
-            *)
-              echo "unsupported flavour: $KATL_FLAVOUR" >&2
-              exit 1
-              ;;
-          esac
-
       - name: Check out repository
         timeout-minutes: 2
         uses: actions/checkout@v7
@@ -427,9 +394,11 @@ jobs:
         timeout-minutes: 2
         id: names
         shell: bash
+        env:
+          EXTENSION_BUNDLE: ${{ needs.runtime.outputs.extension-bundle }}
         run: |
           echo "artifact=katl-assembled-${KATL_FLAVOUR}-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "extension-bundles=katl-extension-bundles-${KATL_FLAVOUR}-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "extension-bundles=$EXTENSION_BUNDLE" >> "$GITHUB_OUTPUT"
 
       - name: Upload GitHub Actions artifact
         timeout-minutes: 6

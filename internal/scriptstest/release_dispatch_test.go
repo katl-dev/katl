@@ -495,6 +495,9 @@ func TestReleaseDecisionCommit(t *testing.T) {
 	if got, want := job.Outputs["build-run"], "${{ steps.decision.outputs.build-run }}"; got != want {
 		t.Errorf("build-run job output = %q, want %q", got, want)
 	}
+	if got, want := job.Outputs["extension-bundles"], "${{ steps.decision.outputs.extension-bundles }}"; got != want {
+		t.Errorf("extension-bundles job output = %q, want %q", got, want)
+	}
 	var decision workflowStep
 	for _, step := range job.Steps {
 		if step.ID == "decision" {
@@ -519,7 +522,16 @@ func TestReleaseDecisionCommit(t *testing.T) {
 			if err := os.Mkdir(scripts, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			stub := "#!/bin/sh\n[ \"$*\" = 'next --retry try again' ] || exit 5\nprintf '{\"action\":\"resume-candidate\",\"commit\":\"%s\",\"build_run\":42}\n' \"$DECIDED_COMMIT\"\n"
+			const inventory = `{"bundles":[{"flavour":"example","name":"inputs-example"}]}`
+			stub := `#!/bin/sh
+case "$*" in
+  'next --retry try again')
+    printf '{"action":"resume-candidate","commit":"%s","build_run":42}\n' "$DECIDED_COMMIT" ;;
+  "extension-bundles $DECIDED_COMMIT")
+    printf '%s\n' '` + inventory + `' ;;
+  *) exit 5 ;;
+esac
+`
 			if err := os.WriteFile(filepath.Join(scripts, "katl-release"), []byte(stub), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -538,6 +550,9 @@ func TestReleaseDecisionCommit(t *testing.T) {
 				lines := strings.Split(string(written), "\n")
 				if !slices.Contains(lines, "commit="+tc.commit) || !slices.Contains(lines, "build-run=42") {
 					t.Errorf("decision outputs = %q, want the bound commit and build-run=42", written)
+				}
+				if !slices.Contains(lines, "extension-bundles="+inventory) {
+					t.Errorf("decision outputs = %q, missing extension inventory", written)
 				}
 				return
 			}
