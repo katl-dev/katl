@@ -532,6 +532,53 @@ func TestArmTrialAfterLivePromotion(t *testing.T) {
 	}
 }
 
+// A second live promotion in one boot runs while the default is no longer the
+// running generation. Each published default carries its own loader entry,
+// and the previous known-good stays the generation the node runs, so booting
+// it from the menu is a known-good fallback.
+func TestSecondLivePromotion(t *testing.T) {
+	w := newMoveWorld(t)
+	assertPublished := func(step, defaultID, previousID string) {
+		t.Helper()
+		got := w.selection()
+		if got.DefaultGenerationID != defaultID || got.DefaultBootEntry != "loader/entries/katl-"+defaultID+".conf" || w.efi.entries.Default != "katl-"+defaultID+".conf" {
+			t.Fatalf("%s: selection = %+v, EFI = %+v, want default %s with its own entry", step, got, w.efi.entries, defaultID)
+		}
+		wantEntry := ""
+		if previousID != "" {
+			wantEntry = "loader/entries/katl-" + previousID + ".conf"
+		}
+		if got.PreviousKnownGoodGenerationID != previousID || got.PreviousKnownGoodBootEntry != wantEntry {
+			t.Fatalf("%s: previous known-good = %q %q, want %q %q", step, got.PreviousKnownGoodGenerationID, got.PreviousKnownGoodBootEntry, previousID, wantEntry)
+		}
+	}
+	assertPublished("running", "gen1", "")
+
+	if err := w.mover(nil).PromoteLive(LivePromotionRequest{GenerationID: "gen3", OperationID: "apply-6", Reason: "validated live"}); err != nil {
+		t.Fatalf("first PromoteLive() error = %v", err)
+	}
+	assertPublished("first promotion", "gen3", "gen1")
+
+	if err := w.mover(nil).PromoteLive(LivePromotionRequest{GenerationID: "gen2", OperationID: "apply-7", Reason: "validated live"}); err != nil {
+		t.Fatalf("second PromoteLive() error = %v", err)
+	}
+	assertPublished("second promotion", "gen2", "gen1")
+
+	// The boot menu boots gen1 although EFI names gen2.
+	activate(t, w, "b-2", "gen1")
+	result, err := w.mover(nil).ConfirmBoot("boot health passed")
+	if err != nil {
+		t.Fatalf("ConfirmBoot() error = %v", err)
+	}
+	if !result.Promoted {
+		t.Fatalf("ConfirmBoot() = %#v, want gen1 promoted", result)
+	}
+	assertPublished("menu boot of gen1", "gen1", "")
+	if got := w.selection(); got.BootedGenerationID != "gen1" || got.BootedBootEntry != "loader/entries/katl-gen1.conf" || got.RecoveryRequired {
+		t.Fatalf("selection = %+v, want gen1 booted with its own entry and no recovery", got)
+	}
+}
+
 // The trial authority decides whether a trial blocks a mutation, and the
 // candidate's own boot gets no reboot advice: a reboot would end its trial.
 func TestMutationBaseDuringTrial(t *testing.T) {

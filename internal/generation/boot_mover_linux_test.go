@@ -1330,18 +1330,20 @@ func TestBootMoveReadRefusals(t *testing.T) {
 	})
 }
 
-// A persistent selection interrupted before its EFI write leaves firmware on
-// the prior default. Boot health completes the move, then publishes the
-// running generation as a healthy boot of any known-good generation does,
-// with that generation's own loader entry.
-func TestConfirmBootAfterInterruptedSelection(t *testing.T) {
+// An unresolved move intent publishes a default with no queued target, and
+// firmware still boots the running generation. When that default differs from the
+// running generation, boot health completes the move and then publishes the
+// running generation, as a healthy boot of any known-good generation does,
+// with that generation's own loader entry. Select never writes this shape: it
+// always queues its generation as the target.
+func TestConfirmBootWithUnqueuedDefault(t *testing.T) {
 	for _, tc := range []struct {
 		name, selected string
 		revision       uint64
 	}{
 		// The completed move publishes revision 5, then health returns the
 		// default to the running gen1.
-		{name: "another generation", selected: "gen3", revision: 6},
+		{name: "other default", selected: "gen3", revision: 6},
 		{name: "running default", selected: "gen1", revision: 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

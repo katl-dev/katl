@@ -1502,8 +1502,12 @@ func armedAt(status GenerationStatus, operationID string, fallback time.Time) ti
 // PromoteLive makes a live-validated candidate the default without a reboot.
 // A retry with the same operation ID repeats the published promotion.
 func (m *BootMover) PromoteLive(request LivePromotionRequest) error {
-	_, err := m.moveWith(func(selection BootSelectionRecord, _ *bootMoveIntent) (*bootMoveRequest, error) {
-		return livePromotion(m.root, selection, request)
+	running, err := m.runningGenerationID()
+	if err != nil {
+		return err
+	}
+	_, err = m.moveWith(func(selection BootSelectionRecord, _ *bootMoveIntent) (*bootMoveRequest, error) {
+		return livePromotion(m.root, selection, running, request)
 	})
 	return err
 }

@@ -326,7 +326,7 @@ func assertReaderOnlyKeepsIntent(t *testing.T, ctx context.Context, result Resul
 	if err != nil {
 		return err
 	}
-	intent := string(plantedBootMoveIntent(t, "vmtest-reader-only-intent", bootID, current))
+	intent := string(plantedBootMoveIntent(t, "vmtest-reader-only-intent", bootID, current, current))
 	if _, err := observe("printf '%s' '" + intent + "' > " + intentPath + " && sync"); err != nil {
 		return fmt.Errorf("plant boot-move intent: %w", err)
 	}

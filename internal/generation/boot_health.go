@@ -116,8 +116,10 @@ type LivePromotionRequest struct {
 }
 
 // livePromotion builds the move that makes a live-validated candidate the
-// default. A repeat of a published promotion builds nothing.
-func livePromotion(root string, selection BootSelectionRecord, request LivePromotionRequest) (*bootMoveRequest, error) {
+// default. The previous known-good is the running generation, which still
+// boots from the menu after any number of live promotions in this boot. A
+// repeat of a published promotion builds nothing.
+func livePromotion(root string, selection BootSelectionRecord, running string, request LivePromotionRequest) (*bootMoveRequest, error) {
 	id := request.GenerationID
 	if id == "" || request.OperationID == "" {
 		return nil, fmt.Errorf("live promotion requires a generation and an operation ID")
@@ -145,15 +147,23 @@ func livePromotion(root string, selection BootSelectionRecord, request LivePromo
 		CommitState: CommitStateCommitted, BootState: BootStateGood, HealthState: HealthStateHealthy,
 		UnavailableReason: new(status.UnavailableReason),
 	}}
-	previousID, previousEntry := selection.DefaultGenerationID, selection.DefaultBootEntry
+	previousID := selection.DefaultGenerationID
 	if previousID != "" && previousID != id {
 		superseded, err := supersededStatus(root, previousID, id, request.Now)
 		if err != nil {
 			return nil, err
 		}
 		changes = append(changes, superseded...)
-		selection.PreviousKnownGoodGenerationID = previousID
-		selection.PreviousKnownGoodBootEntry = previousEntry
+		knownGood, knownGoodEntry := previousID, selection.DefaultBootEntry
+		if running != id {
+			runningSpec, _, err := ReadGeneration(root, running)
+			if err != nil {
+				return nil, err
+			}
+			knownGood, knownGoodEntry = running, runningSpec.Boot.LoaderEntryPath
+		}
+		selection.PreviousKnownGoodGenerationID = knownGood
+		selection.PreviousKnownGoodBootEntry = knownGoodEntry
 	}
 	selection.OneShot = false
 	selection.DefaultGenerationID, selection.DefaultBootEntry = id, entry
