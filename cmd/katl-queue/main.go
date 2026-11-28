@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -22,6 +23,8 @@ import (
 	"syscall"
 	"text/tabwriter"
 	"time"
+
+	"github.com/katl-dev/katl/internal/checkoutcheck"
 )
 
 const usage = `usage: katl-queue <command> [arguments]
@@ -84,15 +87,46 @@ is no verdict. A timeout only ends the client invocation.
 // operator and only needs a failing exit status.
 var errConflict = errors.New("conflict")
 
+const checkoutChecked = "KATL_QUEUE_CHECKOUT_CHECKED"
+
 func main() {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "--run-from-checkout" {
+		args = args[1:]
+		if err := runFromCheckout(args); err != nil {
+			os.Exit(commandStatus(err, os.Stderr))
+		}
+	}
+
 	signals := []os.Signal{os.Interrupt}
-	if len(os.Args) > 1 && (os.Args[1] == "watchd" || os.Args[1] == "wait") {
+	if len(args) > 0 && (args[0] == "watchd" || args[0] == "wait") {
 		signals = append(signals, syscall.SIGTERM)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), signals...)
-	code := commandStatus(run(ctx, os.Args[1:], os.Stdout, os.Stderr), os.Stderr)
+	if os.Getenv(checkoutChecked) != "1" {
+		checkoutcheck.Warn(ctx, os.Stderr, checkoutcheck.Queue)
+	}
+	code := commandStatus(run(ctx, args, os.Stdout, os.Stderr), os.Stderr)
 	stop()
 	os.Exit(code)
+}
+
+// Home Manager uses this entry point for interactive invocations. If the
+// checkout has a launcher, replace the process to preserve signals and status.
+func runFromCheckout(args []string) error {
+	root := checkoutcheck.Root(context.Background())
+	if root == "" {
+		return nil
+	}
+	script := filepath.Join(root, "scripts", string(checkoutcheck.Queue))
+	if _, err := os.Stat(script); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	// Warn before launching because the checkout may predate this check.
+	checkoutcheck.Warn(context.Background(), os.Stderr, checkoutcheck.Queue)
+	return syscall.Exec(script, append([]string{script}, args...), append(os.Environ(), checkoutChecked+"=1"))
 }
 
 func commandStatus(err error, stderr io.Writer) int {

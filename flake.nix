@@ -74,6 +74,10 @@
           pname = "katl-dev-evidence";
           env.CGO_ENABLED = "1";
           subPackages = [ "cmd/katl-dev-evidence" ];
+          nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+          postInstall = ''
+            wrapProgram "$out/bin/katl-dev-evidence" --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.git ]}"
+          '';
           meta.mainProgram = "katl-dev-evidence";
         };
       katlctlFor =

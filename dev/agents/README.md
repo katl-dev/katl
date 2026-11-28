@@ -76,6 +76,11 @@ Read `AGENTS.md` and `dev/agents`, and run `katl-queue`, `katl-release`,
 commits behind; refresh it or use a fresh detached worktree under
 `worktrees/` before acting.
 
+Start or resume a session by fetching `origin/main` and running
+`scripts/katl-release check-checkout`. The check compares the checkout with
+the fetched ref and reports the commit gap and any differences in the rules
+or tool sources. The three tools also check their own sources when invoked.
+
 Create every worktree under `worktrees/`. Never keep a worktree, or anything
 else needed for more than a day, under `/tmp`, including the session
 scratchpad. Hosts age out files under `/tmp`: a typical systemd-tmpfiles rule

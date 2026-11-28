@@ -9,6 +9,15 @@ selection, qualification, and publication through GitHub Actions.
 
 Run `scripts/katl-release --help` for command syntax.
 
+### `check-checkout`
+
+Run `scripts/katl-release check-checkout` at session start after
+`git fetch origin`. The check uses the local `origin/main` ref. It warns on
+standard error if that ref is missing or the checkout is behind. A stale
+checkout warning gives the number of missing commits and reports differences
+in `AGENTS.md`, `dev/agents`, and each tool's sources. The check exits
+successfully when it prints a warning.
+
 ## Cut a release branch
 
 ### `cut`
