@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,13 +31,19 @@ func TestReleaseLifecycle(t *testing.T) {
 	if previous == "" {
 		t.Fatal("KATL_VMTEST_PREVIOUS_RELEASE_DIR is required for release qualification")
 	}
+	// Each flavour's directory holds what katl-mkosi-artifacts
+	// compose-release-extensions wrote for that flavour's install image.
+	extensions := os.Getenv("KATL_VMTEST_RELEASE_EXTENSIONS_DIR")
+	if extensions == "" {
+		t.Fatal("KATL_VMTEST_RELEASE_EXTENSIONS_DIR is required for release qualification")
+	}
 	for _, journey := range []struct {
 		name, source string
 		upgrade      bool
 	}{
 		{"install", candidate, false}, {"upgrade", previous, true},
 	} {
-		t.Run(journey.name, func(t *testing.T) { runReleaseLifecycle(t, journey.source, candidate, journey.upgrade) })
+		t.Run(journey.name, func(t *testing.T) { runReleaseLifecycle(t, journey.source, candidate, extensions, journey.upgrade) })
 	}
 }
 
@@ -51,7 +58,7 @@ func releaseFile(t *testing.T, dir, pattern string) string {
 
 // runReleaseLifecycle journeys must never skip: katl-vmtest-ran checks only the
 // outcome of the top-level test, so a skipped subtest would pass the gate.
-func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
+func runReleaseLifecycle(t *testing.T, source, candidate, extensionsDir string, upgrade bool) {
 	t.Helper()
 	world := RequireWorld(t)
 	suffix, imagePrefix := "", "katlos-"
@@ -79,6 +86,13 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 	public, err := os.ReadFile(key + ".pub")
 	if err != nil {
 		t.Fatal(err)
+	}
+	var extensions releaseExtensions
+	if !upgrade {
+		composed := filepath.Join(extensionsDir, first(os.Getenv("KATL_FLAVOUR"), "standard"))
+		if extensions, err = readReleaseExtensions(composed); err != nil {
+			t.Fatalf("compose the candidate's release extensions first with `go run ./cmd/katl-mkosi-artifacts compose-release-extensions %s %s` (see docs/development/releases.md): %v", image, composed, err)
+		}
 	}
 	indexPath := filepath.Join(t.TempDir(), "artifacts.json")
 	if err := writeJSON(indexPath, mkosiArtifactIndex{Artifacts: []mkosiArtifact{{Kind: "katlos-install-image", Path: image, MetadataPath: image + ".json"}}}); err != nil {
@@ -250,6 +264,17 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			return fmt.Errorf("machine identity changed: %v", err)
 		}
 		cli("final-status", "node", "status", "cp-1", "--output", "json")
+		if !upgrade {
+			// The installed runtime is the candidate's, so its release
+			// extensions must load on it. This runs last because the merge
+			// and the loaded modules stay until the node stops.
+			run := func(command string, stdin io.Reader) (string, error) {
+				return releaseSSHInput(ctx, 5*time.Minute, key, lease.IPAddress, command, stdin)
+			}
+			if err := loadReleaseExtensions(extensions, run, t.Logf); err != nil {
+				return err
+			}
+		}
 		return nil
 	}}}
 	run.Config.Installer.VM = vm
@@ -268,8 +293,14 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 }
 
 func releaseSSH(ctx context.Context, key, address, command string) (string, error) {
-	probe, cancel := context.WithTimeout(ctx, 15*time.Second)
+	return releaseSSHInput(ctx, 15*time.Second, key, address, command, nil)
+}
+
+func releaseSSHInput(ctx context.Context, timeout time.Duration, key, address, command string, stdin io.Reader) (string, error) {
+	probe, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := exec.CommandContext(probe, "ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-i", key, "root@"+address, command).Output()
+	ssh := exec.CommandContext(probe, "ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-i", key, "root@"+address, command)
+	ssh.Stdin = stdin
+	output, err := ssh.Output()
 	return strings.TrimSpace(string(output)), err
 }

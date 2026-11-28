@@ -72,7 +72,9 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	case "assemble-release-extensions":
 		return runAssembleReleaseExtensions(args, stdout, stderr, cfg)
 	case "verify-release-extensions":
-		return runVerifyReleaseExtensions(args)
+		return elevateReleaseVerification(args, stdout, stderr)
+	case "compose-release-extensions":
+		return runComposeReleaseExtensions(args, stdout, stderr, cfg)
 	case "build-kernel-extension":
 		return runBuildKernelExtension(args, stdout, stderr, cfg)
 	case "match-release-extensions":
@@ -192,7 +194,8 @@ const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts inventory-release-extensions
        katl-mkosi-artifacts build-release-extensions [NAME...]
        katl-mkosi-artifacts assemble-release-extensions
-       katl-mkosi-artifacts verify-release-extensions MANIFEST RUNTIME OCI_LAYOUT
+       katl-mkosi-artifacts verify-release-extensions MANIFEST RUNTIME OCI_LAYOUT [OUTPUT]
+       katl-mkosi-artifacts compose-release-extensions INSTALL_IMAGE OUTPUT
        katl-mkosi-artifacts build-kernel-extension NAME
        katl-mkosi-artifacts match-release-extensions BUNDLE FLAVOUR MANIFEST OCI_LAYOUT
        katl-mkosi-artifacts publish-release-extensions MANIFEST OCI_LAYOUT

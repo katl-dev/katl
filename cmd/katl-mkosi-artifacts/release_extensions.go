@@ -225,7 +225,11 @@ func resolveReleaseExtension(release extensionrelease.Manifest, repository, layo
 }
 
 func verifyReleaseImages(release, runtime, layout string, stdout, stderr io.Writer) error {
-	args := []string{"verify-release-extensions", release, runtime, layout}
+	return elevateReleaseVerification([]string{release, runtime, layout}, stdout, stderr)
+}
+
+func elevateReleaseVerification(operands []string, stdout, stderr io.Writer) error {
+	args := append([]string{"verify-release-extensions"}, operands...)
 	if os.Geteuid() == 0 {
 		return runVerifyReleaseExtensions(args[1:])
 	}
@@ -242,8 +246,15 @@ func verifyReleaseImages(release, runtime, layout string, stdout, stderr io.Writ
 }
 
 func runVerifyReleaseExtensions(args []string) (resultErr error) {
-	if len(args) != 3 {
-		return fmt.Errorf("verify-release-extensions requires MANIFEST RUNTIME OCI_LAYOUT")
+	if len(args) != 3 && len(args) != 4 {
+		return fmt.Errorf("verify-release-extensions requires MANIFEST RUNTIME OCI_LAYOUT [OUTPUT]")
+	}
+	// OUTPUT receives the verified composition so that a booted runtime can
+	// merge exactly these images: each sysext under its activation name and
+	// the module index layer that makes their modules resolvable.
+	output := ""
+	if len(args) == 4 {
+		output = args[3]
 	}
 	release, err := readExtensionRelease(args[0])
 	if err != nil {
@@ -282,7 +293,10 @@ func runVerifyReleaseExtensions(args []string) (resultErr error) {
 				continue
 			}
 			path := filepath.Join(work, resolved.Bundle.Name+"-"+payload.Descriptor.FileName)
-			if err := os.WriteFile(path, payload.Data, 0600); err != nil {
+			if output != "" {
+				path = filepath.Join(output, payload.Descriptor.FileName)
+			}
+			if err := writeNewFile(path, payload.Data); err != nil {
 				return err
 			}
 			bundle.Images = append(bundle.Images, kernelmodule.Image{
@@ -297,5 +311,25 @@ func runVerifyReleaseExtensions(args []string) (resultErr error) {
 	if err != nil {
 		return err
 	}
+	if output != "" {
+		data, err := os.ReadFile(prepared.Path)
+		if err == nil {
+			err = writeNewFile(filepath.Join(output, kernelmodule.IndexExtensionName+".raw"), data)
+		}
+		if err != nil {
+			return errors.Join(err, prepared.Close())
+		}
+	}
 	return prepared.Close()
+}
+
+// Verification may run elevated for an unprivileged caller, so its output
+// stays readable to that caller and never replaces an existing file.
+func writeNewFile(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(data)
+	return errors.Join(err, file.Close())
 }
