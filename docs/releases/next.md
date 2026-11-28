@@ -71,22 +71,3 @@ The reboot ends with `NODE rebooted successfully; health OK`, and
 if its selected boot entry is missing for another reason, such as disk damage.
 The boot-menu recovery above still returns such a node to service by booting
 the newest configuration that has an entry; it does not repair the damage.
-
-## Upgrade from 2026.11.5 or earlier through 2026.11.6
-
-A node on KatlOS 2026.11.5 or earlier upgrades in two steps. First run `katlctl node upgrade NODE --config cluster.yaml --version 2026.11.6`, then upgrade to this release. `katlctl node upgrade` refuses the direct upgrade and prints that command for the node, with the same `--config`, `--context` or `--endpoint` you used.
-
-An older `katlctl`, or an upgrade sent straight to the node, is not stopped. The node then writes its boot records in the format 2026.11.5 reads for as long as the old generation stays bootable, so a failed upgrade returns to it with management intact.
-
-An upgrade or next-boot apply that starts while the node runs a generation other than its default, for example after you chose one from the boot menu, is refused with `select the running generation first with 'katlctl node generations select <running> <node>'` unless the default generation has already run a release that owns boot state. Select the running generation, then retry.
-
-## Boot health changes
-
-- A failed first boot no longer marks the node recovery-required. The generation stays pending and unknown, no reboot follows, and apply stays refused until a boot of it is healthy. Fix the cause and run `katlctl node reboot`.
-- Only a boot trial reboots the node after a boot health failure. A failed boot of the default, a boot-menu generation, or a manual selection reports the failure and changes nothing. `katl-boot-recovery.service` names the running generation, the default, the next boot, and the next action in its journal.
-- A failed trial with no usable fallback stays on the failed generation, reports that recovery is required, and does not reboot. A healthy boot of that generation, or of a known-good generation chosen from the boot menu, clears the state; the generation that booted becomes the default.
-- `katl-boot-deadman.timer` is active only during a boot trial.
-
-## Finishing an interrupted first trial
-
-If power is lost inside the move that fails or promotes the first trial after upgrading from an earlier release, the node keeps a boot-move record that only this release completes. If the node comes back on the old generation, boot the new generation from the boot menu to finish the move. If the old generation already changed its boot records, the new generation discards the outdated move record when it next boots, and the old generation's decision stands.
