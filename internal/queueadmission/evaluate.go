@@ -303,12 +303,21 @@ func (e *evaluation) review(automation bool) {
 		return
 	}
 
-	// A match this switch does not name gates, so a new kind of match
-	// cannot admit a pull request without review.
+	// Only an approved record for this head counts as review. A match or
+	// verdict this switch does not name gates, so neither a new kind of
+	// match nor an unrecognised verdict can admit a pull request without
+	// review.
 	var r Reason
 	switch rec.Match {
 	case reviewrecord.Direct, reviewrecord.EquivalentPatch:
-		return
+		switch rec.Verdict {
+		case reviewrecord.Approved:
+			return
+		case reviewrecord.ChangesRequested:
+			// Reported above as changes-requested.
+			return
+		}
+		r = newReason(codeReviewMissing, fmt.Sprintf("review required (%s); the review record for this head has verdict %q, not %q", strings.Join(why, ", "), rec.Verdict, reviewrecord.Approved))
 	case reviewrecord.Stale:
 		r = newReason(codeReviewStale, "review required ("+strings.Join(why, ", ")+"); the review record is for an older head")
 	default:
