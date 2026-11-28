@@ -8,6 +8,17 @@
 let
   cfg = config.programs.katl-dev;
   queue = katl.packages.${pkgs.stdenv.hostPlatform.system}.katl-queue;
+  queueFromCheckout = pkgs.writeShellApplication {
+    name = "katl-queue";
+    runtimeInputs = [
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.go
+    ];
+    text = ''
+      exec ${lib.getExe queue} --run-from-checkout "$@"
+    '';
+  };
   evidence = katl.packages.${pkgs.stdenv.hostPlatform.system}.katl-dev-evidence;
   # katl-dev-evidence resolves its store under the passwd home, not
   # XDG_STATE_HOME, so the cleanup rules name that path rather than %S.
@@ -54,7 +65,7 @@ in
 
   config = lib.mkMerge [
     (lib.mkIf (cfg.enable || cfg.watcher.enable) {
-      home.packages = [ queue ];
+      home.packages = [ queueFromCheckout ];
     })
     (lib.mkIf cfg.enable {
       home.packages = devToolsFor pkgs;

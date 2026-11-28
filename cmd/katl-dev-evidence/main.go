@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+
+	"github.com/katl-dev/katl/internal/checkoutcheck"
 )
 
 const defaultBudget = 50 << 30
@@ -42,6 +45,7 @@ func main() {
 
 func run(args []string, out, diagnostics io.Writer, now time.Time) error {
 	return runWithStore(args, out, diagnostics, now, func() (*store, error) {
+		checkoutcheck.Warn(context.Background(), diagnostics, checkoutcheck.Evidence)
 		location, err := evidenceRoot()
 		if err != nil {
 			return nil, err

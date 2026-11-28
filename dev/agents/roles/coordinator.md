@@ -22,9 +22,12 @@ why the step runs for this change and whether it needs to run at all.
 
 ## Start or resume
 
-1. Fetch `origin/main`. If the checkout this session started in is behind
-   it, read the rules and run tools from a fresh worktree as the
-   [local state rules](../README.md#local-state) require.
+1. From the checkout where this session started, run `git fetch origin`
+   followed by `scripts/katl-release check-checkout`. If the check reports
+   that the checkout is behind, refresh it or read the rules and run tools
+   from a fresh detached worktree as the
+   [local state rules](../README.md#local-state) require. If the checkout
+   predates the check command, use a fresh detached worktree at `origin/main`.
 2. Read `state.md` under `${XDG_STATE_HOME:-$HOME/.local/state}/katl-dev` if it
    exists. On first use, create the [state and worktree directories](../README.md#local-state).
 3. Run `katl-queue watches` to recover registered waits. If the watcher is
