@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 type ManagedGeneration struct {
@@ -339,17 +341,12 @@ func removeEntries(root string, spec GenerationSpec) error {
 	for _, file := range entries {
 		name := file.Name()
 		if name == base+".conf" || (strings.HasPrefix(name, base+"+") && strings.HasSuffix(name, ".conf")) {
-			if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := persistedrecord.RemoveFile(filepath.Join(dir, name)); err != nil {
 				return err
 			}
 		}
 	}
-	handle, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer handle.Close()
-	return handle.Sync()
+	return nil
 }
 
 const slotReplaced = "OS slot has been replaced"

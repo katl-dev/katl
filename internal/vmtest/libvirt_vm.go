@@ -211,6 +211,89 @@ type LibvirtVMExecutor struct {
 	Preservation      *DomainPreservation
 	captureFailure    func(context.Context, uint32)
 	runVirsh          func(context.Context, ...string) (string, error)
+	// cycle is shared by copies of the executor. It is nil for executors
+	// whose domain cannot be power cycled.
+	cycle *domainCycle
+}
+
+// domainCycle records power cycles of a running domain, so that Run can tell a
+// requested hard power-off from the guest stopping on its own.
+type domainCycle struct {
+	mu        sync.Mutex
+	begun     int
+	cutting   bool
+	restarted chan struct{}
+}
+
+func newDomainCycle() *domainCycle {
+	return &domainCycle{restarted: make(chan struct{}, 1)}
+}
+
+func (c *domainCycle) count() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.begun
+}
+
+// interrupted reports whether a power cycle began after observed cycles had
+// begun, or is still between power-off and start. A domain state read before
+// that cannot show that the guest stopped by itself.
+func (c *domainCycle) interrupted(observed int) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cutting || c.begun != observed
+}
+
+func (c *domainCycle) restartedSignal() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
+	return c.restarted
+}
+
+func (c *domainCycle) begin() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.begun++
+	c.cutting = true
+}
+
+func (c *domainCycle) end(restarted bool) {
+	c.mu.Lock()
+	c.cutting = false
+	c.mu.Unlock()
+	if restarted {
+		select {
+		case c.restarted <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// powerCycle destroys the domain without a guest shutdown and starts it again
+// with the same disks and firmware variables. It returns the vsock CID of the
+// new boot, which libvirt may assign anew.
+func (e LibvirtVMExecutor) powerCycle(ctx context.Context) (uint32, error) {
+	if e.cycle == nil {
+		return 0, fmt.Errorf("libvirt domain %q cannot be power cycled", e.DomainName)
+	}
+	e.cycle.begin()
+	restarted := false
+	defer func() { e.cycle.end(restarted) }()
+	if err := e.virsh(ctx, "destroy", e.DomainName); err != nil {
+		return 0, fmt.Errorf("power off libvirt domain %q: %w", e.DomainName, err)
+	}
+	if err := e.virsh(ctx, "start", e.DomainName); err != nil {
+		return 0, fmt.Errorf("start libvirt domain %q after power off: %w", e.DomainName, err)
+	}
+	restarted = true
+	return e.liveGuestCID(ctx)
 }
 
 type DomainPreservation struct {
@@ -268,12 +351,21 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 		guestCID = cid
 		report(cid)
 	}
-	consoleCtx, stopConsole := context.WithCancel(ctx)
-	consoleDone, err := e.startConsoleCapture(consoleCtx, serial)
+	startConsole := func() (<-chan error, context.CancelFunc, error) {
+		consoleCtx, stop := context.WithCancel(ctx)
+		done, err := e.startConsoleCapture(consoleCtx, serial)
+		if err != nil {
+			stop()
+			return nil, nil, err
+		}
+		return done, stop, nil
+	}
+	consoleDone, stopConsole, err := startConsole()
 	if err != nil {
-		stopConsole()
 		return err
 	}
+	// The console session ends with the domain, so each power cycle needs a new one.
+	cyclesHandled := e.cycle.count()
 	defer func() {
 		stopConsole()
 		if consoleDone != nil {
@@ -290,10 +382,14 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
+		observedCycles := e.cycle.count()
 		state, err := e.virshOutput(ctx, "domstate", e.DomainName)
 		if err == nil {
 			switch strings.TrimSpace(state) {
 			case "shut off":
+				if e.cycle.interrupted(observedCycles) {
+					break
+				}
 				if consoleDone != nil {
 					select {
 					case <-consoleDone:
@@ -317,10 +413,28 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			if e.cycle.count() != cyclesHandled {
+				consoleDone = nil
+				continue
+			}
 			if err != nil {
 				return fmt.Errorf("libvirt console capture for %q exited: %w", e.DomainName, err)
 			}
 			consoleDone = nil
+		case <-e.cycle.restartedSignal():
+			stopConsole()
+			if consoleDone != nil {
+				select {
+				case <-consoleDone:
+				case <-time.After(e.cleanupTimeout()):
+				}
+			}
+			cyclesHandled = e.cycle.count()
+			stopConsole = func() {}
+			if consoleDone, stopConsole, err = startConsole(); err != nil {
+				stopConsole = func() {}
+				return err
+			}
 		case <-ticker.C:
 		}
 	}
@@ -531,6 +645,8 @@ type VMHandle struct {
 	notify        *notifyRecorder
 	// blockStats is nil when the executor cannot sample guest block I/O.
 	blockStats blockStatsSource
+	// cycler is nil when the executor cannot power cycle its domain.
+	cycler powerCycler
 }
 
 // notifyEvents returns what the guest's PID 1 has reported so far, in order.
@@ -678,6 +794,7 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 		notify:        recorder,
 	}
 	handle.blockStats, _ = executor.(blockStatsSource)
+	handle.cycler, _ = executor.(powerCycler)
 	// libvirt assigns auto CIDs when the domain starts. Consumers read the CID
 	// from the handle, so it must be known before the handle is returned.
 	_, reportsCID := executor.(interface{ reportsGuestCID() })
@@ -734,6 +851,29 @@ func (h *VMHandle) Wait() error {
 	h.waitMu.Lock()
 	defer h.waitMu.Unlock()
 	return h.waitErr
+}
+
+// powerCycler is implemented by executors that can cut power to their running
+// domain and start it again.
+type powerCycler interface {
+	powerCycle(context.Context) (uint32, error)
+}
+
+// PowerCycle cuts power to the running domain without a guest shutdown and
+// starts it again on the same disks and firmware variables. The handle then
+// describes the new boot, whose vsock CID libvirt may have assigned anew.
+func (h *VMHandle) PowerCycle(ctx context.Context) error {
+	if h.cycler == nil {
+		return errors.New("vmtest VM cannot be power cycled")
+	}
+	cid, err := h.cycler.powerCycle(ctx)
+	if err != nil {
+		return err
+	}
+	h.Plan.VSock.GuestCID = cid
+	h.Plan.VSock.Device = fmt.Sprintf("virtio-vsock,cid=%d", cid)
+	h.Result.VSock = h.Plan.VSock
+	return nil
 }
 
 func (h *VMHandle) StopSuccess() {
@@ -866,6 +1006,7 @@ func (r VMRunner) defaultVMExecutor(result Result, plan VMPlan, config VMConfig)
 		PreserveOnFailure: preserve,
 		PreserveNVRAM:     config.PreserveNVRAM,
 		Preservation:      preservation,
+		cycle:             newDomainCycle(),
 	}
 	if plan.LibvirtNetwork != "" || plan.VSock.Enabled {
 		executor.captureFailure = func(ctx context.Context, guestCID uint32) {

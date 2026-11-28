@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const bootRecoveryPath = "/run/katl/boot-health/pending"
@@ -58,7 +60,7 @@ func ArmBootRecovery(root string, generationID string) (bool, error) {
 			return fmt.Errorf("marshal boot recovery authorization: %w", err)
 		}
 		path := rootedPathUnchecked(root, bootRecoveryPath)
-		if err := writeFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		if err := persistedrecord.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
 			return fmt.Errorf("arm boot recovery: %w", err)
 		}
 		armed = true

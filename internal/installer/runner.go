@@ -17,6 +17,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/nodeidentity"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/imagemount"
@@ -957,23 +958,16 @@ func copyVerifiedComponent(source string, target string, component katlosimage.C
 		return fmt.Errorf("open %s component: %w", component.Name, err)
 	}
 	defer src.Close()
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("create %s target directory: %w", component.Name, err)
-	}
-	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("open %s target: %w", component.Name, err)
-	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(dst, io.TeeReader(src, hash))
-	closeErr := dst.Close()
-	if copyErr != nil {
-		return fmt.Errorf("copy %s component: %w", component.Name, copyErr)
+	// The UKI must be durable before the loader entry that names it is written.
+	if err := persistedrecord.WriteReaderAtomic(target, io.TeeReader(src, hash), 0o644); err != nil {
+		return fmt.Errorf("copy %s component: %w", component.Name, err)
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close %s target: %w", component.Name, closeErr)
+	copied, err := os.Stat(target)
+	if err != nil {
+		return fmt.Errorf("stat %s target: %w", component.Name, err)
 	}
-	if written != component.SizeBytes {
+	if written := copied.Size(); written != component.SizeBytes {
 		return fmt.Errorf("copy %s component wrote %d bytes, want %d", component.Name, written, component.SizeBytes)
 	}
 	got := hex.EncodeToString(hash.Sum(nil))
@@ -1139,10 +1133,7 @@ func writeInstalledManifest(targetRoot, generationID string, installManifest man
 		filepath.Join(filepath.Clean(targetRoot), "var/lib/katl/generations", generationID, "manifest.json"),
 	}
 	for _, target := range targets {
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("create install manifest parent: %w", err)
-		}
-		if err := os.WriteFile(target, append(data, '\n'), 0o644); err != nil {
+		if err := persistedrecord.WriteFileAtomic(target, append(data, '\n'), 0o644); err != nil {
 			return fmt.Errorf("write install manifest: %w", err)
 		}
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -201,76 +200,6 @@ func WriteEnvelopeNoReplace(path string, envelope Envelope, mode os.FileMode, di
 	return WriteFileNoReplace(path, data, mode, dirMode)
 }
 
-func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
-	if strings.TrimSpace(path) == "" {
-		return fmt.Errorf("persisted record path is required")
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create persisted record directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
-	if err != nil {
-		return fmt.Errorf("create persisted record temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write persisted record temp file: %w", err)
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod persisted record temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync persisted record temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close persisted record temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace persisted record: %w", err)
-	}
-	cleanup = false
-	return syncDir(dir)
-}
-
-func WriteFileNoReplace(path string, data []byte, mode os.FileMode, dirMode os.FileMode) error {
-	if strings.TrimSpace(path) == "" {
-		return fmt.Errorf("persisted record path is required")
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return fmt.Errorf("create persisted record directory: %w", err)
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("persisted record already exists: %s", path)
-		}
-		return fmt.Errorf("create persisted record: %w", err)
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("write persisted record: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("sync persisted record: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close persisted record: %w", err)
-	}
-	return syncDir(dir)
-}
-
 func strictDecode(data []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -282,18 +211,6 @@ func strictDecode(data []byte, target any) error {
 			return errors.New("multiple JSON values")
 		}
 		return err
-	}
-	return nil
-}
-
-func syncDir(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open persisted record directory: %w", err)
-	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil {
-		return fmt.Errorf("sync persisted record directory: %w", err)
 	}
 	return nil
 }

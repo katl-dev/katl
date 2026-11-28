@@ -9,6 +9,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 // A config render can leave a partial candidate when the agent stops. Before
@@ -66,7 +67,7 @@ func recoverInterruptedConfigApplies(root string, store operation.Store, now tim
 				return fmt.Errorf("remove interrupted candidate %s: %w", candidate, err)
 			}
 		}
-		if err := syncDirectory(filepath.Dir(dir)); err != nil {
+		if err := persistedrecord.SyncDir(filepath.Dir(dir)); err != nil {
 			return err
 		}
 		_, err = store.Update(id, "config-apply-interrupted-render-recovered", "config-apply-recovery", func(current operation.OperationRecord) (operation.OperationRecord, error) {

@@ -691,12 +691,18 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			t.Fatalf("fresh-bootstrap native kubelet input: %v", err)
 		}
 	}
-	if err := runPreCNIClusterApply(t, ctx, smoke, contextPath, addresses, kubeconfigPath, kubernetesBundle); err != nil {
+	// Power cuts run only in the bootstrap proof; the upgrade proof reuses this journey.
+	var powerCutNode *vmtest.RunningInstalledRuntimeNode
+	if !proveUpgrade {
+		powerCutNode = &cpNode
+	}
+	if err := runPreCNIClusterApply(t, ctx, smoke, contextPath, addresses, kubeconfigPath, kubernetesBundle, powerCutNode); err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("public configuration before CNI: %v", err)
 	}
+	nodes[0] = cpNode
 	// The pre-CNI journey reboots cp-1; later online steps must keep this boot.
 	if bootIDs, err = captureNodeBootIDs(ctx, nodes...); err != nil {
 		t.Fatalf("capture boot IDs after pre-CNI configuration: %v", err)
