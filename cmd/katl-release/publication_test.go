@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 )
 
 const fixturePayloadDigest = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -30,6 +31,7 @@ type publicationFixture struct {
 	readback map[string]any
 	created  int
 	onWrite  func(releaseRequest) error
+	patch    func(context.Context) error
 	writes   []releaseRequest
 	reads    []string
 }
@@ -74,7 +76,7 @@ func (f *publicationFixture) list(releases ...any) {
 	f.api.pages = map[string][]any{releaseListEndpoint: {other, releases}}
 }
 
-func (f *publicationFixture) call(_ context.Context, name string, args ...string) ([]byte, error) {
+func (f *publicationFixture) call(ctx context.Context, name string, args ...string) ([]byte, error) {
 	f.api.t.Helper()
 	if name != "gh" || len(args) < 2 {
 		f.api.t.Fatalf("unexpected command %s %v", name, args)
@@ -113,6 +115,9 @@ func (f *publicationFixture) call(_ context.Context, name string, args ...string
 		}
 	}
 	f.writes = append(f.writes, req)
+	if req.method == "PATCH" && f.patch != nil {
+		return nil, f.patch(ctx)
+	}
 	if f.onWrite != nil {
 		if err := f.onWrite(req); err != nil {
 			return nil, err
@@ -132,7 +137,7 @@ func (f *publicationFixture) run(action string) error {
 		f.reads = append(f.reads, endpoint)
 		return f.api.read(ctx, endpoint, paginate, accept)
 	}
-	return runPublication(context.Background(), []string{action, strings.TrimPrefix(f.tag, "v"), testCommit, f.dir},
+	return runPublication(f.api.t.Context(), []string{action, strings.TrimPrefix(f.tag, "v"), testCommit, f.dir},
 		io.Discard, r, f.call)
 }
 
@@ -362,6 +367,101 @@ func TestPublishReconcilesPatchFailure(t *testing.T) {
 			}
 			if tc.wantErr == "" && !slices.Contains(f.reads, repoPrefix+"releases/assets/11") {
 				t.Error("successful publication was never confirmed from its published bytes")
+			}
+		})
+	}
+}
+
+func TestPublishReconcilesPatchTimeout(t *testing.T) {
+	for _, landed := range []bool{true, false} {
+		name := "draft still pending"
+		if landed {
+			name = "already published"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := publicationWorld(t, "v2026.12.1", true)
+				f.list(f.readback)
+				f.patch = func(ctx context.Context) error {
+					if landed || len(f.writes) == 2 {
+						f.readback["draft"] = false
+					}
+					if len(f.writes) == 1 {
+						<-ctx.Done()
+						return ghExit("signal: killed")
+					}
+					return nil
+				}
+
+				requireReleaseError(t, f.run("publish"), "")
+				want := 2
+				if landed {
+					want = 1
+				}
+				if len(f.writes) != want || !slices.Contains(f.reads, repoPrefix+"releases/assets/11") {
+					t.Fatalf("writes = %v, reads = %v, want %d PATCH requests and the published checksums", f.writes, f.reads, want)
+				}
+			})
+		})
+	}
+}
+
+func TestPublishWithDifferentReleaseID(t *testing.T) {
+	for _, tc := range []struct {
+		name, wantErr     string
+		badChecksums      bool
+		staleDraftListing bool
+		omittedDraft      bool
+	}{
+		{name: "confirmed publication"},
+		{name: "draft omitted during reconciliation", omittedDraft: true},
+		{name: "failed confirmation", badChecksums: true, wantErr: "published SHA256SUMS"},
+		{name: "stale draft listing", staleDraftListing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := publicationWorld(t, "v2026.12.1", true)
+			draft := f.readback
+			published := maps.Clone(draft)
+			published["id"], published["draft"] = 43, false
+			f.list(draft)
+			f.api.responses[repoPrefix+"releases/43"] = published
+			if tc.badChecksums {
+				f.api.raw[repoPrefix+"releases/assets/11"][0] ^= 1
+			}
+			f.onWrite = func(req releaseRequest) error {
+				switch {
+				case req.method == "PATCH" && req.endpoint == repoPrefix+"releases/42":
+					f.list(published, draft)
+					if tc.omittedDraft {
+						f.list(published)
+					}
+					if tc.staleDraftListing {
+						changed := maps.Clone(draft)
+						changed["tag_name"] = "v2026.12.2"
+						f.api.responses[repoPrefix+"releases/42"] = changed
+					}
+					return ghExit("gh: Bad Gateway (HTTP 502)")
+				case req.method == "DELETE" && req.endpoint == repoPrefix+"releases/42":
+					if tc.badChecksums || tc.staleDraftListing || !slices.Contains(f.reads, repoPrefix+"releases/assets/11") {
+						t.Fatalf("deleted draft without confirming publication and draft identity: %v", f.reads)
+					}
+					delete(f.api.responses, req.endpoint)
+					f.list(published)
+				default:
+					t.Fatalf("unexpected write: %v", req)
+				}
+				return nil
+			}
+
+			requireReleaseError(t, f.run("publish"), tc.wantErr)
+			if _, draftExists := f.api.responses[repoPrefix+"releases/42"]; draftExists != (tc.badChecksums || tc.staleDraftListing) {
+				t.Fatalf("draft 42 still exists = %v", draftExists)
+			}
+			if !tc.badChecksums && !tc.staleDraftListing {
+				requireReleaseError(t, f.run("publish"), "")
+				if len(f.writes) != 2 {
+					t.Fatalf("writes = %v, want one PATCH and one DELETE across both runs", f.writes)
+				}
 			}
 		})
 	}
