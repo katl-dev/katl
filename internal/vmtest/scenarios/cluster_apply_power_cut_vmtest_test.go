@@ -13,6 +13,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"gopkg.in/yaml.v3"
 )
@@ -202,10 +203,14 @@ func assertPowerCutRecovery(ctx context.Context, katlctl katlctlRunner, dir, lab
 	if err != nil {
 		return "", err
 	}
+	envelope, err := persistedrecord.DecodeEnvelope(selectionData)
+	if err != nil {
+		return "", fmt.Errorf("%s: decode boot selection: %w", label, err)
+	}
 	var selection struct {
 		DefaultGenerationID string `json:"defaultGenerationID"`
 	}
-	if err := json.Unmarshal(selectionData, &selection); err != nil {
+	if err := json.Unmarshal(envelope.Payload, &selection); err != nil {
 		return "", fmt.Errorf("%s: decode boot selection: %w", label, err)
 	}
 	booted := match[1]
