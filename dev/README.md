@@ -9,6 +9,12 @@ and hand-offs.
 Check whether a PR fits the GitHub merge queue, follow its progress, diagnose
 removals, or plan queue work across a milestone. [katl-queue reference](../cmd/katl-queue/README.md)
 
+## `katl-issue`
+
+Check a proposed GitHub issue against existing issues before filing it. Use a
+write-capable GitHub CLI login to file issues and a read-capable login to run
+the report. [katl-issue reference](issue-intake.md)
+
 ## `katl-release`
 
 Prepare a release tag, retrieve its final Actions bundle, or check release

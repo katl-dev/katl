@@ -48,10 +48,10 @@ case "$1 $2" in
         else
             cat "$REVIEW_FIXTURES/before"
         fi ;;
-    "pr comment")
-        test "$3 $4 $6 $7" = "950 --body --repo github.com/katl-dev/katl" || exit 2
+    "api --method")
+        test "$3 $4 $5 $6" = "POST repos/katl-dev/katl/issues/950/comments --input -" || exit 2
         test ! -e "$REVIEW_FIXTURES/posted" || exit 2
-        printf '%%s' "$5" > "$REVIEW_FIXTURES/posted" ;;
+        cat > "$REVIEW_FIXTURES/posted" ;;
     *) exit 2 ;;
 esac
 `, sh, testReviewHead, testReviewBase, testReviewHead, testReviewBase)
@@ -78,7 +78,11 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != wantComment {
-		t.Errorf("GitHub comment = %q, want %q", raw, wantComment)
+	var postedComment struct{ Body string }
+	if err := json.Unmarshal(raw, &postedComment); err != nil {
+		t.Fatal(err)
+	}
+	if postedComment.Body != wantComment {
+		t.Errorf("GitHub comment = %q, want %q", postedComment.Body, wantComment)
 	}
 }

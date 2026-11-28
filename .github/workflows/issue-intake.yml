@@ -1,0 +1,36 @@
+name: Issue intake
+
+on:
+  schedule:
+    - cron: "27 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  report:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Report duplicate candidates and unaudited recurrences
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          scripts/katl-issue report | tee "$RUNNER_TEMP/issue-intake.txt"
+          {
+            printf '~~~text\n'
+            cat "$RUNNER_TEMP/issue-intake.txt"
+            printf '~~~\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash

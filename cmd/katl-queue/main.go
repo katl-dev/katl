@@ -63,6 +63,7 @@ Commands:
   cache [--apply] [--json]
                     report Actions cache usage against .github/cache-policy.json;
                     --apply deletes the entries outside policy
+  issue             check and file issues through scripts/katl-issue
 
 plan and autopilot only report unless given --apply, which needs --milestone.
 prune-runs only reports unless given --apply.
@@ -117,6 +118,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
+	if command == "issue" {
+		return issueCommand(ctx, args, stdout, stderr)
+	}
 	flags := flag.NewFlagSet("katl-queue "+command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	if command == "ci-cost" {
@@ -280,11 +284,15 @@ func flagWasSet(flags *flag.FlagSet, name string) bool {
 func validPRNumber(n int) bool { return n >= 1 && n <= math.MaxInt32 }
 
 func parseNumbers(args []string) ([]int, error) {
+	return parseGitHubNumbers(args, "pull request")
+}
+
+func parseGitHubNumbers(args []string, kind string) ([]int, error) {
 	var numbers []int
 	for _, arg := range args {
-		n, err := strconv.Atoi(strings.TrimPrefix(arg, "#"))
+		n, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(arg), "#"))
 		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("%q is not a pull request number", arg)
+			return nil, fmt.Errorf("%q is not a %s number", arg, kind)
 		}
 		numbers = append(numbers, n)
 	}

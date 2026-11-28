@@ -263,6 +263,12 @@ remain exceed a family's budget or the policy's alert threshold. The
 [CI health workflow](../../.github/workflows/ci-health.yml) runs it daily with
 `--apply`.
 
+### `issue`
+
+Use `scripts/katl-issue new` to check a draft before filing it and
+`scripts/katl-issue report` to review existing issues. Follow the
+[issue intake command reference](../../dev/issue-intake.md).
+
 ### `help`
 
 Run `katl-queue --help` or `katl-queue help` for the command list. Run
