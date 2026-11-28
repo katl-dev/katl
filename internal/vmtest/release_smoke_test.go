@@ -360,71 +360,18 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 // katlctl: a failed upgrade returns to a manageable old release, and a
 // promoted one can roll back to it.
 func TestReleaseNonReaderUpgrade(t *testing.T) {
-	if !DefaultOptions().Enabled {
-		t.Skip("run with scripts/vmtest-run")
-	}
-	candidate := os.Getenv("KATL_VMTEST_RELEASE_DIR")
-	if candidate == "" {
-		t.Skip("set KATL_VMTEST_RELEASE_DIR to a verified production bundle")
-	}
-	source := os.Getenv("KATL_VMTEST_NONREADER_RELEASE_DIR")
-	if source == "" {
-		t.Fatal("KATL_VMTEST_NONREADER_RELEASE_DIR is required: a verified bundle of a release before " + generation.FirstBootMoveReader.String())
-	}
-	_, metadata := releaseImage(t, source, katlosimage.RoleInstall, "install")
-	if generation.ReadsBootMoves(metadata.Version) {
-		t.Fatalf("KATL_VMTEST_NONREADER_RELEASE_DIR holds %s, which reads boot-move records", metadata.Version)
-	}
-	target, targetMetadata := releaseImage(t, candidate, katlosimage.RoleUpgrade, "upgrade")
+	source, metadata, target, targetMetadata := nonReaderReleases(t)
 
-	runReleaseJourney(t, "release-nonreader-upgrade", source, releaseKatlctl(t, candidate), func(j *releaseJourney) error {
-		config := filepath.Join(j.result.RunDir, "katlctl", "enrollment", "cluster.yaml")
-		flavour := first(targetMetadata.Flavour, "standard")
-		original, err := j.selection()
+	runReleaseJourney(t, "release-nonreader-upgrade", source, releaseKatlctl(t, os.Getenv("KATL_VMTEST_RELEASE_DIR")), func(j *releaseJourney) error {
+		gen0, err := nonReaderFailedUpgrade(j, metadata, target, targetMetadata)
 		if err != nil {
-			return err
-		}
-		gen0 := original.BootedGenerationID
-
-		// A failed upgrade returns to the old release with management intact.
-		fault := filepath.Join(filepath.Dir(config), "cluster.fault.yaml")
-		if err := writeNonReaderFaultConfig(j.installed, j.address, fault); err != nil {
-			return err
-		}
-		failed, err := runKatlctlOutcome(t, j.ctx, j.result, j.katlctl, "upgrade-failed",
-			"node", "upgrade", "cp-1", "--config", fault, "--apply-config", "--artifact", target, "--flavour", flavour, "--timeout", "15m")
-		if err == nil || !strings.Contains(string(failed)+err.Error(), "upgrade result: failed; health failed") {
-			return fmt.Errorf("faulted upgrade = %v:\n%s\nwant 'upgrade result: failed; health failed'", err, failed)
-		}
-		if err := j.healthy(metadata); err != nil {
-			return fmt.Errorf("after the failed upgrade: %w", err)
-		}
-		if back, err := j.selection(); err != nil || back.BootedGenerationID != gen0 {
-			return fmt.Errorf("failed upgrade did not return to generation %s: %v", gen0, err)
-		}
-		if err := assertNonReaderRecords(j); err != nil {
-			return err
-		}
-		j.cli("failed-status", "node", "status", "cp-1")
-		j.cli("failed-generations", "node", "generations", "list", "cp-1")
-		failedBoot, err := j.bootID()
-		if err != nil {
-			return err
-		}
-		j.cli("failed-reboot", "node", "reboot", "cp-1", "--timeout", "5m")
-		if err := j.healthy(metadata); err != nil {
-			return err
-		}
-		if next, err := j.bootID(); err != nil || next == failedBoot {
-			return fmt.Errorf("reboot after the failed upgrade did not change boot identity: %v", err)
-		}
-		if err := assertNonReaderRecords(j); err != nil {
 			return err
 		}
 
 		// A healthy upgrade promotes, and the old release stays a rollback
 		// target.
-		j.cli("upgrade", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", flavour, "--timeout", "15m")
+		config := filepath.Join(j.result.RunDir, "katlctl", "enrollment", "cluster.yaml")
+		j.cli("upgrade", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", first(targetMetadata.Flavour, "standard"), "--timeout", "15m")
 		if err := j.healthy(targetMetadata); err != nil {
 			return err
 		}
@@ -446,6 +393,105 @@ func TestReleaseNonReaderUpgrade(t *testing.T) {
 		j.cli("final-status", "node", "status", "cp-1")
 		return nil
 	})
+}
+
+// TestReleaseNonReaderUpgradeOldClient drives the same direct upgrade with the
+// old release's own katlctl, which knows nothing of boot-move records. Only the
+// node-side writer can keep the fallback readable on this path, so a failed
+// upgrade must still return to a manageable old release, and a healthy one
+// must still promote.
+func TestReleaseNonReaderUpgradeOldClient(t *testing.T) {
+	source, metadata, target, targetMetadata := nonReaderReleases(t)
+
+	runReleaseJourney(t, "release-nonreader-upgrade-old-client", source, releaseKatlctl(t, source), func(j *releaseJourney) error {
+		gen0, err := nonReaderFailedUpgrade(j, metadata, target, targetMetadata)
+		if err != nil {
+			return err
+		}
+
+		config := filepath.Join(j.result.RunDir, "katlctl", "enrollment", "cluster.yaml")
+		j.cli("upgrade", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", first(targetMetadata.Flavour, "standard"), "--timeout", "15m")
+		if err := j.healthy(targetMetadata); err != nil {
+			return err
+		}
+		if promoted, err := j.selection(); err != nil || promoted.BootedGenerationID == gen0 {
+			return fmt.Errorf("upgrade did not promote a new generation: %v", err)
+		}
+		return nil
+	})
+}
+
+// nonReaderReleases returns the non-reader source bundle and its install
+// metadata, and the candidate's upgrade image and metadata.
+func nonReaderReleases(t *testing.T) (source string, metadata katlosimage.ArtifactMetadata, target string, targetMetadata katlosimage.ArtifactMetadata) {
+	t.Helper()
+	if !DefaultOptions().Enabled {
+		t.Skip("run with scripts/vmtest-run")
+	}
+	candidate := os.Getenv("KATL_VMTEST_RELEASE_DIR")
+	if candidate == "" {
+		t.Skip("set KATL_VMTEST_RELEASE_DIR to a verified production bundle")
+	}
+	source = os.Getenv("KATL_VMTEST_NONREADER_RELEASE_DIR")
+	if source == "" {
+		t.Fatal("KATL_VMTEST_NONREADER_RELEASE_DIR is required: a verified bundle of a release before " + generation.FirstBootMoveReader.String())
+	}
+	_, metadata = releaseImage(t, source, katlosimage.RoleInstall, "install")
+	if generation.ReadsBootMoves(metadata.Version) {
+		t.Fatalf("KATL_VMTEST_NONREADER_RELEASE_DIR holds %s, which reads boot-move records", metadata.Version)
+	}
+	target, targetMetadata = releaseImage(t, candidate, katlosimage.RoleUpgrade, "upgrade")
+	return source, metadata, target, targetMetadata
+}
+
+// nonReaderFailedUpgrade runs a faulted direct upgrade with the journey's
+// katlctl and requires the node to report the failure and return to the old
+// release on its original generation, which it returns. The old release must
+// then read its records, stay manageable and reboot.
+func nonReaderFailedUpgrade(j *releaseJourney, metadata katlosimage.ArtifactMetadata, target string, targetMetadata katlosimage.ArtifactMetadata) (string, error) {
+	original, err := j.selection()
+	if err != nil {
+		return "", err
+	}
+	gen0 := original.BootedGenerationID
+
+	config := filepath.Join(j.result.RunDir, "katlctl", "enrollment", "cluster.yaml")
+	fault := filepath.Join(filepath.Dir(config), "cluster.fault.yaml")
+	if err := writeNonReaderFaultConfig(j.installed, j.address, fault); err != nil {
+		return "", err
+	}
+	failed, err := runKatlctlOutcome(j.t, j.ctx, j.result, j.katlctl, "upgrade-failed",
+		"node", "upgrade", "cp-1", "--config", fault, "--apply-config", "--artifact", target, "--flavour", first(targetMetadata.Flavour, "standard"), "--timeout", "15m")
+	if err == nil || !strings.Contains(string(failed)+err.Error(), "upgrade result: failed; health failed") {
+		return "", fmt.Errorf("faulted upgrade = %v:\n%s\nwant 'upgrade result: failed; health failed'", err, failed)
+	}
+	if err := j.healthy(metadata); err != nil {
+		return "", fmt.Errorf("after the failed upgrade: %w", err)
+	}
+	if back, err := j.selection(); err != nil || back.BootedGenerationID != gen0 {
+		return "", fmt.Errorf("failed upgrade did not return to generation %s: %v", gen0, err)
+	}
+	if err := assertNonReaderRecords(j); err != nil {
+		return "", err
+	}
+
+	j.cli("failed-status", "node", "status", "cp-1")
+	j.cli("failed-generations", "node", "generations", "list", "cp-1")
+	failedBoot, err := j.bootID()
+	if err != nil {
+		return "", err
+	}
+	j.cli("failed-reboot", "node", "reboot", "cp-1", "--timeout", "5m")
+	if err := j.healthy(metadata); err != nil {
+		return "", err
+	}
+	if next, err := j.bootID(); err != nil || next == failedBoot {
+		return "", fmt.Errorf("reboot after the failed upgrade did not change boot identity: %v", err)
+	}
+	if err := assertNonReaderRecords(j); err != nil {
+		return "", err
+	}
+	return gen0, nil
 }
 
 // assertNonReaderRecords checks, on a node running a release before the first
