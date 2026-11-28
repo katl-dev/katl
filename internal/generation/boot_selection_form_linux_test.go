@@ -273,8 +273,8 @@ func removeFile(t *testing.T, path string) {
 	}
 }
 
-// Every interruption of a move in the v1 form completes on retry, with at
-// most one reboot and a selection 2026.11.5 decodes.
+// Every interruption of a move in the v1 form completes on retry, rather than
+// being retired, with at most one reboot and a selection 2026.11.5 decodes.
 func TestLegacyFormMoveFaults(t *testing.T) {
 	for _, op := range []struct {
 		name  string
@@ -296,8 +296,14 @@ func TestLegacyFormMoveFaults(t *testing.T) {
 			writeBootHealthSelection(t, w.root, lowerSelection(w.selection()))
 			return w
 		},
+		// Select reports no result, so the run reconciles first to report the
+		// move a retry completes.
 		run: func(_ *moveWorld, m *BootMover) (bootMoveResult, error) {
-			return bootMoveResult{}, m.Select(context.Background(), SelectRequest{GenerationID: "gen3"})
+			result, err := m.reconcile()
+			if err != nil {
+				return result, err
+			}
+			return result, m.Select(context.Background(), SelectRequest{GenerationID: "gen3"})
 		},
 		steps: []bootMoveStep{stepIntentWritten, stepOneShotCleared, stepDefaultSet, stepOneShotSet, stepReadBack, stepPublished, stepResolved},
 		want:  "gen3",
@@ -312,12 +318,21 @@ func TestLegacyFormMoveFaults(t *testing.T) {
 				}
 				w.count(result)
 				assertReadableBy11_5(t, w.root)
+				interrupted, err := readBootMoveIntent(w.root)
+				if err != nil || (interrupted == nil) != (op.steps[crash-1] == stepResolved) {
+					t.Fatalf("intent after the crash = %+v, %v", interrupted, err)
+				}
 
 				result, err = op.run(w, w.mover(nil))
 				if err != nil {
 					t.Fatalf("retry error = %v", err)
 				}
 				w.count(result)
+
+				// Only a crash after the intent was removed leaves nothing to complete.
+				if interrupted != nil && result.Completed != interrupted.OperationID {
+					t.Fatalf("retry completed %q, want interrupted operation %s", result.Completed, interrupted.OperationID)
+				}
 
 				if w.reboots > 1 {
 					t.Fatalf("reboots = %d, want at most one", w.reboots)
@@ -486,4 +501,39 @@ func TestLegacyFormEndsMidMove(t *testing.T) {
 		t.Fatalf("selection = %+v, want gen1 the default with a counter revision", got)
 	}
 	assertNoIntent(t, w.root)
+}
+
+// An arm interrupted after its v1 publish keeps its intent, which is the
+// trial's authority, and a retry of the arm repeats it.
+func TestLegacyFormArmFault(t *testing.T) {
+	w := newMoveWorld(t)
+	stampRelease(t, w.root, "outside", "2026.11.5")
+	writeBootHealthSelection(t, w.root, lowerSelection(w.selection()))
+	request := TrialRequest{OperationID: "apply-7", GenerationID: "gen2", Reason: "trial armed"}
+	var seen []bootMoveStep
+	crash := func(step bootMoveStep) error {
+		seen = append(seen, step)
+		if step == stepPublished {
+			return errCrash
+		}
+		return nil
+	}
+	if _, err := w.mover(crash).ArmTrial(request); !errors.Is(err, errCrash) {
+		t.Fatalf("ArmTrial() = %v after steps %v, want a crash after the publish", err, seen)
+	}
+	if got := assertReadableBy11_5(t, w.root); got.TrialGenerationID != "gen2" || !got.PendingHealthValidation {
+		t.Fatalf("selection = %+v, want the gen2 trial published", got)
+	}
+
+	if _, err := w.mover(nil).ArmTrial(request); err != nil {
+		t.Fatalf("retried ArmTrial() error = %v", err)
+	}
+
+	intent, err := readBootMoveIntent(w.root)
+	if err != nil || intent == nil || !intent.isTrialAuthority() || *intent.Reboot.TrialID != "apply-7" {
+		t.Fatalf("intent = %+v, %v, want the apply-7 trial authority", intent, err)
+	}
+	if got := assertReadableBy11_5(t, w.root); got.TrialGenerationID != "gen2" || !got.PendingHealthValidation {
+		t.Fatalf("selection = %+v, want the gen2 trial pending", got)
+	}
 }
