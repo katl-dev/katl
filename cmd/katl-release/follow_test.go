@@ -366,7 +366,7 @@ func TestFindDispatch(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 				defer cancel()
 				start := time.Now()
-				run, err := findDispatch(ctx, r, version, 6, readerHead)
+				run, err := findDispatch(ctx, r, releaseDispatch(version, readerHead), 6)
 				if mode == "match" {
 					if err != nil || run.ID != 9 || polls != 3 {
 						t.Fatalf("run = %d, error = %v after %d polls; want run 9 at poll 3", run.ID, err, polls)
@@ -374,7 +374,7 @@ func TestFindDispatch(t *testing.T) {
 					return
 				}
 				want := map[string][]string{
-					"absent":    {"The dispatch was accepted but no Release run for 2026.12.1 at " + readerHead + " appeared."},
+					"absent":    {"The dispatch was accepted but no matching Release run on release/2026.12.1 appeared."},
 					"ambiguous": {followURL + "9", followURL + "10"},
 					"moved":     {readerHead, otherCommit, "between the decision and dispatch", "will refuse (row 3)", followURL + "12"},
 				}

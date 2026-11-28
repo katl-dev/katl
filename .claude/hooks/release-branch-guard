@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+command=$(jq -er '.tool_input.command | strings' 2>/dev/null) || exit 0
+
+release_branch() {
+    [[ $1 =~ ^(refs/heads/)?release/[0-9] ]]
+}
+
+guard() {
+    local word ref remote=false options=true endpoint=false release_ref=false
+    local skip=false
+    if [[ $1 == git && $2 == push ]]; then
+        shift 2
+        for word; do
+            if $skip; then
+                skip=false
+                continue
+            fi
+            if $options; then
+                case "$word" in
+                    --) options=false; continue ;;
+                    --repo) remote=true; skip=true; continue ;;
+                    --repo=*) remote=true; continue ;;
+                    --receive-pack|--exec|-o|--push-option) skip=true; continue ;;
+                    -*) continue ;;
+                esac
+            fi
+            if ! $remote; then
+                remote=true
+                continue
+            fi
+            word=${word#+}
+            if release_branch "${word#*:}"; then return 0; fi
+        done
+    elif [[ $1 == jj && $2 == git && $3 == push ]]; then
+        shift 3
+        while (($#)); do
+            case "$1" in
+                -b|--bookmark|--branch)
+                    shift
+                    if release_branch "$1"; then return 0; fi ;;
+                --bookmark=*|--branch=*)
+                    if release_branch "${1#*=}"; then return 0; fi ;;
+                -b?*)
+                    if release_branch "${1#-b}"; then return 0; fi ;;
+            esac
+            shift
+        done
+    elif [[ $1 == gh && $2 == api ]]; then
+        shift 2
+        for word; do
+            case "${word%%\?*}" in
+                git/refs|*/git/refs) endpoint=true ;;
+            esac
+            case "$word" in
+                ref=*|-fref=*|-Fref=*|--raw-field=ref=*|--field=ref=*)
+                    ref=${word#*ref=}
+                    if [[ $ref == refs/heads/* ]] && release_branch "$ref"; then release_ref=true; fi ;;
+            esac
+        done
+        if $endpoint && $release_ref; then return 0; fi
+    fi
+    return 1
+}
+
+# Inspect literal shell words without evaluating any part of the tool call.
+token=$'^[ \t]*(([^ \t\n;&|\'"]+|\'[^\']*\'|"[^"]*")+|[\n;&|])'
+words=()
+while [[ $command =~ $token ]]; do
+    command=${command:${#BASH_REMATCH[0]}}
+    word=${BASH_REMATCH[1]}
+    case "$word" in
+        ';'|'&'|'|'|$'\n')
+            if guard "${words[@]}"; then break; fi
+            words=()
+            ;;
+        *) word=${word//\"/}; words+=("${word//\'/}") ;;
+    esac
+done
+
+if guard "${words[@]}"; then
+    printf '%s\n' 'Release branches are created by scripts/katl-release cut VERSION REVISION, not by a push.' >&2
+    exit 2
+fi
+exit 0

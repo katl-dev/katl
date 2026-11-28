@@ -140,11 +140,12 @@ the [Planner's milestone rules](roles/planner.md#main-milestones).
    the queue, dispatch a non-publishing candidate from `main` and fix what
    it finds, so that the release-only jobs have run on current inputs before
    the cut.
-2. Fetch `origin/main` at the cut and create a branch for this version from
-   that exact SHA, for example `release/2026.12.1`. Push `release/<version>`
-   and [check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
+2. Fetch `origin/main` at the cut and run
+   `scripts/katl-release cut VERSION REVISION` with that exact SHA. After it
+   confirms the branch head,
+   [check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
    before dispatching a candidate or final release. Start candidate
-   qualification from the branch, never from `main`.
+   qualification from the release branch, never from `main`.
 3. Open two issues in the milestone, `Tag v<version>-rc.1` and `Tag v<version>`.
 4. From then on, the Release agent owns admission to the milestone as release
    coordinator and admits almost nothing under the
@@ -159,8 +160,9 @@ the [Planner's milestone rules](roles/planner.md#main-milestones).
 If a version will not ship, follow the
 [milestone merge procedure](roles/release.md#merge-an-unshipped-milestone).
 
-The cut automation and server-side branch creation must check for the
-existing version milestone and use it for the tag issues.
+Creating the tag issues and preparing the release-notes file are manual. The
+cut automation and server-side branch creation must check for the existing
+version milestone and use it for the tag issues.
 [#777](https://github.com/katl-dev/katl/issues/777)
 [#878](https://github.com/katl-dev/katl/issues/878)
 

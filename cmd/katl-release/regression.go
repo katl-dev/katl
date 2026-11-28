@@ -134,21 +134,14 @@ func (r *reader) mergedCIRuns(ctx context.Context, commit string) ([]workflowRun
 	if err != nil || len(runs) == 0 {
 		return nil, err
 	}
-	status, err := r.compare(ctx, "main", commit)
+	landed, err := r.isAncestor(ctx, commit, "main")
 	if notFound(err) {
 		return nil, nil
 	}
-	if err != nil {
+	if err != nil || !landed {
 		return nil, err
 	}
-	switch status {
-	case "identical", "behind":
-		return runs, nil
-	case "ahead", "diverged":
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("unexpected comparison status %q for main and %s", status, commit)
-	}
+	return runs, nil
 }
 
 // ciRuns includes all conclusions so a failed Fast checks job can be

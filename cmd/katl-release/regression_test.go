@@ -99,7 +99,7 @@ const (
 	releaseBranch     = "release/2026.11.0"
 	queueRuns         = repoPrefix + "actions/workflows/ci.yml/runs?head_sha=" + testCommit + "&event=merge_group&per_page=100"
 	branchRuns        = repoPrefix + "actions/workflows/ci.yml/runs?head_sha=" + testCommit + "&branch=release%2F2026.11.0&per_page=100"
-	mainCompare       = repoPrefix + "compare/main..." + testCommit + "?per_page=1"
+	mainCompare       = repoPrefix + "compare/" + testCommit + "...main?per_page=1"
 	queueJobs         = repoPrefix + "actions/runs/7/attempts/2/jobs?per_page=100"
 	branchJobs        = repoPrefix + "actions/runs/8/attempts/1/jobs?per_page=100"
 	queueURL          = "https://example.test/ci/7"
@@ -197,7 +197,7 @@ func TestRegressionVMEvidence(t *testing.T) {
 		{"release-branch group", map[string]any{queueRuns: runList(ciRun(map[string]any{"head_branch": "gh-readonly-queue/release/2026.11/pr-9"}))}, "run"},
 		{"unfinished run", map[string]any{queueRuns: runList(ciRun(map[string]any{"status": "in_progress", "conclusion": nil}))}, "run"},
 		{"failed run", map[string]any{queueRuns: runList(ciRun(map[string]any{"conclusion": "failure"}))}, "run"},
-		{"group never merged", map[string]any{mainCompare: map[string]string{"status": "ahead"}}, "run"},
+		{"group never merged", map[string]any{mainCompare: map[string]string{"status": "behind"}}, "run"},
 		{"docs-only merge-queue CI", map[string]any{queueJobs: jobList(fastJob("success"), map[string]any{"name": "VM (standard)", "conclusion": "skipped"})}, "run"},
 		{"skipped flavour", map[string]any{queueJobs: vmJobs(without("VM (lts)"))}, "run"},
 		{"missing scenario", map[string]any{queueJobs: vmJobs(without("VM (lts) / VM / "))}, "run"},
@@ -219,7 +219,7 @@ func TestRegressionVMEvidence(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			responses := map[string]any{
-				queueRuns: runList(ciRun(nil)), queueJobs: vmJobs(nil), mainCompare: map[string]string{"status": "behind"},
+				queueRuns: runList(ciRun(nil)), queueJobs: vmJobs(nil), mainCompare: map[string]string{"status": "ahead"},
 				branchRuns: runList(branchRun("push", releaseBranch, "completed", "success")), branchJobs: jobList(fastJob("success")),
 			}
 			for endpoint, response := range test.overrides {
@@ -262,7 +262,7 @@ func TestRegressionReason(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			responses := map[string]any{
-				queueRuns: runList(ciRun(nil)), queueJobs: vmJobs(nil), mainCompare: map[string]string{"status": "behind"},
+				queueRuns: runList(ciRun(nil)), queueJobs: vmJobs(nil), mainCompare: map[string]string{"status": "ahead"},
 				branchRuns: runList(branchRun("push", releaseBranch, "completed", "success")), branchJobs: jobList(fastJob("success")),
 			}
 			for endpoint, response := range test.overrides {
@@ -294,7 +294,7 @@ func TestRegressionPagesListings(t *testing.T) {
 			map[string]any{"total_count": len(jobs), "jobs": jobs[:4]},
 			map[string]any{"total_count": len(jobs), "jobs": jobs[4:]},
 		},
-		mainCompare: map[string]string{"status": "behind"},
+		mainCompare: map[string]string{"status": "ahead"},
 	}), regressionVersion, "skip", "")
 }
 
@@ -346,7 +346,7 @@ func TestRegressionFastChecks(t *testing.T) {
 
 func TestRegressionQueueFastChecksFailed(t *testing.T) {
 	assertRegression(t, regressionGitHub(t, map[string]any{
-		queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "behind"},
+		queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "ahead"},
 		queueJobs: vmJobs(replaced("Fast checks", fastJob("failure"))), branchRuns: runList(),
 	}), regressionVersion, "", queueFastFailed)
 }
@@ -355,21 +355,21 @@ func TestRegressionUnexpectedComparison(t *testing.T) {
 	message := assertRegression(t, regressionGitHub(t, map[string]any{
 		queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "unknown"}, branchRuns: runList(),
 	}), regressionVersion, "", unrecoverable)
-	if !strings.Contains(message, `unexpected comparison status "unknown"`) || !strings.Contains(message, dispatchCI) {
+	if !strings.Contains(message, `unknown comparison status "unknown"`) || !strings.Contains(message, dispatchCI) {
 		t.Fatalf("error = %q, want the comparison status and the next step", message)
 	}
 }
 
 func TestRegressionRequiresQueueFastChecksOrBranchEvidence(t *testing.T) {
 	assertRegression(t, regressionGitHub(t, map[string]any{
-		queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "behind"},
+		queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "ahead"},
 		queueJobs: vmJobs(without("Fast checks")), branchRuns: runList(),
 	}), regressionVersion, "", fastMissing)
 }
 
 func TestRegressionRequiresLandedQueueCommitForFastChecks(t *testing.T) {
 	assertRegression(t, regressionGitHub(t, map[string]any{
-		queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "ahead"},
+		queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "behind"},
 		queueJobs: vmJobs(nil), branchRuns: runList(),
 	}), regressionVersion, "", fastMissing)
 }
@@ -392,7 +392,7 @@ func TestRegressionRetries(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			responses := map[string]any{
-				queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "behind"},
+				queueRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "ahead"},
 				queueJobs: vmJobs(nil), branchRuns: passingBranch, branchJobs: jobList(fastJob("success")),
 			}
 			for endpoint, response := range test.overrides {

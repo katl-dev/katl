@@ -626,8 +626,9 @@ func (r *reader) attest(ctx context.Context, version releaseversion.Version, in 
 
 type restRun struct {
 	runstatus.Run
-	HTMLURL   string    `json:"html_url"`
-	CreatedAt time.Time `json:"created_at"`
+	DisplayTitle string    `json:"display_title"`
+	HTMLURL      string    `json:"html_url"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type restJob struct {
@@ -646,9 +647,9 @@ func (r *reader) jobs(ctx context.Context, attempt runstatus.Attempt) ([]restJob
 	return jobs, err
 }
 
-func (r *reader) releaseRuns(ctx context.Context, branch string, filter string) ([]restRun, error) {
+func (r *reader) workflowRuns(ctx context.Context, workflow, branch, filter string) ([]restRun, error) {
 	endpoint := r.repo(fmt.Sprintf("actions/workflows/%s/runs?branch=%s&%s&per_page=100",
-		url.PathEscape(path.Base(releasestate.ReleaseWorkflow)), url.QueryEscape(branch), filter))
+		url.PathEscape(path.Base(workflow)), url.QueryEscape(branch), filter))
 	var runs []restRun
 	type runsPage struct {
 		Runs []restRun `json:"workflow_runs"`
@@ -662,7 +663,7 @@ func (r *reader) releaseRuns(ctx context.Context, branch string, filter string) 
 func (r *reader) active(ctx context.Context, version releaseversion.Version, in *releasestate.Inputs) error {
 	var oldest *restRun
 	for _, status := range []string{"queued", "in_progress", "waiting", "requested"} {
-		runs, err := r.releaseRuns(ctx, releasestate.Branch(version), "status="+status)
+		runs, err := r.workflowRuns(ctx, releasestate.ReleaseWorkflow, releasestate.Branch(version), "status="+status)
 		if err != nil {
 			return err
 		}

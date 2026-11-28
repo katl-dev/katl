@@ -28,9 +28,21 @@ publication under the
    the tag is on a sibling release branch. If the release commit has no pin
    for an earlier version, the notes use the highest stable tag below the
    version being rendered that has a published, non-prerelease GitHub release.
-3. Cut `release/<version>` from the selected `main` commit SHA, using the
-   final version for the branch name. After pushing the branch, check the
-   journey gate with the previous final release tag.
+3. Cut the release branch from the selected commit on `main`. Use the
+   complete final version and pass `main` or the full commit SHA.
+
+   ```sh
+   scripts/katl-release cut 2026.12.1 main
+   ```
+
+   The **Cut release** workflow creates the branch in the `release-cut`
+   environment. The command follows the run and verifies the resulting branch
+   head. GitHub can still accept hand-pushed release branches until an
+   administrator applies `.github/rulesets/release-branch-creation.json`.
+   Use the workflow for every cut. See the
+   [release rulesets](https://github.com/katl-dev/katl/blob/main/docs/development/release-rulesets.md).
+
+   After the cut, check the journey gate with the previous final release tag.
 
    ```sh
    scripts/katl-release journeys 2026.12.1 v2026.12.0
@@ -43,13 +55,13 @@ publication under the
 
    [Check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
    before dispatching a candidate or final release. Dispatch qualification
-   from that branch and wait for it to pass. Production-image checks run only in this workflow, so
-   qualify the commit before tagging it. Dispatch only after the branch
-   exists, with `--ref release/<version>`. Until
-   [#863](https://github.com/katl-dev/katl/issues/863) loads the modules in
-   the workflow, check each extension of the passing candidate against its
-   runtime (kernel release, bound runtime digest, and unresolved symbols)
-   and record the result on the rc tag issue.
+   from the release branch and wait for it to pass. Production-image checks
+   run only in this workflow, so qualify the commit before tagging it.
+   Dispatch only after the branch exists, with `--ref release/<version>`.
+   Until [#863](https://github.com/katl-dev/katl/issues/863) loads the
+   modules in the workflow, check each extension of the passing candidate
+   against its runtime (kernel release, bound runtime digest, and unresolved
+   symbols) and record the result on the rc tag issue.
 
    ```sh
    gh workflow run release-artifacts.yml --ref release/2026.12.1 -f version=2026.12.1-rc.1

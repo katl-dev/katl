@@ -9,6 +9,32 @@ selection, qualification, and publication through GitHub Actions.
 
 Run `scripts/katl-release --help` for command syntax.
 
+## Cut a release branch
+
+### `cut`
+
+```sh
+scripts/katl-release cut 2026.12.1 main
+```
+
+Supply a complete final version such as `2026.12.1` and a revision reachable
+from `main`. The command resolves the revision on GitHub, prints the commit,
+and checks for tags and an existing release branch. If the branch already
+points to the selected commit and the version has no release tags, the command
+exits successfully.
+
+For a new cut, the command dispatches **Cut release** on `main`, prints the
+run URL, follows the job, and verifies the branch head before printing the
+`release` command. If the run fails, the command reports the failed job and
+the run URL.
+
+### `cut-branch`
+
+The **Cut release** workflow runs
+`scripts/katl-release cut-branch VERSION REVISION` with a full commit SHA. It
+uses the same checks, creates the branch if needed, and reads it back. Use
+`cut` to start the workflow from a checkout.
+
 ## Prepare and retrieve a candidate
 
 ### `journeys`
