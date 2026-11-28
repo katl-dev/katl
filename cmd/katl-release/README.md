@@ -259,10 +259,7 @@ release, run the credential check with the release branch as `--ref`.
 gh workflow run release-credential.yml --ref release/2026.12.1
 ```
 
-Approve the `release` deployment and confirm that the run succeeds. The check
-verifies that the App slug gives the bot identity that `release-artifacts.yml`
-at commits from before the removal of its tag trigger skips on tag pushes, so
-the App must keep that identity while such commits can still be tagged. The run
+Approve the `release` deployment and confirm that the run succeeds. The run
 summary reports that the App minted a token scoped to this repository with
 Contents write permission and that the token read repository contents. Final
 publication is the first step that exercises the App's final-tag ruleset bypass.

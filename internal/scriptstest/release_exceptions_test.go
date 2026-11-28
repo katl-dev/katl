@@ -35,7 +35,6 @@ var releaseExceptions = []releaseException{
 		"with.repositories ${{ github.event.repository.name }}",
 	}},
 	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Verify installation scope and repository access"}, "credential", 0, "TestReleaseCredentialScope", []string{"reach", "shell"}},
-	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Verify the release App slug"}, "credential", 0, "TestReleaseCredentialSlug", []string{"reach", "shell"}},
 
 	{workflowSite{".github/actions/setup-go/action.yml", "(composite)", "Resolve Go cache"}, "gap", 935, "", []string{"shell"}},
 
@@ -95,17 +94,17 @@ var releaseExceptions = []releaseException{
 	{workflowSite{productionWorkflowPath, "runtime", "Verify runtime"}, "gap", 935, "", []string{"shell"}},
 
 	// Production VM retains the legacy manual qualification interface.
-	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch"}, "gap", 907, "", []string{"trigger"}},
-	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.artifact-name"}, "gap", 907, "", []string{"input"}},
-	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.flavour"}, "gap", 907, "", []string{"input"}},
-	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.previous-tag"}, "gap", 907, "", []string{"input"}},
-	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.run-id"}, "gap", 907, "", []string{"input"}},
+	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch"}, "gap", 935, "", []string{"trigger"}},
+	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.artifact-name"}, "gap", 935, "", []string{"input"}},
+	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.flavour"}, "gap", 935, "", []string{"input"}},
+	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.previous-tag"}, "gap", 935, "", []string{"input"}},
+	{workflowSite{productionVMWorkflowPath, "(on)", "workflow_dispatch.run-id"}, "gap", 935, "", []string{"input"}},
 	{workflowSite{productionVMWorkflowPath, "qualification", "Verify candidate and previous release checksums"}, "gap", 935, "", []string{"shell"}},
 
 	// Legacy triggers and steps, and the as-yet unshared called mode.
 	{workflowSite{artifactsWorkflowPath, "(on)", "schedule"}, "gap", 937, "", []string{"trigger"}},
-	{workflowSite{artifactsWorkflowPath, "(on)", "workflow_dispatch"}, "gap", 907, "", []string{"trigger"}},
-	{workflowSite{artifactsWorkflowPath, "(on)", "workflow_dispatch.version"}, "gap", 907, "", []string{"input"}},
+	{workflowSite{artifactsWorkflowPath, "(on)", "workflow_dispatch"}, "gap", 935, "", []string{"trigger"}},
+	{workflowSite{artifactsWorkflowPath, "(on)", "workflow_dispatch.version"}, "gap", 935, "", []string{"input"}},
 	{workflowSite{artifactsWorkflowPath, "(workflow)", "(workflow)"}, "gap", 935, "", []string{
 		"concurrency.group github.event_name github.workflow inputs.commit",
 	}},
@@ -124,7 +123,6 @@ var releaseExceptions = []releaseException{
 		"reach",
 		"run-reference GITHUB_EVENT_NAME",
 		"run-reference GITHUB_REF_NAME",
-		"run-reference GITHUB_REF_TYPE",
 		"shell",
 	}},
 	{workflowSite{artifactsWorkflowPath, "identity", "Resolve release identity"}, "gap", 992, "TestKatlReleaseArtifactVersion", []string{"env.MANUAL_VERSION ${{ inputs.version }}", "version"}},

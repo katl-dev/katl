@@ -4,8 +4,9 @@ A dispatch of the **Release** workflow on a release branch takes the next step
 of that version's release: it builds, qualifies, tags, and publishes a
 candidate, or rebuilds and publishes the final version. GitHub publishes the
 built artifacts only after **Release validation** passes, and the final also
-waits for approval in the `release` environment. Nobody pushes a release tag
-by hand, and a tag push starts no workflow.
+waits for approval in the `release` environment. Release tags come only from
+the Release action, and no workflow at a commit made since the removal of the
+tag trigger starts on a tag push.
 [Release state machine](../internal/release-state-machine.md) defines how each
 dispatch chooses its step.
 

@@ -132,9 +132,7 @@ jobs:
           if [[ "$event" == schedule ]]; then
             MANUAL_VERSION="$(scripts/katl-release-artifacts dev-version "$PREVIOUS_TAG")"
           fi
-          version="$(scripts/katl-release-artifacts version \
-            "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
-            "$MANUAL_VERSION")"
+          version="$(scripts/katl-release-artifacts version "$event" "$MANUAL_VERSION")"
           artifact_name="$(scripts/katl-release bundle-name "$version" "$GITHUB_SHA")"
           {
             echo "version=$version"

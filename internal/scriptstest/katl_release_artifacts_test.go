@@ -27,22 +27,22 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{name: "called alpha", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-alpha.1"}, want: "2026.7.0-alpha.1"},
-		{name: "manual", args: []string{"version", "workflow_dispatch", "branch", "main", "2026.7.0-dev.1"}, want: "2026.7.0-dev.1"},
-		{name: "scheduled", args: []string{"version", "schedule", "branch", "main", "2026.7.1-dev.0"}, want: "2026.7.1-dev.0"},
-		{name: "called candidate", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-rc.2"}, want: "2026.7.0-rc.2"},
-		{name: "called final", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0"}, want: "2026.7.0"},
-		{name: "called without version", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", ""}, wantErr: "version is empty"},
-		{name: "called leading-zero candidate", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-rc.01"}, wantErr: "not canonical"},
-		{name: "scheduled without version", args: []string{"version", "schedule", "branch", "main", ""}, wantErr: "version is empty"},
-		{name: "tag push", args: []string{"version", "push", "tag", "v2026.7.0"}, wantErr: "unsupported release event: push"},
-		{name: "semantic version", args: []string{"version", "workflow_call", "branch", "release/0.1.0", "0.1.0"}, wantErr: "not canonical"},
-		{name: "nightly label", args: []string{"version", "schedule", "branch", "main", "nightly"}, wantErr: "not canonical"},
-		{name: "zero-padded month", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.07.0"}, wantErr: "not canonical"},
-		{name: "invalid month", args: []string{"version", "workflow_call", "branch", "release/2026.13.0", "2026.13.0"}, wantErr: "not canonical"},
-		{name: "unsupported prerelease", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-test.1"}, wantErr: "not canonical"},
-		{name: "unsafe version", args: []string{"version", "schedule", "branch", "main", ".hidden"}, wantErr: "not canonical"},
-		{name: "empty manual", args: []string{"version", "workflow_dispatch", "branch", "main", ""}, wantErr: "version is empty"},
+		{name: "called alpha", args: []string{"version", "workflow_call", "2026.7.0-alpha.1"}, want: "2026.7.0-alpha.1"},
+		{name: "manual", args: []string{"version", "workflow_dispatch", "2026.7.0-dev.1"}, want: "2026.7.0-dev.1"},
+		{name: "scheduled", args: []string{"version", "schedule", "2026.7.1-dev.0"}, want: "2026.7.1-dev.0"},
+		{name: "called candidate", args: []string{"version", "workflow_call", "2026.7.0-rc.2"}, want: "2026.7.0-rc.2"},
+		{name: "called final", args: []string{"version", "workflow_call", "2026.7.0"}, want: "2026.7.0"},
+		{name: "called without version", args: []string{"version", "workflow_call", ""}, wantErr: "version is empty"},
+		{name: "called leading-zero candidate", args: []string{"version", "workflow_call", "2026.7.0-rc.01"}, wantErr: "not canonical"},
+		{name: "scheduled without version", args: []string{"version", "schedule", ""}, wantErr: "version is empty"},
+		{name: "tag push", args: []string{"version", "push", "v2026.7.0"}, wantErr: "unsupported release event: push"},
+		{name: "semantic version", args: []string{"version", "workflow_call", "0.1.0"}, wantErr: "not canonical"},
+		{name: "nightly label", args: []string{"version", "schedule", "nightly"}, wantErr: "not canonical"},
+		{name: "zero-padded month", args: []string{"version", "workflow_call", "2026.07.0"}, wantErr: "not canonical"},
+		{name: "invalid month", args: []string{"version", "workflow_call", "2026.13.0"}, wantErr: "not canonical"},
+		{name: "unsupported prerelease", args: []string{"version", "workflow_call", "2026.7.0-test.1"}, wantErr: "not canonical"},
+		{name: "unsafe version", args: []string{"version", "schedule", ".hidden"}, wantErr: "not canonical"},
+		{name: "empty manual", args: []string{"version", "workflow_dispatch", ""}, wantErr: "version is empty"},
 	}
 
 	for _, tt := range tests {
@@ -118,25 +118,25 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	}{
 		{
 			name:        "dev",
-			versionArgs: []string{"schedule", "branch", "main", "2026.7.0-dev.4"},
+			versionArgs: []string{"schedule", "2026.7.0-dev.4"},
 			wantVersion: "2026.7.0-dev.4",
 			wantBundle:  "katl-2026.7.0-dev.4-x86_64-0123456789ab",
 		},
 		{
 			name:        "rc",
-			versionArgs: []string{"workflow_call", "branch", "release/2026.6.3", "2026.6.3-rc.1"},
+			versionArgs: []string{"workflow_call", "2026.6.3-rc.1"},
 			wantVersion: "2026.6.3-rc.1",
 			wantBundle:  "katl-2026.6.3-rc.1-x86_64-0123456789ab",
 		},
 		{
 			name:        "existing series final",
-			versionArgs: []string{"workflow_call", "branch", "release/2026.6.3", "2026.6.3"},
+			versionArgs: []string{"workflow_call", "2026.6.3"},
 			wantVersion: "2026.6.3",
 			wantBundle:  "katl-2026.6.3-x86_64-0123456789ab",
 		},
 		{
 			name:        "new series final",
-			versionArgs: []string{"workflow_call", "branch", "release/2026.7.0", "2026.7.0"},
+			versionArgs: []string{"workflow_call", "2026.7.0"},
 			wantVersion: "2026.7.0",
 			wantBundle:  "katl-2026.7.0-x86_64-0123456789ab",
 		},
@@ -213,7 +213,6 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 						cmd.Env = append(
 							gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
 							published,
-							"GITHUB_REF_TYPE="+tc.versionArgs[1],
 							"GITHUB_SHA=not-a-commit-in-the-test-repository",
 							"KATL_RELEASE_REPOSITORY_URL="+repositoryURL,
 							"KATL_REPO_ROOT="+gitDir,
@@ -1170,14 +1169,13 @@ func TestKatlReleaseArtifactBaselineRejectsPrerelease(t *testing.T) {
 	}
 }
 
-func TestKatlReleaseArtifactBaselineAtRevision(t *testing.T) {
+func TestKatlReleaseArtifactBaseline(t *testing.T) {
 	dir := t.TempDir()
 	writeReleaseScriptFixture(t, dir, "v2026.11.4")
 	runGit(t, dir, "init", "--quiet")
 	runGit(t, dir, "add", productionBaselineFile)
 	runGit(t, dir, "commit", "--quiet", "-m", "produce bundle")
 	runGit(t, dir, "tag", "v2026.11.4")
-	producingRevision := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
 
 	if err := os.WriteFile(filepath.Join(dir, productionBaselineFile), []byte("v2026.11.5\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1185,21 +1183,10 @@ func TestKatlReleaseArtifactBaselineAtRevision(t *testing.T) {
 	runGit(t, dir, "commit", "--quiet", "-am", "move baseline")
 	runGit(t, dir, "tag", "v2026.11.5")
 
-	for _, tc := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{name: "checkout", want: "v2026.11.5\n"},
-		{name: "producing revision", args: []string{producingRevision}, want: "v2026.11.4\n"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(filepath.Join(dir, "scripts/katl-release-artifacts"), append([]string{"upgrade-baseline"}, tc.args...)...)
-			cmd.Dir = dir
-			cmd.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir)
-			if output, err := cmd.CombinedOutput(); err != nil || string(output) != tc.want {
-				t.Fatalf("upgrade-baseline %v = %q, error %v, want %q", tc.args, output, err, tc.want)
-			}
-		})
+	cmd := exec.Command(filepath.Join(dir, "scripts/katl-release-artifacts"), "upgrade-baseline")
+	cmd.Dir = dir
+	cmd.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir)
+	if output, err := cmd.CombinedOutput(); err != nil || string(output) != "v2026.11.5\n" {
+		t.Fatalf("upgrade-baseline = %q, error %v, want the checkout's v2026.11.5", output, err)
 	}
 }

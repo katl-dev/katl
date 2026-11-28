@@ -289,43 +289,6 @@ func releaseCredentialSteps(t *testing.T) []releaseCredentialStep {
 	return action.Runs.Steps
 }
 
-func releaseAppSlugStep(t *testing.T) releaseCredentialStep {
-	t.Helper()
-	for _, step := range releaseCredentialSteps(t) {
-		if step.Env["EXPECTED_APP_SLUG"] != "" {
-			return step
-		}
-	}
-	t.Fatal("release credential action has no expected App slug")
-	return releaseCredentialStep{}
-}
-
-func TestReleaseCredentialSlug(t *testing.T) {
-	step := releaseAppSlugStep(t)
-	const source = "${{ steps.mint.outputs.app-slug }}"
-	if got := step.Env["APP_SLUG"]; got != source {
-		t.Errorf("APP_SLUG = %q, want %q", got, source)
-	}
-	expected := step.Env["EXPECTED_APP_SLUG"]
-
-	t.Run("match", func(t *testing.T) {
-		out, err := runReleaseStep(t.TempDir(), step.Run, "APP_SLUG="+expected, "EXPECTED_APP_SLUG="+expected)
-		if err != nil {
-			t.Fatalf("matching slug was rejected: %v: %s", err, out)
-		}
-	})
-	t.Run("mismatch", func(t *testing.T) {
-		const actual = "other-release-app"
-		out, err := runReleaseStep(t.TempDir(), step.Run, "APP_SLUG="+actual, "EXPECTED_APP_SLUG="+expected)
-		if _, exited := err.(*exec.ExitError); !exited {
-			t.Fatalf("mismatching slug must exit non-zero: %v: %s", err, out)
-		}
-		if !strings.Contains(string(out), actual) || !strings.Contains(string(out), expected) {
-			t.Errorf("output = %q, want actual slug %q and expected slug %q", out, actual, expected)
-		}
-	})
-}
-
 func TestReleaseCredentialScope(t *testing.T) {
 	want := map[string]string{
 		"app-id":              "${{ inputs.app-id }}",

@@ -442,7 +442,8 @@ commands used in that procedure.
 and publishes nothing. It runs nightly on `main` at a development version, a
 manual dispatch builds an explicit version for build verification, and the
 **Release** workflow (`release.yml`) calls it to build a candidate or final
-version. A tag push starts neither workflow.
+version. Release tags come only from the Release action, and neither workflow
+starts on a tag push at a commit made since the removal of the tag trigger.
 
 Release publishes only after **Release validation** passes baseline tests, the
 regression suite for both flavours, and lifecycle tests against the final

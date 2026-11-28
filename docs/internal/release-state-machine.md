@@ -299,8 +299,8 @@ extension bundles, and publishes the draft last, which creates the tag. A
 missing final tag therefore proves no final release is public, and an
 existing one proves the release was published whole. No state has a final tag
 waiting for its release, so the final is never resumed from an earlier run.
-A tag push starts no workflow, so neither the App's tags nor a stray tag
-publish anything.
+Release tags come only from the Release action, and no workflow at a commit
+made since the removal of the tag trigger starts on a tag push.
 
 **Retry never touches published bytes.** Retry exists only in rows 20 and 25,
 where the record is `building` or `failed`. A `qualified` candidate is only

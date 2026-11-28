@@ -29,12 +29,13 @@ publication and any security advisory. Confirm which actions the authority
 covers and ask the coordinator for any missing authority. Never infer it
 from a previous release, the hand-off, or a passing gate.
 
-**Tagging.** Agents never push tags. Publish through the release action
-([#905](https://github.com/katl-dev/katl/issues/905)) once its setup is in
-place; until then, or if the action fails, the maintainer pushes the tag by
-hand as the fallback. Before the cut, record on the rc tag issue which path
-the release will use and that the maintainer is available for the
-fallback, so that a qualified candidate never waits for it.
+**Tagging.** Nobody pushes release tags; the Release action creates every
+candidate and final tag. When a Release run fails, follow the decision it
+reports: push a fix to the release branch and dispatch again or, when the
+source is not at fault, retry the build with
+`scripts/katl-release release VERSION --retry REASON`. The
+[release state machine](../../../docs/internal/release-state-machine.md#no-final-tag)
+defines the candidate and final retry paths.
 
 **Delivery.** Deliver the milestone's fixes under the Orchestrator's
 [parallel delivery](orchestrator.md#parallel-delivery) rule: start every
@@ -73,7 +74,7 @@ After the cut, admit only these findings:
 
 - Shipped code causes data loss, an unreachable node, a wrong-target
   operation, or a misleading security outcome.
-- The release notes, candidate, or tag run has a defect.
+- The release notes, candidate, or Release run has a defect.
 - A change shipping in the release has a journey gap. Keep its
   `release-blocker` fix in the release milestone under the
   [user-journey rules](../../../AGENTS.md#user-journey-validation).

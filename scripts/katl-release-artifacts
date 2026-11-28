@@ -15,8 +15,8 @@ fail() {
 
 usage() {
     cat >&2 <<'EOF'
-usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VERSION]
-       scripts/katl-release-artifacts upgrade-baseline [REV]
+usage: scripts/katl-release-artifacts version EVENT [MANUAL_VERSION]
+       scripts/katl-release-artifacts upgrade-baseline
        scripts/katl-release-artifacts dev-version STABLE_TAG
        scripts/katl-release-artifacts notes VERSION
        scripts/katl-release-artifacts build-katlctl VERSION
@@ -281,10 +281,10 @@ build_katlctl() {
     done
 }
 
-# The ref arguments are unused: every remaining event supplies its version.
-version_for_ref() {
+# Every supported event supplies its version.
+release_version() {
     local event="$1"
-    local manual_version="${4:-}"
+    local manual_version="${2:-}"
     local version
 
     case "$event" in
@@ -488,12 +488,12 @@ verify_katlctl() {
 
 case "${1:-}" in
     version)
-        [[ $# -ge 4 && $# -le 5 ]] || usage
-        version_for_ref "$2" "$3" "$4" "${5:-}"
+        [[ $# -ge 2 && $# -le 3 ]] || usage
+        release_version "$2" "${3:-}"
         ;;
     upgrade-baseline)
-        [[ $# -le 2 ]] || usage
-        production_upgrade_baseline "${2:-}"
+        [[ $# -eq 1 ]] || usage
+        production_upgrade_baseline ""
         ;;
     dev-version)
         [[ $# -eq 2 ]] || usage
