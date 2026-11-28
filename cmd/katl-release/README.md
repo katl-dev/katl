@@ -365,6 +365,16 @@ scripts/katl-release stable-tags v2026.12.1 v2026.12.1-rc.1 nightly
 
 Prints the arguments that are final release tags, in their order.
 
+### `baseline-tag`
+
+```sh
+scripts/katl-release baseline-tag < scripts/production-upgrade-baseline.txt
+```
+
+Prints the final release tag that the pin content on stdin names, or fails
+with the error `journeys` reports for the same content. The pin is exactly
+one line holding a final release tag, with an optional trailing newline.
+
 ### `bundle-name`
 
 ```sh

@@ -312,13 +312,14 @@ is_stable_tag() {
 }
 
 production_upgrade_baseline() {
-    local file="$production_baseline_file" revision="$1" tag
+    local file="$production_baseline_file" revision="$1" content tag
+    # The x keeps trailing newlines, so baseline-tag sees the exact content.
     if [[ -n "$revision" ]]; then
-        tag="$(git show --end-of-options "$revision:$file")" || fail "cannot read $file at $revision"
+        content="$(git show --end-of-options "$revision:$file" && printf x)" || fail "cannot read $file at $revision"
     else
-        tag="$(cat "$repo_root/$file")" || fail "cannot read $file"
+        content="$(cat "$repo_root/$file" && printf x)" || fail "cannot read $file"
     fi
-    is_stable_tag "$tag" || fail "$file must contain a stable KatlOS release tag: $tag"
+    tag="$(printf '%s' "${content%x}" | release_tool baseline-tag)" || exit 1
     git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null ||
         fail "$file names a tag that does not exist or does not point to a commit: $tag"
     printf '%s\n' "$tag"

@@ -59,7 +59,10 @@ publication under the
    A successful check prints that the gate is clear. If the command lists
    outstanding PRs or open journey gap fixes, resolve them and repeat the
    check before dispatching a candidate. Repeat the check after admitting
-   changes to the release branch.
+   changes to the release branch. If the command refuses the pin because it
+   is missing, malformed, not earlier than the release or names a tag GitHub
+   lacks, update the pin on the release branch through a pull request, then
+   repeat the check.
 
    [Check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
    before dispatching a candidate or final release.

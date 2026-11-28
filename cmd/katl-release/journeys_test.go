@@ -155,23 +155,35 @@ func TestJourneys(t *testing.T) {
 
 	f.failures = nil
 
+	// GitHub has no v2026.11.6 tag.
+	f.pages[repoPrefix+"git/matching-refs/tags/v2026.11.6?per_page=100"] = []any{[]any{}}
+
+	// Each refusal names the pin, the branch it was read on and the offending
+	// value, and says to correct the pin on that branch.
 	refused := []struct {
-		name string
-		pin  []byte
-		want string
+		name      string
+		pin       []byte
+		offending string
 	}{
-		{"missing", nil, "scripts/production-upgrade-baseline.txt is missing on release/2026.11.8"},
-		{"candidate", []byte("v2026.11.7-rc.1\n"), `scripts/production-upgrade-baseline.txt on release/2026.11.8 must contain a final KatlOS release tag, got "v2026.11.7-rc.1"`},
-		{"not a tag", []byte("2026.11.7\n"), `scripts/production-upgrade-baseline.txt on release/2026.11.8 must contain a final KatlOS release tag, got "2026.11.7"`},
-		{"same release", []byte("v2026.11.8\n"), "scripts/production-upgrade-baseline.txt on release/2026.11.8 names v2026.11.8, which is not a release before 2026.11.8"},
-		{"later release", []byte("v2026.12.0\n"), "scripts/production-upgrade-baseline.txt on release/2026.11.8 names v2026.12.0, which is not a release before 2026.11.8"},
+		{"missing", nil, ""},
+		{"candidate", []byte("v2026.11.7-rc.1\n"), "v2026.11.7-rc.1"},
+		{"not a tag", []byte("2026.11.7\n"), `"2026.11.7"`},
+		{"same release", []byte("v2026.11.8\n"), "v2026.11.8"},
+		{"later release", []byte("v2026.12.0\n"), "v2026.12.0"},
+		{"untagged earlier release", []byte("v2026.11.6\n"), "v2026.11.6"},
 	}
 	for _, tc := range refused {
 		t.Run(tc.name, func(t *testing.T) {
 			pin = tc.pin
 			out.Reset()
-			if err := journeys(t.Context(), args, &out, r); err == nil || err.Error() != tc.want || out.Len() != 0 {
-				t.Fatalf("journeys = %q, %v, want error %q", out.String(), err, tc.want)
+			err := journeys(t.Context(), args, &out, r)
+			if err == nil || out.Len() != 0 {
+				t.Fatalf("journeys = %q, %v, want a refusal", out.String(), err)
+			}
+			for _, part := range []string{"scripts/production-upgrade-baseline.txt", "release/2026.11.8", tc.offending, "Update the pin on release/2026.11.8 through a pull request"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("journeys error %q does not contain %q", err, part)
+				}
 			}
 		})
 	}

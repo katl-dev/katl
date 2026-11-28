@@ -21,10 +21,6 @@ const (
 	releaseBlockerLabel = "release-blocker"
 )
 
-// upgradeBaselineFile pins the previous final release; scripts/katl-release-artifacts
-// reads the same file for the production upgrade baseline.
-const upgradeBaselineFile = "scripts/production-upgrade-baseline.txt"
-
 func journeys(ctx context.Context, args []string, stdout io.Writer, r *reader) error {
 	if len(args) != 1 {
 		return errors.New("usage: scripts/katl-release journeys VERSION")
@@ -49,14 +45,14 @@ func journeys(ctx context.Context, args []string, stdout io.Writer, r *reader) e
 		return err
 	}
 	if compareFinal(previous, version) >= 0 {
-		return fmt.Errorf("%s on %s names %s, which is not a release before %s", upgradeBaselineFile, branch, previous.Tag(), version)
+		return fmt.Errorf("%s on %s names %s, which is not a release before %s. %s", upgradeBaselineFile, branch, previous.Tag(), version, pinRecovery(branch))
 	}
 	base, err := r.refCommit(ctx, "refs/tags/"+previous.Tag())
 	if err != nil {
 		return err
 	}
 	if base == "" {
-		return fmt.Errorf("GitHub has no %s tag, which %s on %s names", previous.Tag(), upgradeBaselineFile, branch)
+		return fmt.Errorf("GitHub has no %s tag, which %s on %s names. %s", previous.Tag(), upgradeBaselineFile, branch, pinRecovery(branch))
 	}
 
 	prs, err := r.outstandingJourneyPRs(ctx, head, base)
@@ -86,17 +82,21 @@ func journeys(ctx context.Context, args []string, stdout io.Writer, r *reader) e
 func (r *reader) upgradeBaseline(ctx context.Context, branch, commit string) (releaseversion.Version, error) {
 	body, err := r.get(ctx, r.repo("contents/"+upgradeBaselineFile+"?ref="+commit), false, "application/vnd.github.raw")
 	if notFound(err) {
-		return releaseversion.Version{}, fmt.Errorf("%s is missing on %s", upgradeBaselineFile, branch)
+		return releaseversion.Version{}, fmt.Errorf("%s is missing on %s. %s", upgradeBaselineFile, branch, pinRecovery(branch))
 	}
 	if err != nil {
 		return releaseversion.Version{}, err
 	}
-	tag := strings.TrimSpace(string(body))
-	previous, err := releaseversion.ParseTag(tag)
-	if err != nil || !previous.IsFinal() {
-		return releaseversion.Version{}, fmt.Errorf("%s on %s must contain a final KatlOS release tag, got %q", upgradeBaselineFile, branch, tag)
+	previous, err := parseUpgradeBaseline(body)
+	if err != nil {
+		return releaseversion.Version{}, fmt.Errorf("%s: %w. %s", branch, err, pinRecovery(branch))
 	}
 	return previous, nil
+}
+
+// pinRecovery tells the release manager how to correct the pin the gate read.
+func pinRecovery(branch string) string {
+	return "Update the pin on " + branch + " through a pull request"
 }
 
 // GitHub's issues listing also includes PRs. Its merge timestamp identifies
