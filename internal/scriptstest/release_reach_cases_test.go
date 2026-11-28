@@ -61,7 +61,7 @@ func TestReleaseCoverageFalsification(t *testing.T) {
 			step:    "if: inputs.live == 'true'",
 			want: []string{
 				shared + " / (on) / workflow_dispatch.live: input",
-				leaf.String() + ": if \"inputs.live == 'true'\"",
+				leaf.String() + ": if \"inputs.live\"",
 			},
 		},
 		{
@@ -70,9 +70,35 @@ func TestReleaseCoverageFalsification(t *testing.T) {
 			want: []string{leaf.String() + ": if", "mode outcomes absent before merge"},
 		},
 		{
+			name: "triggering actor guard",
+			step: "if: github.triggering_actor != 'katl-release[bot]'",
+			want: []string{leaf.String() + ": if \"github.triggering_actor\": mode outcomes absent before merge"},
+		},
+		{
+			name: "workflow name in step env",
+			step: "env:\n  DRY: ${{ github.workflow == 'Release' && '0' || '1' }}",
+			want: []string{leaf.String() + ": env.DRY", leaf.String() + ": reach: unreached release step or job with env.DRY=\"0\""},
+		},
+		{
+			name: "workflow name in job env",
+			jobs: "  other:\n    runs-on: ubuntu-24.04\n    env:\n      DRY: ${{ github.workflow == 'Release' && '0' || '1' }}\n    steps:\n      - id: dry\n        run: scripts/work\n",
+			want: []string{
+				shared + " / other / (job): env.DRY",
+				shared + " / other / dry: reach: unreached release step or job with env.DRY=\"0\"",
+			},
+		},
+		{
+			name:        "step env without a mode reference",
+			input:       "version",
+			releaseWith: "2026.12.1-rc.1",
+			mergeWith:   "2026.12.1-dev.0",
+			step:        "env:\n  VERSION: ${{ env.ARG }}",
+			want:        []string{leaf.String() + ": reach: unreached release step or job with env.VERSION=\"2026.12.1-rc.1\""},
+		},
+		{
 			name: "mode branch in run body",
 			step: "run: |\n  if [[ \"$GITHUB_REF_TYPE\" == tag ]]; then scripts/work; fi",
-			want: []string{leaf.String() + ": run-reference", leaf.String() + ": shell"},
+			want: []string{leaf.String() + ": run-reference \"GITHUB_REF_TYPE\"", leaf.String() + ": shell"},
 		},
 		{
 			name: "mode expression in with",
@@ -121,6 +147,12 @@ func TestReleaseCoverageFalsification(t *testing.T) {
 			allow: []releaseException{{leaf, "gap", 123, "", []string{"shell"}}},
 			want:  []string{leaf.String() + ": run-reference"},
 		},
+		{
+			name:  "existing run-reference gap cannot hide a new mode read",
+			step:  "run: |\n  if [[ \"$GITHUB_EVENT_NAME\" == push ]]; then scripts/work; fi\n  echo \"$GITHUB_TRIGGERING_ACTOR\"",
+			allow: []releaseException{{leaf, "gap", 123, "", []string{"run-reference GITHUB_EVENT_NAME", "shell"}}},
+			want:  []string{leaf.String() + ": run-reference \"GITHUB_TRIGGERING_ACTOR\""},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,8 +166,8 @@ func TestReleaseCoverageFalsification(t *testing.T) {
 				releaseCall += fmt.Sprintf("    with:\n      %s: %s\n", tc.input, tc.releaseWith)
 				mergeCall += fmt.Sprintf("    with:\n      %s: %s\n", tc.input, tc.mergeWith)
 			}
-			writeCoverageFixture(t, root, releasestate.ReleaseWorkflow, "on: workflow_dispatch\n"+releaseCall)
-			writeCoverageFixture(t, root, ciWorkflowPath, "on: [merge_group, pull_request]\n"+mergeCall)
+			writeCoverageFixture(t, root, releasestate.ReleaseWorkflow, "name: Release\non: workflow_dispatch\n"+releaseCall)
+			writeCoverageFixture(t, root, ciWorkflowPath, "name: CI\non: [merge_group, pull_request]\n"+mergeCall)
 			writeCoverageFixture(t, root, shared, "on:\n  workflow_call:\n"+inputs+tc.trigger+tc.concurrency+env+
 				"jobs:\n  work:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: ./.github/actions/helper\n"+tc.forward+tc.jobs)
 			step := tc.step

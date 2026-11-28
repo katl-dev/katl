@@ -67,6 +67,7 @@ type workflowVisit struct {
 	site  workflowSite
 	owner string
 	with  map[string]string
+	env   map[string]string
 	call  bool
 }
 
@@ -92,6 +93,8 @@ type workflowTrace struct {
 	activeJobs    map[workflowSite]bool
 	inactiveSteps map[workflowSite]bool
 	fixtures      map[string]map[string]string
+	// Every run revisits the same files, so a defect in one is reported once.
+	reported map[string]bool
 }
 
 func traceWorkflows(t *testing.T, root, file string, runs []map[string]string, fixtures map[string]map[string]string) *workflowTrace {
@@ -101,6 +104,7 @@ func traceWorkflows(t *testing.T, root, file string, runs []map[string]string, f
 		guards: map[modeSite]bool{}, triggers: map[string]map[string]workflowTrigger{},
 		used: map[string]map[string]bool{}, reads: map[string]map[string]bool{}, jobs: map[string]bool{},
 		fixtures:    fixtures,
+		reported:    map[string]bool{},
 		nonBlocking: map[workflowSite]bool{},
 		activeJobs:  map[workflowSite]bool{}, inactiveSteps: map[workflowSite]bool{},
 	}
@@ -109,6 +113,15 @@ func traceWorkflows(t *testing.T, root, file string, runs []map[string]string, f
 		trace.workflow(t, root, file, run["github.event_name"], nil, run, nil)
 	}
 	return trace
+}
+
+func (trace *workflowTrace) errorf(t *testing.T, format string, args ...any) {
+	t.Helper()
+	message := fmt.Sprintf(format, args...)
+	if !trace.reported[message] {
+		trace.reported[message] = true
+		t.Error(message)
+	}
 }
 
 func (trace *workflowTrace) workflow(t *testing.T, root, file, event string, supplied map[string]string, parent map[string]string, stack []string) {
@@ -121,7 +134,7 @@ func (trace *workflowTrace) workflow(t *testing.T, root, file, event string, sup
 	trace.triggers[file] = triggers
 	trigger, ok := triggers[event]
 	if !ok {
-		t.Errorf("%s / on / %s is missing; restore the trigger for this path", file, event)
+		trace.errorf(t, "%s / on / %s is missing; restore the trigger for this path", file, event)
 		return
 	}
 	if trace.used[file] == nil {
@@ -145,7 +158,7 @@ func (trace *workflowTrace) workflow(t *testing.T, root, file, event string, sup
 		}
 		supplied = dispatchInputs
 	}
-	ctx = bindWorkflowInputs(t, file, ctx, trigger.Inputs, supplied)
+	ctx = trace.bindWorkflowInputs(t, file, ctx, trigger.Inputs, supplied)
 	for name, value := range trace.fixtures[file] {
 		ctx[name] = expandExpressions(t, value, ctx)
 	}
@@ -156,7 +169,7 @@ func (trace *workflowTrace) workflow(t *testing.T, root, file, event string, sup
 			branch = strings.TrimPrefix(ctx["github.ref"], "refs/heads/")
 		}
 		if !workflowBranchMatches(t, file, branch, trigger) {
-			t.Errorf("%s / on / %s excludes %s; make the trigger reach this path", file, event, branch)
+			trace.errorf(t, "%s / on / %s excludes %s; make the trigger reach this path", file, event, branch)
 			return
 		}
 	}
@@ -173,8 +186,9 @@ func (trace *workflowTrace) workflow(t *testing.T, root, file, event string, sup
 			if job.Uses != "" {
 				trace.inactiveSteps[site] = true
 			}
+			labels := stepLabels(job.Steps)
 			for index, step := range job.Steps {
-				stepSite := workflowSite{file, name, stepLabel(step, index+1)}
+				stepSite := workflowSite{file, name, labels[index]}
 				trace.inactiveSteps[stepSite] = true
 				// Prerelease selection also exists in the legacy tag graph.
 				// Its version contract survives independently of the trigger.
@@ -203,12 +217,13 @@ func (trace *workflowTrace) workflow(t *testing.T, root, file, event string, sup
 				if strings.HasPrefix(job.Uses, "./") {
 					target = localWorkflowPath(t, site, job.Uses)
 					child, _ := readWorkflowAt(t, root, target)
-					with = workflowInputValues(t, target, workflowTriggers(t, child.On)["workflow_call"].Inputs, with)
+					with = trace.workflowInputValues(t, target, workflowTriggers(t, child.On)["workflow_call"].Inputs, with)
 					trace.workflow(t, root, target, "workflow_call", with, lane, append(stack, file))
 				}
 				trace.visits = append(trace.visits, workflowVisit{site: site, owner: job.Uses, with: with, call: target != ""})
 			} else {
-				trace.steps(t, root, file, name, job.Steps, workflowEnv(t, lane, job.Env), nil)
+				jobEnv := resolveWorkflowValues(t, maskValueInputs(lane), job.Env)
+				trace.steps(t, root, file, name, job.Steps, workflowEnv(t, lane, job.Env), jobEnv, nil)
 			}
 		}
 	}
@@ -274,7 +289,7 @@ func workflowInputReads(t *testing.T, source string) map[string]bool {
 	return reads
 }
 
-func workflowInputValues(t *testing.T, file string, declarations map[string]workflowInput, supplied map[string]string) map[string]string {
+func (trace *workflowTrace) workflowInputValues(t *testing.T, file string, declarations map[string]workflowInput, supplied map[string]string) map[string]string {
 	t.Helper()
 	values := map[string]string{}
 	for name, input := range declarations {
@@ -282,7 +297,7 @@ func workflowInputValues(t *testing.T, file string, declarations map[string]work
 		if !set {
 			value = input.Default
 			if input.Required && value == "" {
-				t.Errorf("%s / on / input %s is required but this path does not supply it", file, name)
+				trace.errorf(t, "%s / on / input %s is required but this path does not supply it", file, name)
 			}
 			if value == "" {
 				switch input.Type {
@@ -297,13 +312,13 @@ func workflowInputValues(t *testing.T, file string, declarations map[string]work
 	}
 	for name := range supplied {
 		if _, ok := declarations[name]; !ok {
-			t.Errorf("%s / on / input %s is supplied but not declared", file, name)
+			trace.errorf(t, "%s / on / input %s is supplied but not declared", file, name)
 		}
 	}
 	return values
 }
 
-func bindWorkflowInputs(t *testing.T, file string, parent map[string]string, declarations map[string]workflowInput, supplied map[string]string) map[string]string {
+func (trace *workflowTrace) bindWorkflowInputs(t *testing.T, file string, parent map[string]string, declarations map[string]workflowInput, supplied map[string]string) map[string]string {
 	t.Helper()
 	ctx := maps.Clone(parent)
 	for key := range ctx {
@@ -311,7 +326,7 @@ func bindWorkflowInputs(t *testing.T, file string, parent map[string]string, dec
 			delete(ctx, key)
 		}
 	}
-	for name, value := range workflowInputValues(t, file, declarations, supplied) {
+	for name, value := range trace.workflowInputValues(t, file, declarations, supplied) {
 		ctx["inputs."+name] = value
 		ctx["type:inputs."+name] = declarations[name].Type
 	}
@@ -325,6 +340,19 @@ func resolveWorkflowValues(t *testing.T, ctx, fields map[string]string) map[stri
 		resolved[name] = expandExpressions(t, value, ctx)
 	}
 	return resolved
+}
+
+// maskValueInputs replaces each set caller value with a placeholder. Such a
+// value changes on every commit or retention setting, but its presence can
+// still select a mode.
+func maskValueInputs(ctx map[string]string) map[string]string {
+	masked := maps.Clone(ctx)
+	for key, value := range ctx {
+		if name, ok := strings.CutPrefix(key, "inputs."); ok && workflowValueInput(name) && value != "" {
+			masked[key] = "(set)"
+		}
+	}
+	return masked
 }
 
 func workflowEnv(t *testing.T, ctx, env map[string]string) map[string]string {
@@ -401,8 +429,11 @@ func workflowMatrix(t *testing.T, site workflowSite, matrix yaml.Node, ctx map[s
 }
 
 var (
-	modeRef      = regexp.MustCompile(`(?i)'(?:[^']|'')*'|\b(?:github(?:\s*\.\s*|\s*\[\s*')(?:event_name|ref_type|ref|actor)\b(?:'\s*\])?|(?:github\.event\.)?inputs(?:\s*\.\s*[\w-]+|\s*\[\s*'[\w-]+'\s*\]))`)
-	shellModeRef = regexp.MustCompile(`\b(GITHUB_EVENT_NAME|GITHUB_REF[A-Z_0-9]*)\b`)
+	// Every context that differs between a release dispatch and a pre-merge
+	// run can select a mode: the event and its payload, the refs, the actors
+	// and the workflow name.
+	modeRef      = regexp.MustCompile(`(?i)'(?:[^']|'')*'|\b(?:github(?:\s*\.\s*|\s*\[\s*')(?:event_name|ref_type|ref_name|ref|base_ref|head_ref|triggering_actor|actor|workflow)\b(?:'\s*\])?|github(?:\s*\.\s*|\s*\[\s*')event(?:'\s*\])?(?:\s*\.\s*[\w-]+|\s*\[\s*'[\w-]+'\s*\])+|inputs(?:\s*\.\s*[\w-]+|\s*\[\s*'[\w-]+'\s*\]))`)
+	shellModeRef = regexp.MustCompile(`\b(GITHUB_(?:EVENT_NAME|EVENT_PATH|REF[A-Z_0-9]*|BASE_REF|HEAD_REF|TRIGGERING_ACTOR|ACTOR|WORKFLOW))\b`)
 	modeLiteral  = regexp.MustCompile(`'(?:[^']|'')*'`)
 )
 
@@ -411,16 +442,27 @@ func modeReferences(source string) []string {
 	for _, match := range modeRef.FindAllString(source, -1) {
 		if !strings.HasPrefix(match, "'") {
 			ref := strings.ToLower(strings.NewReplacer("['", ".", "']", "", " ", "", "\t", "").Replace(match))
-			refs = append(refs, strings.TrimPrefix(ref, "github.event."))
+			if strings.HasPrefix(ref, "github.event.inputs.") {
+				ref = strings.TrimPrefix(ref, "github.event.")
+			}
+			refs = append(refs, ref)
 		}
 	}
 	return refs
 }
 
+// modeKey names a condition or field by the mode references it reads, so its
+// obligation does not depend on the surrounding expression text.
+func modeKey(source string) string {
+	refs := modeReferences(source)
+	slices.Sort(refs)
+	return strings.Join(slices.Compact(refs), " ")
+}
+
 func (trace *workflowTrace) guard(t *testing.T, site workflowSite, ctx map[string]string, condition string, reached bool) {
 	t.Helper()
-	if len(modeReferences(condition)) != 0 {
-		key := modeSite{site, "if", condition}
+	if refs := modeKey(condition); refs != "" {
+		key := modeSite{site, "if", refs}
 		trace.guards[key] = true
 		trace.observe(key, fmt.Sprint(reached))
 		for _, probe := range modeProbes(condition, ctx) {
@@ -471,12 +513,14 @@ func modeProbes(source string, ctx map[string]string) []map[string]string {
 			probes = append(probes, probe)
 		}
 	}
-	if slices.Contains(refs, "github.actor") {
-		for _, base := range append(slices.Clone(probes), ctx) {
-			for _, literal := range literals {
-				probe := maps.Clone(base)
-				probe["github.actor"] = strings.ReplaceAll(literal[1:len(literal)-1], "''", "'")
-				probes = append(probes, probe)
+	for _, actor := range []string{"github.actor", "github.triggering_actor"} {
+		if slices.Contains(refs, actor) {
+			for _, base := range append(slices.Clone(probes), ctx) {
+				for _, literal := range literals {
+					probe := maps.Clone(base)
+					probe[actor] = strings.ReplaceAll(literal[1:len(literal)-1], "''", "'")
+					probes = append(probes, probe)
+				}
 			}
 		}
 	}
@@ -529,11 +573,30 @@ func (trace *workflowTrace) modeFields(t *testing.T, site workflowSite, ctx, wit
 	for name, value := range env {
 		check("env."+name, value)
 	}
+	// A concurrency value is one outcome however many expressions build it.
+	group := func(field, value string) {
+		expressions := strings.Join(expressionPattern.FindAllString(value, -1), " ")
+		refs := modeKey(expressions)
+		if refs == "" {
+			return
+		}
+		key := modeSite{site, field, refs}
+		masked := maskValueInputs(ctx)
+		outcome := expandExpressions(t, value, masked)
+		trace.observe(key, outcome)
+		if strings.ContainsAny(expressions, "=!&|(") {
+			for _, probe := range modeProbes(expressions, masked) {
+				if alternative := expandExpressions(t, value, probe); alternative != outcome {
+					trace.probe(key, alternative)
+				}
+			}
+		}
+	}
 	if concurrency.Kind == yaml.ScalarNode {
-		check("concurrency", concurrency.Value)
+		group("concurrency", concurrency.Value)
 	}
 	for i := 0; i < len(concurrency.Content); i += 2 {
-		check("concurrency."+concurrency.Content[i].Value, concurrency.Content[i+1].Value)
+		group("concurrency."+concurrency.Content[i].Value, concurrency.Content[i+1].Value)
 	}
 	check("run-interpolation", run)
 	// The shell is never executed by this test. Mode reads in inline shell
@@ -543,13 +606,12 @@ func (trace *workflowTrace) modeFields(t *testing.T, site workflowSite, ctx, wit
 		if strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		refs := shellModeRef.FindAllStringSubmatch(line, -1)
-		if len(refs) != 0 && !single {
-			trace.observe(modeSite{site, "run-reference", strings.TrimSpace(line)}, "inline shell")
-		} else {
-			for _, match := range refs {
-				outcome := ctx["github."+strings.ToLower(strings.TrimPrefix(match[1], "GITHUB_"))]
-				trace.observe(modeSite{site, "run-reference", match[1]}, outcome)
+		for _, match := range shellModeRef.FindAllStringSubmatch(line, -1) {
+			key := modeSite{site, "run-reference", match[1]}
+			if single {
+				trace.observe(key, ctx["github."+strings.ToLower(strings.TrimPrefix(match[1], "GITHUB_"))])
+			} else {
+				trace.observe(key, "inline shell")
 			}
 		}
 	}
@@ -557,13 +619,16 @@ func (trace *workflowTrace) modeFields(t *testing.T, site workflowSite, ctx, wit
 
 var versionCommand = regexp.MustCompile(`\bkatl-release(?:-artifacts[ \t]+(?:stage|notes)|[ \t]+bundle-name)\b|--prerelease\b`)
 
-func (trace *workflowTrace) steps(t *testing.T, root, file, job string, steps []workflowStep, ctx map[string]string, stack []string) {
+// steps traces a job's steps. jobEnv is the job's resolved env, which every
+// step's visit carries with its own.
+func (trace *workflowTrace) steps(t *testing.T, root, file, job string, steps []workflowStep, ctx, jobEnv map[string]string, stack []string) {
 	t.Helper()
 	ctx = maps.Clone(ctx)
 	ctx["status"] = "success"
 	seen := map[string]bool{}
+	labels := stepLabels(steps)
 	for index, step := range steps {
-		label := stepLabel(step, index+1)
+		label := labels[index]
 		site := workflowSite{file, job, label}
 		ctx["expression-location"] = site.String() + ": "
 		if seen[label] {
@@ -601,6 +666,11 @@ func (trace *workflowTrace) steps(t *testing.T, root, file, job string, steps []
 			}
 		}
 		with := resolveWorkflowValues(t, ctx, step.With)
+		env := maps.Clone(jobEnv)
+		if env == nil {
+			env = map[string]string{}
+		}
+		maps.Copy(env, resolveWorkflowValues(t, maskValueInputs(ctx), step.Env))
 		if strings.HasPrefix(step.Uses, "./") {
 			target := localWorkflowPath(t, site, step.Uses)
 			// The hosted VM's explicit-ref path checks out these actions into
@@ -613,13 +683,13 @@ func (trace *workflowTrace) steps(t *testing.T, root, file, job string, steps []
 				t.Fatalf("%s recursively uses %s", site, target)
 			}
 			file, action := readComposite(t, root, target)
-			with = workflowInputValues(t, file, action.Inputs, with)
-			child := bindWorkflowInputs(t, file, workflowEnv(t, ctx, step.Env), action.Inputs, with)
+			with = trace.workflowInputValues(t, file, action.Inputs, with)
+			child := trace.bindWorkflowInputs(t, file, workflowEnv(t, ctx, step.Env), action.Inputs, with)
 			dropOutputs(child, "steps.")
 			dropOutputs(child, "needs.")
-			trace.steps(t, root, file, "(composite)", action.Runs.Steps, child, append(stack, target))
+			trace.steps(t, root, file, "(composite)", action.Runs.Steps, child, nil, append(stack, target))
 		}
-		trace.visits = append(trace.visits, workflowVisit{site: site, owner: owner, with: with})
+		trace.visits = append(trace.visits, workflowVisit{site: site, owner: owner, with: with, env: env})
 	}
 }
 

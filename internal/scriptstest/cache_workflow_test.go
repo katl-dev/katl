@@ -120,7 +120,7 @@ func TestCachePolicyRules(t *testing.T) {
 		// builder; counting matrix legs or flavours as savers flags job d. Counting
 		// savers alone accepts job f, the sole but undeclared saver of kernel.
 		{fixture: "multiple-savers", want: []string{
-			"multiple-savers builder action builder step docker/build-push-action@v7 #0",
+			"multiple-savers builder action builder step docker/build-push-action@v7 #1",
 			"multiple-savers go ci.yml job a step Save Go",
 			"multiple-savers go ci.yml job b step Save Go",
 			"multiple-savers kernel ci.yml job f step Save kernel",
@@ -311,14 +311,24 @@ func (c *cacheChecker) report(rule, subject string, site cacheSite, step, detail
 	c.violations[v.id()] = v
 }
 
-func stepLabel(step workflowStep, index int) string {
-	switch {
-	case step.Name != "":
-		return step.Name
-	case step.ID != "":
-		return step.ID
+// stepLabels names each step of one job by its name or ID. An anonymous step
+// is named by what it uses and its ordinal among the job's anonymous steps
+// that use the same thing, so inserting another step leaves its label alone.
+func stepLabels(steps []workflowStep) []string {
+	labels := make([]string, len(steps))
+	ordinals := map[string]int{}
+	for index, step := range steps {
+		switch {
+		case step.Name != "":
+			labels[index] = step.Name
+		case step.ID != "":
+			labels[index] = step.ID
+		default:
+			ordinals[step.Uses]++
+			labels[index] = step.Uses + " #" + strconv.Itoa(ordinals[step.Uses])
+		}
 	}
-	return step.Uses + " #" + strconv.Itoa(index)
+	return labels
 }
 
 func usedAction(step workflowStep) string {
@@ -337,8 +347,9 @@ func localAction(uses string) (string, bool) {
 }
 
 func (c *cacheChecker) checkSteps(site cacheSite, steps []workflowStep) {
+	labels := stepLabels(steps)
 	for index, step := range steps {
-		label := stepLabel(step, index)
+		label := labels[index]
 		c.checkSaveRef(site, label, step)
 
 		switch usedAction(step) {
@@ -640,6 +651,7 @@ func TestGoCacheKeyHasOneOwner(t *testing.T) {
 
 	definitions := 0
 	check := func(site cacheSite, steps []workflowStep) {
+		labels := stepLabels(steps)
 		for index, step := range steps {
 			if !strings.HasPrefix(usedAction(step), "actions/cache") {
 				continue
@@ -654,7 +666,7 @@ func TestGoCacheKeyHasOneOwner(t *testing.T) {
 					definitions++
 					continue
 				}
-				t.Errorf("%s step %s writes a %s cache key; use the cache-key output of the %s action", site, stepLabel(step, index), family, owner)
+				t.Errorf("%s step %s writes a %s cache key; use the cache-key output of the %s action", site, labels[index], family, owner)
 			}
 		}
 	}

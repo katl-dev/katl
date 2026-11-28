@@ -196,13 +196,16 @@ func coverageFindings(release, merge *workflowTrace) []releaseCoverageGap {
 		if unmatched[visit.site] == nil {
 			unmatched[visit.site] = map[string]bool{}
 		}
-		var with []string
+		var settings []string
 		for _, key := range slices.Sorted(maps.Keys(visit.with)) {
 			if !workflowValueInput(key) {
-				with = append(with, fmt.Sprintf("%s=%q", key, visit.with[key]))
+				settings = append(settings, fmt.Sprintf("%s=%q", key, visit.with[key]))
 			}
 		}
-		unmatched[visit.site][strings.Join(with, ", ")] = true
+		for _, key := range slices.Sorted(maps.Keys(visit.env)) {
+			settings = append(settings, fmt.Sprintf("env.%s=%q", key, visit.env[key]))
+		}
+		unmatched[visit.site][strings.Join(settings, ", ")] = true
 	}
 	for site := range missingCalls {
 		add(site, "call", "", "local workflow is never called before merge")
@@ -270,7 +273,7 @@ func sameWorkflowVisit(a, b workflowVisit) bool {
 	if a.site.step == "(environment)" {
 		return a.site == b.site && a.owner == b.owner
 	}
-	return (a.site == b.site || a.owner != "" && a.owner == b.owner) && equalWorkflowWith(a.with, b.with)
+	return (a.site == b.site || a.owner != "" && a.owner == b.owner) && equalWorkflowWith(a.with, b.with) && maps.Equal(a.env, b.env)
 }
 
 func equalWorkflowWith(a, b map[string]string) bool {
@@ -393,7 +396,7 @@ func checkCIResultCoverage(t *testing.T, root string, merge *workflowTrace) {
 		t.Fatalf("%s / result / (job) must check the outcomes of planned jobs", ciWorkflowPath)
 	}
 	gate := result.Steps[0]
-	gateSite := workflowSite{ciWorkflowPath, "result", stepLabel(gate, 1)}
+	gateSite := workflowSite{ciWorkflowPath, "result", stepLabels(result.Steps)[0]}
 	if gate.ContinueOnError || gate.Env["NEEDS"] != "${{ toJSON(needs) }}" {
 		t.Errorf("%s must check every dependency's result and propagate failure", gateSite)
 	}
@@ -439,7 +442,7 @@ func checkCIResultCoverage(t *testing.T, root string, merge *workflowTrace) {
 			return runCIResult(result.Steps[0].Run, data)
 		}
 		if output, err := withResult("", ""); err != nil {
-			t.Errorf("%s / result / %s rejects successful %s jobs: %v: %s", ciWorkflowPath, stepLabel(result.Steps[0], 1), event, err, output)
+			t.Errorf("%s rejects successful %s jobs: %v: %s", gateSite, event, err, output)
 			continue
 		}
 		for job := range run {
