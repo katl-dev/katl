@@ -47,15 +47,15 @@ reads it back. Use `cut` to start the workflow from a checkout.
 ### `journeys`
 
 ```sh
-scripts/katl-release journeys 2026.12.1 v2026.12.0
+scripts/katl-release journeys 2026.12.1
 ```
 
-Run this after pushing the release branch, with the final version and the
-previous final release tag, which `scripts/production-upgrade-baseline.txt`
-names at the release branch's cut commit
-(`scripts/katl-release-artifacts upgrade-baseline`). The command lists
-outstanding journey PRs in the release and open gap fixes, and exits nonzero
-if work remains or GitHub cannot complete the check.
+Run this after pushing the release branch, with the final version. The
+previous final release is the tag in `scripts/production-upgrade-baseline.txt`
+at the release branch head (`scripts/katl-release-artifacts upgrade-baseline`
+prints it). The command lists outstanding journey PRs in the release and open
+gap fixes, and exits nonzero if work remains or GitHub cannot complete the
+check.
 
 ## Retrieve a bundle
 

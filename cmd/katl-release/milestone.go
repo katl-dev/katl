@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -67,7 +66,7 @@ func mergeMilestone(ctx context.Context, args []string, stdout, stderr io.Writer
 		versions[i] = v
 	}
 	from, to := versions[0], versions[1]
-	if cmp.Or(cmp.Compare(to.Year, from.Year), cmp.Compare(to.Month, from.Month), cmp.Compare(to.Patch, from.Patch)) <= 0 {
+	if compareFinal(to, from) <= 0 {
 		return fmt.Errorf("following version %s must be later than %s", to, from)
 	}
 

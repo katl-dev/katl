@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -57,4 +58,9 @@ func versionCommand(args []string, stdout io.Writer) error {
 		return err
 	}
 	return errors.New("usage: scripts/katl-release version VERSION\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT")
+}
+
+// compareFinal orders final versions by their release number.
+func compareFinal(a, b releaseversion.Version) int {
+	return cmp.Or(cmp.Compare(a.Year, b.Year), cmp.Compare(a.Month, b.Month), cmp.Compare(a.Patch, b.Patch))
 }

@@ -21,20 +21,21 @@ const (
 	releaseBlockerLabel = "release-blocker"
 )
 
+// upgradeBaselineFile pins the previous final release; scripts/katl-release-artifacts
+// reads the same file for the production upgrade baseline.
+const upgradeBaselineFile = "scripts/production-upgrade-baseline.txt"
+
 func journeys(ctx context.Context, args []string, stdout io.Writer, r *reader) error {
-	if len(args) != 2 {
-		return errors.New("usage: scripts/katl-release journeys VERSION PREVIOUS_TAG")
+	if len(args) != 1 {
+		return errors.New("usage: scripts/katl-release journeys VERSION")
 	}
 	version, err := validateVersion(args[0])
 	if err != nil || !version.IsFinal() {
 		return fmt.Errorf("VERSION must be a final KatlOS version such as 2026.12.1, got %q", args[0])
 	}
-	previous, err := releaseversion.ParseTag(args[1])
-	if err != nil || !previous.IsFinal() || previous == version {
-		return fmt.Errorf("PREVIOUS_TAG must name the previous final KatlOS release, got %q", args[1])
-	}
 
-	// Bind both refs before checking PRs so every comparison uses the same commits.
+	// Bind the branch head first and read the pin there, so the range and
+	// every comparison use the same commits.
 	branch := releasestate.Branch(version)
 	head, err := r.refCommit(ctx, releasestate.Ref(version))
 	if err != nil {
@@ -43,12 +44,19 @@ func journeys(ctx context.Context, args []string, stdout io.Writer, r *reader) e
 	if head == "" {
 		return fmt.Errorf("GitHub has no %s branch; run the journey gate after the branch cut", branch)
 	}
+	previous, err := r.upgradeBaseline(ctx, branch, head)
+	if err != nil {
+		return err
+	}
+	if compareFinal(previous, version) >= 0 {
+		return fmt.Errorf("%s on %s names %s, which is not a release before %s", upgradeBaselineFile, branch, previous.Tag(), version)
+	}
 	base, err := r.refCommit(ctx, "refs/tags/"+previous.Tag())
 	if err != nil {
 		return err
 	}
 	if base == "" {
-		return fmt.Errorf("GitHub has no %s tag; supply the previous final release tag", previous.Tag())
+		return fmt.Errorf("GitHub has no %s tag, which %s on %s names", previous.Tag(), upgradeBaselineFile, branch)
 	}
 
 	prs, err := r.outstandingJourneyPRs(ctx, head, base)
@@ -72,6 +80,23 @@ func journeys(ctx context.Context, args []string, stdout io.Writer, r *reader) e
 		fmt.Fprintf(stdout, "  Gap fix #%d %s (%s)\n", issue.Number, issue.Title, issue.URL)
 	}
 	return errors.New("resolve the listed journeys and gap fixes before cutting a release candidate")
+}
+
+// upgradeBaseline reads the pinned previous final release at commit of branch.
+func (r *reader) upgradeBaseline(ctx context.Context, branch, commit string) (releaseversion.Version, error) {
+	body, err := r.get(ctx, r.repo("contents/"+upgradeBaselineFile+"?ref="+commit), false, "application/vnd.github.raw")
+	if notFound(err) {
+		return releaseversion.Version{}, fmt.Errorf("%s is missing on %s", upgradeBaselineFile, branch)
+	}
+	if err != nil {
+		return releaseversion.Version{}, err
+	}
+	tag := strings.TrimSpace(string(body))
+	previous, err := releaseversion.ParseTag(tag)
+	if err != nil || !previous.IsFinal() {
+		return releaseversion.Version{}, fmt.Errorf("%s on %s must contain a final KatlOS release tag, got %q", upgradeBaselineFile, branch, tag)
+	}
+	return previous, nil
 }
 
 // GitHub's issues listing also includes PRs. Its merge timestamp identifies
