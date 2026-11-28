@@ -898,3 +898,126 @@ func TestInstallApplyNoWaitingInstaller(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallApplyStorageRejectionNamesSelector(t *testing.T) {
+	disk := func(path, byID string) discovery.BlockDevice {
+		return discovery.BlockDevice{Path: path, Type: discovery.DeviceDisk, ByID: []string{byID}, SizeBytes: 64 << 30}
+	}
+	root := disk("/dev/vda", "/dev/disk/by-id/ata-cp-root")
+	const dataVolume = `      storage:
+        volumes:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-cp-data
+            filesystem: xfs
+`
+	for _, test := range []struct {
+		name string
+		// systemDisk replaces cp-1's system disk selector; volumes adds
+		// cp-1's storage section.
+		systemDisk string
+		volumes    string
+		disks      []discovery.BlockDevice
+		rejection  string
+		nextStep   string
+	}{
+		{
+			name:       "system disk matches none",
+			systemDisk: "byID: /dev/disk/by-id/virtio-nosuchdisk",
+			disks:      []discovery.BlockDevice{root},
+			rejection:  `target disk selector (byID="/dev/disk/by-id/virtio-nosuchdisk") matched no whole disk; disks present: /dev/vda`,
+			nextStep:   `edit spec.nodes["cp-1"].install.systemDisk in CONFIG so it selects exactly one suitable disk, then rerun: katlctl install apply --config 'CONFIG' --node 'cp-1' --endpoint 'ENDPOINT'`,
+		},
+		{
+			name:       "system disk matches several",
+			systemDisk: "type: ssd",
+			disks:      []discovery.BlockDevice{root, disk("/dev/vdb", "/dev/disk/by-id/ata-cp-data")},
+			rejection:  `target disk selector (type="ssd") matched 2 whole disks`,
+			nextStep:   `edit spec.nodes["cp-1"].install.systemDisk in CONFIG so it selects exactly one suitable disk, then rerun: katlctl install apply --config 'CONFIG' --node 'cp-1' --endpoint 'ENDPOINT'`,
+		},
+		{
+			name:      "volume disk matches none",
+			volumes:   strings.Replace(dataVolume, "            filesystem", "            wipe: true\n            filesystem", 1),
+			disks:     []discovery.BlockDevice{root},
+			rejection: `volume "data" disk: target disk selector (byID="/dev/disk/by-id/ata-cp-data") matched no whole disk`,
+			nextStep:  `edit spec.nodes["cp-1"].storage.volumes[name="data"].selector.disk in CONFIG so it selects exactly one suitable disk, then rerun: katlctl install apply --config 'CONFIG' --node 'cp-1' --endpoint 'ENDPOINT'`,
+		},
+		{
+			// The selector resolved; the remedy is the installer's own.
+			name:      "volume disk without its partition",
+			volumes:   dataVolume,
+			disks:     []discovery.BlockDevice{root, disk("/dev/vdb", "/dev/disk/by-id/ata-cp-data")},
+			rejection: `volume "data" disk: partition label u-data was not found on /dev/vdb; set wipe to true to initialize this disk`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sourcePath := writeClusterConfig(t)
+			source, err := os.ReadFile(sourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.systemDisk != "" {
+				source = bytes.Replace(source, []byte("byID: /dev/disk/by-id/ata-cp-root"), []byte(test.systemDisk), 1)
+			}
+			source = append(source, test.volumes...)
+			if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
+				LocalRef:         "images/katlos-install-test-x86_64.squashfs",
+				SHA256:           strings.Repeat("a", 64),
+				SizeBytes:        1,
+				Version:          "test",
+				Architecture:     "x86_64",
+				RuntimeInterface: "katl-runtime-1",
+				Role:             "install",
+			})
+			server.SetDiscovery(discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: test.disks}})
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+
+			var stdout, stderr bytes.Buffer
+			err = run(context.Background(), []string{
+				"install", "apply", "--config", sourcePath, "--node", "cp-1", "--endpoint", ts.URL, "--no-wait",
+			}, &stdout, &stderr)
+
+			if err == nil || !strings.Contains(err.Error(), "submit installer config bundle: HTTP 400: plan storage targets: ") || !strings.Contains(err.Error(), test.rejection) {
+				t.Fatalf("run() error = %v, want rejection containing %q", err, test.rejection)
+			}
+			nextStep := strings.NewReplacer("CONFIG", sourcePath, "ENDPOINT", ts.URL).Replace(test.nextStep)
+			if test.nextStep == "" {
+				if strings.Contains(err.Error(), "then rerun: ") {
+					t.Fatalf("run() error = %v, want no selector guidance", err)
+				}
+				return
+			}
+			if !strings.HasSuffix(err.Error(), "; "+nextStep) {
+				t.Fatalf("run() error =\n%v\nwant it to end with\n%s", err, nextStep)
+			}
+		})
+	}
+}
+
+func TestInstallApplyOtherRejectionKeepsInstallerMessage(t *testing.T) {
+	sourcePath := writeClusterConfig(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(installTestStatus(handoff.HandoffWaiting, installstatus.StateWaitingForConfig, ""))
+	})
+	const rejection = "invalid destructive storage acknowledgement: unknown volume"
+	mux.HandleFunc("POST /v1/config-bundle", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, rejection, http.StatusBadRequest)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"install", "apply", "--config", sourcePath, "--node", "cp-1", "--endpoint", ts.URL, "--no-wait",
+	}, &stdout, &stderr)
+
+	if err == nil || !strings.HasSuffix(err.Error(), "submit installer config bundle: HTTP 400: "+rejection) {
+		t.Fatalf("run() error = %v, want the installer rejection unchanged", err)
+	}
+}

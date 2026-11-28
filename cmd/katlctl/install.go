@@ -326,7 +326,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, manifest co
 	fmt.Fprintf(stderr, "installing node %s via %s\n", nodeName, endpoint)
 	accepted, err := submitInstallBundle(waitCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name, acknowledgements)
 	if err != nil {
-		return "", err
+		return "", withStorageNextStep(err, opts, selected.Node.Name)
 	}
 	report := newInstallHandoffReport(endpoint, selected.Node.Name, accepted)
 	report.configPath = opts.configPath
@@ -724,6 +724,39 @@ func submitInstallerSSHKeys(ctx context.Context, client *http.Client, endpoint s
 	return doInstallRequest(client, req, "configure installer SSH access")
 }
 
+// installerRejection is an installer handoff response outside 2xx.
+type installerRejection struct {
+	action  string
+	status  int
+	message string
+}
+
+func (e *installerRejection) Error() string {
+	return fmt.Sprintf("%s: HTTP %d: %s", e.action, e.status, e.message)
+}
+
+// withStorageNextStep tells the operator which selector to edit, in which
+// file, and how to rerun when the installer rejects a node's storage selection.
+func withStorageNextStep(err error, opts installApplyOptions, node string) error {
+	var rejection *installerRejection
+	if !errors.As(err, &rejection) || rejection.status != http.StatusBadRequest {
+		return err
+	}
+	field, ok := handoff.StorageSelectorField(rejection.message)
+	if !ok {
+		return err
+	}
+	rerun := "katlctl install apply --config " + shellQuote(opts.configPath) + " --node " + shellQuote(node)
+	if endpoint := strings.TrimSpace(opts.endpoint); endpoint != "" {
+		rerun += " --endpoint " + shellQuote(endpoint)
+	}
+	device := "disk"
+	if strings.HasSuffix(field, ".partition") {
+		device = "partition"
+	}
+	return fmt.Errorf("%w; edit spec.nodes[%q].%s in %s so it selects exactly one suitable %s, then rerun: %s", err, node, field, opts.configPath, device, rerun)
+}
+
 func doInstallRequest(client *http.Client, req *http.Request, action string) (handoff.HandoffStatus, error) {
 	resp, err := client.Do(req)
 	if err != nil {
@@ -742,7 +775,7 @@ func doInstallRequest(client *http.Client, req *http.Request, action string) (ha
 		if message == "" {
 			message = http.StatusText(resp.StatusCode)
 		}
-		return handoff.HandoffStatus{}, fmt.Errorf("%s: HTTP %d: %s", action, resp.StatusCode, message)
+		return handoff.HandoffStatus{}, &installerRejection{action: action, status: resp.StatusCode, message: message}
 	}
 	var status handoff.HandoffStatus
 	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&status); err != nil {
