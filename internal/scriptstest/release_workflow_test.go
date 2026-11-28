@@ -24,6 +24,8 @@ type workflowStep struct {
 }
 
 type workflowJob struct {
+	Name            string            `yaml:"name"`
+	Environment     yaml.Node         `yaml:"environment"`
 	If              string            `yaml:"if"`
 	Needs           yaml.Node         `yaml:"needs"`
 	Uses            string            `yaml:"uses"`
@@ -33,12 +35,13 @@ type workflowJob struct {
 	Env             map[string]string `yaml:"env"`
 	With            map[string]string `yaml:"with"`
 	Strategy        struct {
-		Matrix map[string]yaml.Node `yaml:"matrix"`
+		Matrix yaml.Node `yaml:"matrix"`
 	} `yaml:"strategy"`
 	Steps []workflowStep `yaml:"steps"`
 }
 
 type workflowFile struct {
+	Name        string                 `yaml:"name"`
 	On          yaml.Node              `yaml:"on"`
 	Permissions map[string]string      `yaml:"permissions"`
 	Concurrency yaml.Node              `yaml:"concurrency"`
@@ -109,7 +112,7 @@ func TestProductionBuildGraph(t *testing.T) {
 		t.Errorf("KATL_FLAVOUR = %q, want the flavour input", got)
 	}
 	for name, job := range workflow.Jobs {
-		if _, ok := job.Strategy.Matrix["flavour"]; ok {
+		if _, ok := matrixAxes(t, job)["flavour"]; ok {
 			t.Errorf("%s matrixes over flavour; callers choose the flavour", name)
 		}
 	}
@@ -158,10 +161,21 @@ func TestProductionBuildRuntimeHandoff(t *testing.T) {
 func TestProductionBuildExtensionMatrix(t *testing.T) {
 	workflow, _ := readWorkflow(t, productionBuild)
 
-	matrix := workflow.Jobs["extensions"].Strategy.Matrix
+	matrix := matrixAxes(t, workflow.Jobs["extensions"])
 	if len(matrix) != 1 || matrix["extension"].Value != extensionsMatrixFn {
 		t.Error("extension matrix must come from the runtime job's recipe inventory and nothing else")
 	}
+}
+
+func matrixAxes(t *testing.T, job workflowJob) map[string]yaml.Node {
+	t.Helper()
+	var axes map[string]yaml.Node
+	if job.Strategy.Matrix.Kind != 0 {
+		if err := job.Strategy.Matrix.Decode(&axes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return axes
 }
 
 func TestProductionBuildEmbedsKernelExtensions(t *testing.T) {
@@ -377,7 +391,7 @@ func TestProductionQualificationTakesFlavour(t *testing.T) {
 		t.Error("flavour input must be required for dispatch and calls")
 	}
 	for name, job := range workflow.Jobs {
-		if len(job.Strategy.Matrix) != 0 {
+		if len(matrixAxes(t, job)) != 0 {
 			t.Errorf("%s has a matrix; each call qualifies one flavour", name)
 		}
 		if job.Env["KATL_FLAVOUR"] != "${{ inputs.flavour }}" {

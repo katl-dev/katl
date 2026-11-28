@@ -43,7 +43,7 @@ func notFound(err error) bool {
 	return errors.As(err, &api) && api.status == 404
 }
 
-// transient reports whether a failed read may succeed when repeated: a
+// transient reports whether a failed request may succeed when repeated: a
 // network failure, a server error or a rate limit, but not a refusal, a
 // missing gh or missing credentials.
 func transient(err error) bool {
@@ -138,12 +138,16 @@ func (r *reader) get(ctx context.Context, endpoint string, paginate bool, accept
 
 // retry runs one read with backoff while it fails transiently.
 func (r *reader) retry(ctx context.Context, read func(context.Context) error) error {
+	backoff := r.backoff()
+	return backoff.DoAttempts(ctx, readAttempts, read, transient)
+}
+
+func (r *reader) backoff() retry.Backoff {
 	delay := r.delay
 	if delay == 0 {
 		delay = 2 * time.Second
 	}
-	backoff := retry.NewBackoff(delay, 15*delay)
-	return backoff.DoAttempts(ctx, readAttempts, read, transient)
+	return retry.NewBackoff(delay, 15*delay)
 }
 
 func (r *reader) repo(path string) string { return "repos/" + r.repository + "/" + path }
@@ -348,27 +352,6 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	if err != nil {
 		return err
 	}
-	// GitHub lists a run's artifacts without the attempt that uploaded them.
-	// Attempts of one run follow each other, so an attempt's artifacts are
-	// those created from its start until the next attempt starts. Without
-	// either start the bounds are unknown, and guessing them could credit an
-	// attempt with another's bundle.
-	if run.StartedAt.IsZero() {
-		return fmt.Errorf("run attempt %s has no start time, so its artifacts cannot be attributed", attempt)
-	}
-	next := runstatus.Attempt{Run: attempt.Run, Number: attempt.Number + 1}
-	var until time.Time
-	following, err := runstatus.Read(ctx, get, r.repository, next)
-	switch {
-	case notFound(err):
-	case err != nil:
-		return err
-	case following.StartedAt.IsZero():
-		return fmt.Errorf("run attempt %s has no start time, so the artifacts of %s cannot be attributed", next, attempt)
-	default:
-		until = following.StartedAt
-	}
-
 	read := releasestate.Attempt{Run: run}
 	type jobsPage struct {
 		Jobs []struct{ Name, Conclusion string } `json:"jobs"`
@@ -380,48 +363,99 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	}); err != nil {
 		return err
 	}
-	type artifactsPage struct {
-		Artifacts []struct {
-			Name        string    `json:"name"`
-			CreatedAt   time.Time `json:"created_at"`
-			WorkflowRun struct {
-				ID int64 `json:"id"`
-			} `json:"workflow_run"`
-		} `json:"artifacts"`
-	}
-	if err := pages(ctx, r, r.repo(fmt.Sprintf("actions/runs/%d/artifacts?per_page=100", attempt.Run)), func(page artifactsPage) {
-		for _, artifact := range page.Artifacts {
-			if artifact.WorkflowRun.ID == attempt.Run && !artifact.CreatedAt.Before(run.StartedAt) &&
-				(until.IsZero() || artifact.CreatedAt.Before(until)) {
-				read.Artifacts = append(read.Artifacts, artifact.Name)
-			}
-		}
-	}); err != nil {
+	artifacts, err := r.attemptArtifacts(ctx, attempt, run.StartedAt)
+	if err != nil {
 		return err
+	}
+	for _, artifact := range artifacts {
+		read.Artifacts = append(read.Artifacts, artifact.Name)
 	}
 	in.Attempts[attempt] = read
 	return nil
 }
 
+type attemptArtifact struct {
+	artifact
+	CreatedAt   time.Time `json:"created_at"`
+	WorkflowRun struct {
+		ID int64 `json:"id"`
+	} `json:"workflow_run"`
+}
+
+func (r *reader) attemptArtifacts(ctx context.Context, attempt runstatus.Attempt, startedAt time.Time) ([]attemptArtifact, error) {
+	get := func(ctx context.Context, endpoint string) ([]byte, error) { return r.get(ctx, endpoint, false, "") }
+	// GitHub lists a run's artifacts without the attempt that uploaded them.
+	// Attempts of one run follow each other, so an attempt's artifacts are
+	// those created from its start until the next attempt starts. Without
+	// either start the bounds are unknown, and guessing them could credit an
+	// attempt with another's bundle.
+	if startedAt.IsZero() {
+		return nil, fmt.Errorf("run attempt %s has no start time, so its artifacts cannot be attributed", attempt)
+	}
+	next := runstatus.Attempt{Run: attempt.Run, Number: attempt.Number + 1}
+	var until time.Time
+	following, err := runstatus.Read(ctx, get, r.repository, next)
+	switch {
+	case notFound(err):
+	case err != nil:
+		return nil, err
+	case following.StartedAt.IsZero():
+		return nil, fmt.Errorf("run attempt %s has no start time, so the artifacts of %s cannot be attributed", next, attempt)
+	default:
+		until = following.StartedAt
+	}
+
+	var artifacts []attemptArtifact
+	type artifactsPage struct {
+		Artifacts []attemptArtifact `json:"artifacts"`
+	}
+	err = pages(ctx, r, r.repo(fmt.Sprintf("actions/runs/%d/artifacts?per_page=100", attempt.Run)), func(page artifactsPage) {
+		for _, artifact := range page.Artifacts {
+			if artifact.WorkflowRun.ID == attempt.Run && !artifact.CreatedAt.Before(startedAt) &&
+				(until.IsZero() || artifact.CreatedAt.Before(until)) {
+				artifacts = append(artifacts, artifact)
+			}
+		}
+	})
+	return artifacts, err
+}
+
 type restRelease struct {
-	TagName    string `json:"tag_name"`
-	Draft      bool   `json:"draft"`
-	Prerelease bool   `json:"prerelease"`
-	HTMLURL    string `json:"html_url"`
-	Assets     []struct {
-		ID     int64  `json:"id"`
-		Name   string `json:"name"`
-		State  string `json:"state"`
-		Digest string `json:"digest"`
-	} `json:"assets"`
+	ID         int64              `json:"id"`
+	TagName    string             `json:"tag_name"`
+	Draft      bool               `json:"draft"`
+	Prerelease bool               `json:"prerelease"`
+	HTMLURL    string             `json:"html_url"`
+	Assets     []restReleaseAsset `json:"assets"`
+}
+
+type restReleaseAsset struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	State  string `json:"state"`
+	Digest string `json:"digest"`
+}
+
+func (a restReleaseAsset) asset() releasestate.Asset {
+	return releasestate.Asset{Name: a.Name, Uploaded: a.State == "uploaded", Digest: a.Digest}
+}
+
+func (r *reader) releaseList(ctx context.Context) ([]restRelease, error) {
+	var listed []restRelease
+	err := pages(ctx, r, r.repo("releases?per_page=100"), func(page []restRelease) { listed = append(listed, page...) })
+	return listed, err
+}
+
+func (r *reader) assetContent(ctx context.Context, id int64) ([]byte, error) {
+	return r.get(ctx, r.repo(fmt.Sprintf("releases/assets/%d", id)), false, "application/octet-stream")
 }
 
 // releases reads the published releases of the version's tags, with the
 // content of each one's SHA256SUMS, and verifies the attestation of a
 // SHA256SUMS that a qualified record names.
 func (r *reader) releases(ctx context.Context, version releaseversion.Version, in *releasestate.Inputs) error {
-	var listed []restRelease
-	if err := pages(ctx, r, r.repo("releases?per_page=100"), func(page []restRelease) { listed = append(listed, page...) }); err != nil {
+	listed, err := r.releaseList(ctx)
+	if err != nil {
 		return err
 	}
 	for _, release := range listed {
@@ -431,11 +465,11 @@ func (r *reader) releases(ctx context.Context, version releaseversion.Version, i
 		}
 		read := releasestate.Release{URL: release.HTMLURL, Prerelease: release.Prerelease}
 		for _, asset := range release.Assets {
-			read.Assets = append(read.Assets, releasestate.Asset{Name: asset.Name, Uploaded: asset.State == "uploaded", Digest: asset.Digest})
+			read.Assets = append(read.Assets, asset.asset())
 			if asset.Name != "SHA256SUMS" || asset.State != "uploaded" {
 				continue
 			}
-			body, err := r.get(ctx, r.repo(fmt.Sprintf("releases/assets/%d", asset.ID)), false, "application/octet-stream")
+			body, err := r.assetContent(ctx, asset.ID)
 			if err != nil {
 				return err
 			}

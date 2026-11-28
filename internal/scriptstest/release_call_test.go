@@ -273,7 +273,7 @@ func TestReleaseCallIdentity(t *testing.T) {
 		{name: "final", event: "workflow_dispatch", commit: calledCommit, version: "2026.12.0"},
 		{name: "scheduled caller", event: "schedule", commit: calledCommit, version: "2026.12.0-rc.2"},
 		{name: "tag caller", event: "push", commit: calledCommit, version: "2026.12.0-rc.3"},
-		{name: "other commit", event: "workflow_dispatch", commit: "89abcdef0123456789abcdef0123456789abcdef", version: "2026.12.0-rc.1", wantErr: "called to build 89abcdef"},
+		{name: "other commit", event: "workflow_dispatch", commit: "89abcdef0123456789abcdef0123456789abcdef", version: "2026.12.0-rc.1", wantErr: "this run builds " + calledCommit + " from v2026.11.5. Dispatch the Release workflow on the release branch whose head is 89abcdef0123456789abcdef0123456789abcdef."},
 		{name: "invalid version", event: "workflow_dispatch", commit: calledCommit, version: "2026.12.0-rc.01", wantErr: "not canonical"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -341,5 +341,30 @@ func TestReleaseCallConcurrency(t *testing.T) {
 	}
 	if fromTag := group("push", "refs/heads/release/2026.12.0", "6", calledCommit); fromTag == group("push", "refs/heads/release/2026.12.0", "7", calledCommit) {
 		t.Errorf("calls from two pushes of one ref share group %q, so GitHub would cancel the queued one", fromTag)
+	}
+
+	release, _ := readReleaseWorkflow(t)
+	var caller struct{ Group string }
+	if err := release.Concurrency.Decode(&caller); err != nil {
+		t.Fatal(err)
+	}
+	ctx := map[string]string{"github.workflow": release.Name, "github.event_name": "workflow_dispatch",
+		"github.ref": "refs/heads/release/2026.12.0", "github.run_id": "4", "inputs.commit": calledCommit}
+	if got, called := expandExpressions(t, caller.Group, ctx), expandExpressions(t, concurrency.Group, ctx); got == called {
+		t.Errorf("Release and its called build share concurrency group %q", got)
+	}
+}
+
+// A tag created by the release App has already been built and published by
+// Release. Its push event must not start the legacy build or publication jobs.
+func TestReleaseAppTagPush(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+	ctx := map[string]string{"github.event_name": "push", "github.ref_type": "tag", "github.actor": "katl-release[bot]", "inputs.qualify_run": "0"}
+	if got := jobsRun(t, workflow, ctx); len(got) != 0 {
+		t.Errorf("App tag push runs legacy jobs %v", got)
+	}
+	ctx["inputs.commit"] = calledCommit
+	if got, want := jobsRun(t, workflow, ctx), jobsRun(t, workflow, releaseTriggers["call from tag"]); !slices.Equal(got, want) {
+		t.Errorf("called workflow runs jobs %v in the App's context, want %v", got, want)
 	}
 }

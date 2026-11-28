@@ -7,9 +7,7 @@ GitHub require an authenticated `gh` with access to `katl-dev/katl`.
 The [release procedure](../../docs/development/releases.md) describes source
 selection, qualification, and publication through GitHub Actions.
 
-Run `scripts/katl-release --help` for command syntax. Only `prepare` defines
-a subcommand flag, `--ref`. Its flag help is available with
-`scripts/katl-release prepare --help`.
+Run `scripts/katl-release --help` for command syntax.
 
 ## Prepare and retrieve a candidate
 
@@ -71,13 +69,16 @@ Set `BUNDLE` to the directory containing the final release files and
 
 ```sh
 scripts/katl-release verify v2026.12.0-rc.1 "$QUALIFIED_SHA" "$BUNDLE"
+scripts/katl-release verify --branch v2026.12.0-rc.1 "$QUALIFIED_SHA" "$BUNDLE"
 ```
 
 Use `verify` on an existing bundle. It checks the files as `checksums`
 does, then verifies provenance for every asset and `SHA256SUMS`. The
-attestations must match `katl-dev/katl`, its release workflow, the exact
-tag ref, and the exact source commit. Check those identities if verification
-fails. For trusted-root fetch errors, check network access to
+attestations must match `katl-dev/katl`, its release build workflow, and the
+exact source commit. Use the default tag ref for bundles built by the legacy
+tag workflow. Use `--branch` for bundles built by **Release**, which uses
+the branch of the final version for both candidate and final builds. For
+trusted-root fetch errors, check network access to
 `tuf-repo-cdn.sigstore.dev` and `tuf-repo.github.com`. For per-file
 attestation errors, check `gh attestation verify` and network access.
 
@@ -175,6 +176,67 @@ The Release workflow's decide job runs this and acts on its JSON output.
 run named by `GITHUB_RUN_ID` is not counted as an active run. It exits zero
 for every decision, a refusal included.
 
+## Publish a qualified bundle
+
+The Release workflow uses these commands after qualification. Submit release
+work through the [Release workflow](../../docs/internal/release-state-machine.md#actions).
+
+### `require-candidate`
+
+```sh
+scripts/katl-release require-candidate 2026.12.1-rc.1
+```
+
+The pre-release job proceeds only if the decided version is a release
+candidate numbered 1 or higher.
+
+### `confirm-final`
+
+```sh
+scripts/katl-release confirm-final 2026.12.1 "$QUALIFIED_SHA" "$SHA256SUMS_DIGEST"
+```
+
+After approval, the final **Publish** job checks that the state machine
+still selects this version and commit and that the qualified digest belongs
+to the current run attempt. If the branch moved or an extension reference
+already exists, the command reports the state machine's refusal.
+
+### `draft`
+
+```sh
+scripts/katl-release draft 2026.12.1-rc.1 "$QUALIFIED_SHA" "$BUNDLE"
+```
+
+Verifies the bundle against the release branch, then creates a draft,
+uploads the bundle and checks the uploaded asset digests. If a transient
+failure interrupts drafting, the command starts over with a fresh draft of
+the same tag. An already-published release with matching checksums completes
+this step without a write.
+
+### `publish`
+
+```sh
+scripts/katl-release publish 2026.12.1-rc.1 "$QUALIFIED_SHA" "$BUNDLE"
+```
+
+After pushing the qualified extensions, the workflow checks the draft's
+asset digests and publishes it, creating the tag at the source commit if
+needed. If the request fails, it checks whether GitHub published the release
+and retries a transient failure only while the same verified draft remains.
+It reads back the tag, release and checksum file. A candidate publishes as a
+pre-release. An already-published matching release is verified without a write.
+
+### `candidate-artifacts`
+
+```sh
+scripts/katl-release candidate-artifacts 2026.12.1-rc.1 "$QUALIFIED_SHA" "$RUN_ID" "$RUN_ATTEMPT"
+```
+
+When resuming a pre-release, the workflow uses the recorded run and attempt
+numbers to find the bundle and both flavours' extension inputs. This
+command prints their artifact IDs as JSON. If the bundle has expired, push
+a commit to the release branch to qualify the next candidate.
+
 ## Version grammar
 
 These commands let scripts use the one owner of the
@@ -189,6 +251,14 @@ scripts/katl-release version 2026.12.1-rc.1
 
 Fails, naming the problem, unless the argument is a canonical version
 without the `v` prefix.
+
+### `tag-name`
+
+```sh
+scripts/katl-release tag-name 2026.12.1-rc.1
+```
+
+Prints the Git tag for the parsed version, such as `v2026.12.1-rc.1`.
 
 ### `stable-tags`
 
