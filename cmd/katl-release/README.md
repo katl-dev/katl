@@ -350,3 +350,33 @@ in the directory you supplied. Verification fetches the Sigstore trusted root
 once into a temporary `katl-release-*` directory outside the bundle and removes
 it when the check finishes. The GitHub workflow publishes after its
 validation gates pass.
+
+## Merge an unshipped version milestone
+
+### `merge-milestone`
+
+Use `merge-milestone` once the release team has confirmed that a version
+will not ship. Pass both final versions without the `v` prefix. The
+following version must be later and have an open milestone. The source
+milestone description must link to its plan issue, titled
+`plan: v<version> scope and priorities`.
+
+```sh
+scripts/katl-release merge-milestone 2026.12.1 2026.12.2
+```
+
+The preview lists the open issues and PRs to move, the plan issue to
+comment on, and the milestone to close. A published final release prevents
+the merge. A published candidate is compatible with abandoning its final
+version. The command refuses, before any write, while the plan issue is
+open; close it as not planned, then rerun.
+
+```sh
+scripts/katl-release merge-milestone --apply 2026.12.1 2026.12.2
+```
+
+Apply requires GitHub write access to issues and pull requests. Each move
+preserves labels, and closed work stays in the source milestone. The command
+comments once on the source plan issue with a link to the following
+milestone, then closes the source. If a write fails, rerun the same command
+to finish. [Release agent procedure](../../dev/agents/roles/release.md#merge-an-unshipped-milestone)

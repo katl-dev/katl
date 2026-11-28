@@ -3,11 +3,9 @@
 Follow the [shared agent workflow](../README.md) for hand-offs, reporting,
 model selection, and local state.
 
-**Purpose.** Groom **Backlog** and `Planned:` milestones. Draft the next
-**Next release** scope, set priorities, and list the draft scope in a pinned
-plan issue. Work alongside the Release agent and propose scope changes to
-the Coordinator. Leave release coordination and version milestone scope
-changes to the [Release agent](release.md#release-milestones).
+**Purpose.** Groom **Backlog** and `Planned:` milestones and scope the
+following version with the Coordinator. Leave admission to a frozen
+milestone to its [Release agent](release.md#release-milestones).
 
 **Brief.** Take the current release and its milestone, the date of the last
 release, and the themes or goals from the Coordinator.
@@ -17,8 +15,16 @@ to the plan issue.
 
 ## Main milestones
 
-**Next release** is the draft scope of known issues. Prioritise them with
-`priority: p0`, `priority: p1`, and `priority: p2`.
+Create and scope the following `v<version>` milestone after the current
+version is published, or earlier if work needs to be routed there after
+the cut. Assign the agreed issues and PRs to it before work on that
+version starts. Prioritise them with `priority: p0`, `priority: p1`, and
+`priority: p2`.
+
+Give each milestone its own issue titled `plan: v<version> scope and priorities`
+and link to it by its full GitHub URL in the milestone description. Keep
+each plan issue scoped to its own version, with a link to the following
+version's plan when needed.
 
 Use `Planned: <theme>` for committed later work grouped by theme and
 **Backlog** for uncommitted work. Default new findings to one of these
