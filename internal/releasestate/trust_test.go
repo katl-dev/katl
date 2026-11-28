@@ -160,6 +160,69 @@ func TestReleaseMatchesRecord(t *testing.T) {
 	}
 }
 
+// TestClassifyAssets changes one fact of a release whose assets match its
+// SHA256SUMS. Only a listing GitHub may still complete is pending; anything
+// later reads cannot repair contradicts, even beside a pending asset.
+func TestClassifyAssets(t *testing.T) {
+	const sums, efi, notes = "aa11", "bb22", "cc33"
+	for _, tc := range []struct {
+		name   string
+		change func(r *Release)
+		want   AssetState
+	}{
+		{"exact", func(r *Release) {}, AssetsMatch},
+		{"listed in another order", func(r *Release) { slices.Reverse(r.Assets) }, AssetsMatch},
+		{"asset missing", func(r *Release) { r.Assets = r.Assets[:2] }, AssetsPending},
+		{"no assets yet", func(r *Release) { r.Assets = nil }, AssetsPending},
+		{"asset not uploaded", func(r *Release) { r.Assets[1].Uploaded = false }, AssetsPending},
+		{"starter asset with another digest", func(r *Release) {
+			r.Assets[1] = Asset{Name: "katl.efi", Digest: "sha256:ffff"}
+		}, AssetsPending},
+		{"digest not yet shown", func(r *Release) { r.Assets[1].Digest = "" }, AssetsPending},
+		{"digest differs", func(r *Release) { r.Assets[1].Digest = "sha256:ffff" }, AssetsContradict},
+		{"digest without its prefix", func(r *Release) { r.Assets[1].Digest = efi }, AssetsContradict},
+		{"SHA256SUMS digest differs", func(r *Release) { r.Assets[0].Digest = "sha256:" + notes }, AssetsContradict},
+		{"unexpected asset", func(r *Release) {
+			r.Assets = append(r.Assets, Asset{Name: "extra", Uploaded: true, Digest: "sha256:" + efi})
+		}, AssetsContradict},
+		{"unexpected asset still uploading", func(r *Release) {
+			r.Assets = append(r.Assets, Asset{Name: "extra"})
+		}, AssetsContradict},
+		{"asset repeated", func(r *Release) { r.Assets = append(r.Assets, r.Assets[1]) }, AssetsContradict},
+		{"contradiction beside a pending asset", func(r *Release) {
+			r.Assets[0].Uploaded = false
+			r.Assets[2].Digest = "sha256:ffff"
+		}, AssetsContradict},
+		{"SHA256SUMS unread", func(r *Release) { r.Sums = nil }, AssetsContradict},
+		// SHA256SUMS listing itself with the right digest still contradicts:
+		// its own digest comes only from the caller.
+		{"SHA256SUMS lists itself", func(r *Release) { r.Sums["SHA256SUMS"] = sums }, AssetsContradict},
+		{"SHA256SUMS lists itself while pending", func(r *Release) {
+			r.Sums["SHA256SUMS"] = sums
+			r.Assets = r.Assets[:1]
+		}, AssetsContradict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Release{
+				Sums: map[string]string{"katl.efi": efi, "RELEASE_NOTES.md": notes},
+				Assets: []Asset{
+					{Name: "SHA256SUMS", Uploaded: true, Digest: "sha256:" + sums},
+					{Name: "katl.efi", Uploaded: true, Digest: "sha256:" + efi},
+					{Name: "RELEASE_NOTES.md", Uploaded: true, Digest: "sha256:" + notes},
+				},
+			}
+			tc.change(&r)
+
+			if got := r.ClassifyAssets(sums); got != tc.want {
+				t.Fatalf("ClassifyAssets = %d, want %d", got, tc.want)
+			}
+			if got := r.MatchesAssets(sums); got != (tc.want == AssetsMatch) {
+				t.Fatalf("MatchesAssets = %t, want %t", got, tc.want == AssetsMatch)
+			}
+		})
+	}
+}
+
 // TestRecordSelection covers which of several records of one context holds.
 // GitHub lists statuses newest first, so each case holds in both orders.
 func TestRecordSelection(t *testing.T) {

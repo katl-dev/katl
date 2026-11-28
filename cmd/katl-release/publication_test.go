@@ -663,30 +663,54 @@ func TestDraftRequiresReleaseList(t *testing.T) {
 // a draft. Each readback waits for the write to show, and a readback that
 // contradicts the bundle is refused at once.
 func TestPublicationReadback(t *testing.T) {
+	otherDigest := func(_ map[string]any, assets []map[string]any) {
+		assets[2]["digest"] = fixturePayloadDigest
+	}
 	const never = 1 << 30
 	for _, tc := range []struct {
 		name, action string
 		// stale is how many reads of the release show it before the write.
 		stale    int
 		notFound bool
-		// change makes a readback contradict the bundle.
-		change  bool
+		// change makes a readback by ID contradict the bundle.
+		change  func(release map[string]any, assets []map[string]any)
 		wantErr string
 		reads   int
 	}{
 		{name: "draft not found yet", action: "draft", stale: 2, notFound: true, reads: 3},
 		{name: "uploads show late", action: "draft", stale: 2, reads: 3},
 		{name: "uploads never show", action: "draft", stale: never, wantErr: "draft of v2026.12.1 still lacks uploaded assets of the bundle after " + readbackWait.String()},
-		{name: "upload differs while others show late", action: "draft", stale: never, change: true, wantErr: "draft of v2026.12.1 does not match", reads: 1},
+		{name: "upload differs while others show late", action: "draft", stale: never, change: otherDigest, wantErr: "draft of v2026.12.1 does not match", reads: 1},
+		{name: "draft published while others show late", action: "draft", stale: never, change: func(release map[string]any, _ []map[string]any) {
+			release["draft"] = false
+		}, wantErr: "draft of v2026.12.1 does not match", reads: 1},
+		{name: "unexpected asset while others show late", action: "draft", stale: never, change: func(_ map[string]any, assets []map[string]any) {
+			assets[2]["name"] = "unexpected"
+		}, wantErr: "draft of v2026.12.1 does not match", reads: 1},
+		{name: "draft of another tag while others show late", action: "draft", stale: never, change: func(release map[string]any, _ []map[string]any) {
+			release["tag_name"] = "v2026.12.2"
+		}, wantErr: "draft of v2026.12.1 does not match", reads: 1},
+		{name: "draft marked prerelease while others show late", action: "draft", stale: never, change: func(release map[string]any, _ []map[string]any) {
+			release["prerelease"] = true
+		}, wantErr: "draft of v2026.12.1 does not match", reads: 1},
 		{name: "publication shows late", action: "publish", stale: 2, reads: 3},
 		{name: "publication never shows", action: "publish", stale: never, wantErr: "GitHub still reports v2026.12.1 as a draft after " + readbackWait.String()},
+		{name: "publication differs", action: "publish", change: otherDigest, wantErr: "published release v2026.12.1 does not match", reads: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := publicationWorld(t, "v2026.12.1", true)
 				release := repoPrefix + "releases/42"
 				if tc.action == "publish" {
-					f.list(maps.Clone(f.readback))
+					// The listed draft keeps its own assets so a change
+					// reaches only the readback after the PATCH.
+					listed := maps.Clone(f.readback)
+					listedAssets := slices.Clone(f.readback["assets"].([]map[string]any))
+					for i := range listedAssets {
+						listedAssets[i] = maps.Clone(listedAssets[i])
+					}
+					listed["assets"] = listedAssets
+					f.list(listed)
 				}
 				assets := f.readback["assets"].([]map[string]any)
 				fresh := maps.Clone(assets[1])
@@ -698,8 +722,8 @@ func TestPublicationReadback(t *testing.T) {
 					case tc.action == "draft":
 						assets[1] = map[string]any{"id": 12, "name": "payload", "state": "starter", "digest": ""}
 					}
-					if tc.change {
-						assets[2]["digest"] = fixturePayloadDigest
+					if tc.change != nil {
+						tc.change(f.readback, assets)
 					}
 				}
 				stale(0)

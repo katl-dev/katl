@@ -396,38 +396,24 @@ func (p publication) readRelease(ctx context.Context, id int64) (restRelease, er
 // listing: no asset contradicts the bundle, but some are missing, not yet
 // uploaded or without a digest.
 func (p publication) assetsPending(release restRelease) bool {
-	if release.TagName != p.version.Tag() || release.Prerelease == p.version.IsFinal() {
-		return false
-	}
-	want := map[string]string{"SHA256SUMS": p.digest}
-	for name, digest := range p.expected {
-		want[name] = digest
-	}
-	shown := map[string]bool{}
-	for _, asset := range release.Assets {
-		digest, ok := want[asset.Name]
-		if !ok || shown[asset.Name] {
-			return false
-		}
-		if asset.State == "uploaded" && asset.Digest != "" {
-			if asset.Digest != "sha256:"+digest {
-				return false
-			}
-			shown[asset.Name] = true
-		}
-	}
-	return len(shown) < len(want)
+	return p.classify(release) == releasestate.AssetsPending
 }
 
 func (p publication) matches(release restRelease) bool {
+	return p.classify(release) == releasestate.AssetsMatch
+}
+
+// classify compares a release with the bundle. A wrong tag or release flag
+// contradicts the bundle whatever the assets show.
+func (p publication) classify(release restRelease) releasestate.AssetState {
 	if release.TagName != p.version.Tag() || release.Prerelease == p.version.IsFinal() {
-		return false
+		return releasestate.AssetsContradict
 	}
 	content := releasestate.Release{Sums: p.expected}
 	for _, asset := range release.Assets {
 		content.Assets = append(content.Assets, asset.asset())
 	}
-	return content.MatchesAssets(p.digest)
+	return content.ClassifyAssets(p.digest)
 }
 
 func (p publication) write(ctx context.Context, method, endpoint string, args ...string) ([]byte, error) {
