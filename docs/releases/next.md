@@ -1,0 +1,60 @@
+## Upgrade to keep nodes reachable after a power loss
+
+Every release from 2026.9.0 through 2026.11.7 can leave a node without
+network after a power loss that comes shortly after `katlctl cluster bootstrap`
+or a live `katlctl cluster apply`. The release wrote the new boot entry and
+told the firmware to boot it before the entry had reached the disk, so after
+the power loss the node starts an older configuration that does not match its
+recorded state. The console then shows `State: Needs repair` and
+`Network: Waiting for an active interface`, and `katlctl` and SSH cannot
+reach the node.
+
+KatlOS 2026.11.8 writes each boot entry to disk before the firmware is told
+to boot it. Upgrade `katlctl` and every node to 2026.11.8 with the
+[host upgrade procedure](https://github.com/katl-dev/katl/blob/main/docs/operations/upgrade-host.md).
+
+### Recover a node that lost its network
+
+A node in this state cannot be reached to upgrade it, so recover it first,
+then upgrade it.
+
+The console's advice to run `katlctl cluster apply` cannot help yet, because
+the node has no network. First boot the newest configuration that still has a
+boot menu entry:
+
+1. Power the node on and tap the space bar from power-on until the boot menu
+   appears.
+2. Choose the `KatlOS` entry with the latest date. The menu titles show only
+   the version and the creation time (see
+   [boot menu entries](https://github.com/katl-dev/katl/blob/main/docs/operations/wipe-reinstall.md#boot-menu-entries)),
+   and the entry highlighted by default is the oldest one. The configuration
+   that was lost has no entry, so the latest entry listed is the one before
+   it.
+
+The node boots healthy, takes its address, and keeps booting that entry.
+From your workstation, check it and restore the configuration that was lost:
+
+```sh
+katlctl node status NODE
+katlctl node generations list NODE
+```
+
+The lost generation is listed as `cannot boot: boot artifact unavailable`,
+followed by the path of its missing entry. It stays listed after recovery and
+needs no action. Apply your configuration again, then reboot the node so it
+boots the new generation:
+
+```sh
+katlctl cluster apply --config cluster.yaml
+katlctl node reboot NODE
+```
+
+The reboot ends with `NODE rebooted successfully; health OK`, and
+`katlctl node status NODE` shows the new generation running.
+
+### Known limitation
+
+2026.11.8 removes the cause, but a node still starts an older configuration
+if its selected boot entry is missing for another reason, such as disk damage.
+The boot-menu recovery above still returns such a node to service by booting
+the newest configuration that has an entry; it does not repair the damage.
