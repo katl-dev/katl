@@ -34,9 +34,7 @@ func TestConfirmFinal(t *testing.T) {
 				}}
 				f.responses[repoPrefix+"compare/"+readerHead+"..."+moved+"?per_page=1"] = map[string]string{"status": "ahead"}
 			case "extension exists":
-				f.pages["orgs/katl-dev/packages/container/katl%2Fextensions%2Fdrbd9/versions?per_page=100"] = []any{[]any{
-					map[string]any{"name": "sha256:aa", "metadata": map[string]any{"container": map[string]any{"tags": []string{"v2026.12.1-lts-x86_64-drbd9-9.3.4"}}}},
-				}}
+				f.registry.tags[registryPath(drbd9Repository)] = map[string]string{finalDRBD9Tag: finalDRBD9Digest}
 			}
 			t.Setenv("GITHUB_SERVER_URL", "https://github.com")
 			t.Setenv("GITHUB_REPOSITORY", "katl-dev/katl")
@@ -94,7 +92,7 @@ func finalWorld(t *testing.T) (*fakeGitHub, *fakeProvenance) {
 		}}
 	}
 	f.pages[runsQuery("in_progress")] = []any{map[string]any{"workflow_runs": []any{map[string]any{"id": 8}}}}
-	f.pages["orgs/katl-dev/packages/container/katl%2Fextensions%2Fdrbd9/versions?per_page=100"] = []any{[]any{}}
+	f.registry.tags[registryPath(drbd9Repository)] = map[string]string{}
 	f.pages[repoPrefix+"releases?per_page=100"] = []any{[]any{
 		map[string]any{"tag_name": "v2026.12.1-rc.1", "prerelease": true, "assets": []any{
 			map[string]any{"id": 11, "name": "SHA256SUMS", "state": "uploaded", "digest": "sha256:" + candidateDigest},

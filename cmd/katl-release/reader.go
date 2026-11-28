@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -14,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/katl-dev/katl/internal/extensionrelease"
@@ -22,6 +26,9 @@ import (
 	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/retry"
 	"github.com/katl-dev/katl/internal/runstatus"
+	"oras.land/oras-go/v2/registry/remote"
+	"oras.land/oras-go/v2/registry/remote/auth"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
 // apiError is a failed gh command with the HTTP status gh reported, or
@@ -47,6 +54,16 @@ func notFound(err error) bool {
 // network failure, a server error or a rate limit, but not a refusal, a
 // missing gh or missing credentials.
 func transient(err error) bool {
+	var response *errcode.ErrorResponse
+	if errors.As(err, &response) {
+		return response.StatusCode >= 500 || response.StatusCode == http.StatusTooManyRequests
+	}
+	var operation *net.OpError
+	var network net.Error
+	if errors.As(err, &operation) || (errors.As(err, &network) && network.Timeout()) ||
+		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
 	var api *apiError
 	if !errors.As(err, &api) {
 		return false
@@ -122,6 +139,9 @@ type reader struct {
 	self int64
 	// delay is the first retry delay; zero means the default.
 	delay time.Duration
+	// registry is the HTTP client for extension repositories; nil means one
+	// that reaches the registry each repository name gives.
+	registry *http.Client
 }
 
 const readAttempts = 6
@@ -249,7 +269,7 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 	if err := r.active(ctx, version, &in); err != nil {
 		return in, err
 	}
-	in.ExtensionReferences, err = r.extensions(ctx, version)
+	in.ExtensionReferences, err = r.extensions(ctx, version, in.Head)
 	return in, err
 }
 
@@ -680,44 +700,140 @@ func (r *reader) approvalPending(ctx context.Context, runID int64) (bool, error)
 	return false, nil
 }
 
-// extensions lists the registry tags of the repository's extension packages
-// that belong to the final version.
-func (r *reader) extensions(ctx context.Context, version releaseversion.Version) ([]string, error) {
-	owner, name, _ := strings.Cut(r.repository, "/")
-	var packages []string
-	type pkg struct {
-		Name string `json:"name"`
-	}
-	if err := pages(ctx, r, "orgs/"+owner+"/packages?package_type=container&per_page=100", func(page []pkg) {
-		for _, p := range page {
-			if strings.HasPrefix(p.Name, name+"/extensions/") {
-				packages = append(packages, p.Name)
-			}
-		}
-	}); err != nil {
+// extensions lists the references of the extension bundles published for the
+// final version: the release tags of the repository that each release
+// extension recipe at the commit names. Publication pushes to those
+// repositories, so this reads exactly where a final build would publish.
+func (r *reader) extensions(ctx context.Context, version releaseversion.Version, commit string) ([]string, error) {
+	repositories, err := r.extensionRepositories(ctx, commit)
+	if err != nil {
 		return nil, err
 	}
 	var references []string
-	for _, p := range packages {
-		type packageVersion struct {
-			Name     string `json:"name"`
-			Metadata struct {
-				Container struct {
-					Tags []string `json:"tags"`
-				} `json:"container"`
-			} `json:"metadata"`
-		}
-		if err := pages(ctx, r, "orgs/"+owner+"/packages/container/"+url.PathEscape(p)+"/versions?per_page=100", func(page []packageVersion) {
-			for _, v := range page {
-				for _, tag := range v.Metadata.Container.Tags {
-					if extensionrelease.IsReleaseTagOf(tag, version.String()) {
-						references = append(references, p+":"+tag+"@"+v.Name)
-					}
-				}
-			}
-		}); err != nil {
+	for _, repository := range repositories {
+		published, err := r.releaseTags(ctx, repository, version)
+		if err != nil {
 			return nil, err
 		}
+		references = append(references, published...)
 	}
 	return references, nil
+}
+
+// extensionRepositories reads the repositories of the release extension
+// recipes at the commit. An extension without a recipe is not released.
+func (r *reader) extensionRepositories(ctx context.Context, commit string) ([]string, error) {
+	var entries []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	err := r.decode(ctx, r.repo("contents/"+extensionrelease.RecipeDirectory+"?ref="+commit), &entries)
+	if notFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var repositories []string
+	for _, entry := range entries {
+		if entry.Type != "dir" {
+			continue
+		}
+		recipePath := extensionrelease.RecipePath(entry.Name)
+		recipe, err := r.get(ctx, r.repo("contents/"+recipePath+"?ref="+commit), false, "application/vnd.github.raw")
+		if notFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		repository, err := extensionrelease.RecipeRepository(recipe)
+		if err != nil {
+			return nil, fmt.Errorf("%s at %s: %w", recipePath, commit, err)
+		}
+		repositories = append(repositories, repository)
+	}
+	return repositories, nil
+}
+
+// releaseTags lists the references of the repository's tags that belong to
+// the final version, each pinned by the manifest digest the tag resolves to.
+// Extension packages are public, so the registry is read anonymously and
+// needs no GitHub token. A repository the registry does not know, or one it
+// refuses an anonymous pull token for, has published nothing.
+func (r *reader) releaseTags(ctx context.Context, name string, version releaseversion.Version) ([]string, error) {
+	repository, err := remote.NewRepository(name)
+	if err != nil {
+		return nil, fmt.Errorf("open extension repository %s: %w", name, err)
+	}
+	client := r.registry
+	if client == nil {
+		client = &http.Client{Timeout: time.Minute}
+	}
+	repository.Client = &auth.Client{Client: client, Cache: auth.NewCache()}
+
+	var references []string
+	err = r.retry(ctx, func(ctx context.Context) error {
+		references = nil
+		var tags []string
+		err := repository.Tags(ctx, "", func(page []string) error {
+			for _, tag := range page {
+				if extensionrelease.IsReleaseTagOf(tag, version.String()) {
+					tags = append(tags, tag)
+				}
+			}
+			return nil
+		})
+		if unknownRepository(err) || tokenDenied(err) {
+			return nil
+		}
+		if err != nil {
+			return registryFailure(name, err)
+		}
+		for _, tag := range tags {
+			descriptor, err := repository.Resolve(ctx, tag)
+			if err != nil {
+				return registryFailure(name+":"+tag, err)
+			}
+			references = append(references, name+":"+tag+"@"+descriptor.Digest.String())
+		}
+		return nil
+	})
+	return references, err
+}
+
+// unknownRepository reports whether the registry answered that it has no such
+// repository, from its token endpoint or its tag list.
+func unknownRepository(err error) bool {
+	var response *errcode.ErrorResponse
+	if !errors.As(err, &response) {
+		return false
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return true
+	}
+	return slices.ContainsFunc(response.Errors, func(e errcode.Error) bool { return e.Code == errcode.ErrorCodeNameUnknown })
+}
+
+// tokenDenied reports whether the registry's token endpoint refused an
+// anonymous pull token for the repository. ghcr.io answers a package that was
+// never published exactly as it answers a private one. A never-published
+// extension must not block release decisions, and publication refuses to
+// overwrite a tag with different content, so the refusal counts as "not
+// published". The auth client reports a failed token fetch as an error
+// response for the realm's URL, while every registry API request is under
+// /v2/, so a refusal from the registry API itself still fails the read.
+func tokenDenied(err error) bool {
+	var response *errcode.ErrorResponse
+	return errors.As(err, &response) && response.StatusCode == http.StatusForbidden &&
+		response.URL != nil && !strings.HasPrefix(response.URL.Path, "/v2/")
+}
+
+// registryFailure explains a registry read that has no answer.
+func registryFailure(name string, err error) error {
+	var response *errcode.ErrorResponse
+	if errors.As(err, &response) && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
+		return fmt.Errorf("read the published tags of %s: the registry refused an anonymous read, so the package is not public; make it public: %w", name, err)
+	}
+	return fmt.Errorf("read the published tags of %s: %w", name, err)
 }

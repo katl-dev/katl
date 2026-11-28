@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,22 +27,34 @@ var (
 )
 
 // fakeGitHub answers GET endpoints; paginated reads get the pages as one
-// array, and raw holds the bodies of reads that ask for octet-stream.
+// array, and raw holds the bodies of reads that ask for raw content. Like
+// GitHub for the Release workflow's token, it refuses the Packages API.
 type fakeGitHub struct {
 	t         *testing.T
 	responses map[string]any
 	pages     map[string][]any
 	raw       map[string][]byte
 	failures  map[string][]error
+	// registry serves the extension repositories.
+	registry *fakeRegistry
 }
 
 func (f *fakeGitHub) read(_ context.Context, endpoint string, paginate bool, accept string) ([]byte, error) {
+	if strings.HasPrefix(endpoint, "orgs/") && strings.Contains(endpoint, "/packages") {
+		return nil, &apiError{status: 400, text: "gh: Invalid argument. (HTTP 400)"}
+	}
+	// Every commit of the fixtures has readerHead's tree.
+	if path, ref, ok := strings.Cut(endpoint, "contents/"); ok {
+		if rest, commit, ok := strings.Cut(ref, "?ref="); ok && commit != readerHead {
+			endpoint = path + "contents/" + rest + "?ref=" + readerHead
+		}
+	}
 	if queue := f.failures[endpoint]; len(queue) > 0 {
 		f.failures[endpoint] = queue[1:]
 		return nil, queue[0]
 	}
 	if body, ok := f.raw[endpoint]; ok {
-		if accept != "application/octet-stream" || paginate {
+		if (accept != "application/octet-stream" && accept != "application/vnd.github.raw") || paginate {
 			f.t.Errorf("read %s as %q, want its raw content", endpoint, accept)
 		}
 		return body, nil
@@ -120,24 +133,37 @@ func readerWorld(t *testing.T) *fakeGitHub {
 		},
 		repo + "actions/runs/5/attempts/1/jobs?per_page=100": {map[string]any{"jobs": []any{map[string]any{"name": "Decide", "conclusion": "success"}}},
 			map[string]any{"jobs": []any{map[string]any{"name": "Build / Release validation", "conclusion": "cancelled"}}}},
-		repo + "actions/runs/5/artifacts?per_page=100":               {map[string]any{"artifacts": []any{}}},
-		repo + "releases?per_page=100":                               none,
-		runsQuery("queued"):                                          noRuns,
-		runsQuery("in_progress"):                                     noRuns,
-		runsQuery("waiting"):                                         noRuns,
-		runsQuery("requested"):                                       noRuns,
-		"orgs/katl-dev/packages?package_type=container&per_page=100": {[]any{map[string]any{"name": "katl/extensions/drbd9"}, map[string]any{"name": "kubernetes"}}},
-		"orgs/katl-dev/packages/container/katl%2Fextensions%2Fdrbd9/versions?per_page=100": {[]any{
-			map[string]any{"name": "sha256:aa", "metadata": map[string]any{"container": map[string]any{"tags": []any{"v2026.12.1-rc.1-lts-x86_64-drbd9-9.3.4"}}}},
-		}, []any{
-			map[string]any{"name": "sha256:bb", "metadata": map[string]any{"container": map[string]any{"tags": []any{"v2026.12.1-lts-x86_64-drbd9-9.3.4"}}}},
-		}},
-	}, raw: map[string][]byte{}, failures: map[string][]error{}}
+		repo + "actions/runs/5/artifacts?per_page=100": {map[string]any{"artifacts": []any{}}},
+		repo + "releases?per_page=100":                 none,
+		runsQuery("queued"):                            noRuns,
+		runsQuery("in_progress"):                       noRuns,
+		runsQuery("waiting"):                           noRuns,
+		runsQuery("requested"):                         noRuns,
+	}, raw: map[string][]byte{}, failures: map[string][]error{}, registry: newFakeRegistry(t)}
+
+	// drbd9 is the head's only release extension: bird has no recipe. Its
+	// repository holds rc.1's bundle and the final's, besides an untagged
+	// manifest.
+	f.responses[repo+"contents/extensions?ref="+readerHead] = []any{
+		map[string]any{"name": "README.md", "type": "file"},
+		map[string]any{"name": "bird", "type": "dir"},
+	}
+	f.responses[repo+"contents/extensions/bird/recipe.json?ref="+readerHead] = &apiError{status: 404, text: "gh: Not Found (HTTP 404)"}
+	addRecipe(f, "drbd9", drbd9Repository)
+	f.registry.tags[registryPath(drbd9Repository)] = map[string]string{
+		"manifest-sha256-" + strings.Repeat("c", 64): "sha256:" + strings.Repeat("c", 64),
+		"v2026.12.1-rc.1-lts-x86_64-drbd9-9.3.4":     candidateDRBD9Digest,
+		finalDRBD9Tag:                                finalDRBD9Digest,
+	}
 	return f
 }
 
 func newTestReader(f *fakeGitHub) *reader {
-	return &reader{server: "https://github.com", repository: "katl-dev/katl", read: f.read, delay: time.Millisecond}
+	r := &reader{server: "https://github.com", repository: "katl-dev/katl", read: f.read, delay: time.Millisecond}
+	if f.registry != nil {
+		r.registry = &http.Client{Transport: f.registry}
+	}
+	return r
 }
 
 func TestReaderRead(t *testing.T) {
