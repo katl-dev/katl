@@ -29,10 +29,9 @@ type contextSaveOptions struct {
 	replacementNode []string
 	selectedNodes   []string
 	endpoints       map[string]inventory.HostPort
-	// endpointSource says whether endpoints are bound to their nodes. A node
-	// without one is checked at its ClusterConfig address, which is bound only
-	// when the saved context records the same endpoint.
-	endpointSource managementAddress
+	// endpointSource says where endpoints came from. A node without one is
+	// checked at its ClusterConfig address.
+	endpointSource addressSource
 	observeStatus  func(context.Context, string, inventory.HostPort) (*agentapi.NodeStatus, error)
 	timeout        time.Duration
 	output         string
@@ -53,6 +52,8 @@ type contextSaveReport struct {
 	Context    string                  `json:"context"`
 	ConfigPath string                  `json:"configPath"`
 	Nodes      []contextSaveNodeReport `json:"nodes"`
+	// verified holds each observed node's checked address.
+	verified map[string]verified
 }
 
 func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -251,16 +252,12 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, rerun string) 
 	if err != nil {
 		return workstation.Config{}, contextSaveReport{}, err
 	}
-	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, func(check managementCheck, err error) error {
-		check.claim, check.rerun = "the node answers with the configured management credentials", rerun
-		return managementReadError(check, err)
-	})
+	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, configuredCredentialsStep(opts.configInput, rerun, opts.timeout))
 }
 
-// prepareContextWithCredentials observes every selected node. confirmationError
-// explains a failed observation; the check it receives names the node's
-// address and where that address came from.
-func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials, confirmationError func(managementCheck, error) error) (workstation.Config, contextSaveReport, error) {
+// prepareContextWithCredentials checks every selected node's address. step is
+// what a failed check offers next.
+func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials, step addressStep) (workstation.Config, contextSaveReport, error) {
 	// Observe the configured endpoints without compiling host payloads or
 	// acquiring artifacts. Their target release is not known until this probe.
 	inv, err := readManagementInventory(opts.configInput)
@@ -328,40 +325,20 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		}
 	}
 
-	verificationFailure := func(node inventory.Node, endpoint inventory.HostPort, err error) error {
-		var hint string
-		_, overridden := opts.endpoints[node.Name]
-		configured := node.ManagementEndpoint()
-		saved := savedEndpoint(configPath, clusterName, node.Name)
-		check := managementCheck{address: opts.endpointSource, endpoint: endpoint, timeout: opts.timeout}
-		if !overridden {
-			check.address = addressBinding(saved, endpoint)
-		}
-		switch {
-		case !addressHintApplies(err, check.address):
-		case !overridden && node.SystemRole == inventory.RoleWorker:
-			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, saved)
-		case overridden && !configured.IsZero() && !configured.Equal(endpoint):
-			hint = "; " + movedHint(node.Name, configured, opts.configInput)
-		}
-		return fmt.Errorf("verify node %s management endpoint %s: %w%s", node.Name, endpoint, confirmationError(check, err), hint)
-	}
-
+	saved := savedContextAt(configPath)
+	step.timeout, step.configPath = opts.timeout, opts.configInput
 	observeStatus := opts.observeStatus
 	if observeStatus == nil {
 		observeStatus = func(ctx context.Context, name string, endpoint inventory.HostPort) (*agentapi.NodeStatus, error) {
-			status, err := contextEndpointStatus(withManagementDial(ctx, name, &management), endpoint)
-			if err != nil {
-				return nil, err
-			}
-			_, err = transport.ObserveNode(name, status)
-			return status, err
+			return contextEndpointStatus(withManagementDial(ctx, name, &management), endpoint)
 		}
 	}
+	report.verified = map[string]verified{}
 
 	for _, node := range inv.Nodes {
+		override := opts.endpoints[node.Name]
 		endpoint := node.ManagementEndpoint()
-		if override, ok := opts.endpoints[node.Name]; ok {
+		if !override.IsZero() {
 			endpoint = override
 		}
 		if len(opts.selectedNodes) > 0 && !containsString(opts.selectedNodes, node.Name) {
@@ -372,12 +349,15 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 			})
 			continue
 		}
-		requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-		status, err := observeStatus(requestCtx, node.Name, endpoint)
-		cancel()
-		if err != nil {
-			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, err)
+		observe := func(ctx context.Context, endpoint inventory.HostPort) (*agentapi.NodeStatus, error) {
+			return observeStatus(ctx, node.Name, endpoint)
 		}
+		checked, err := checkAddress(ctx, resolveCandidate(saved, clusterName, node, override, opts.endpointSource), observe, step)
+		if err != nil {
+			return workstation.Config{}, contextSaveReport{}, err
+		}
+		report.verified[node.Name] = checked
+		status := checked.status
 		replaced := false
 		if previous, ok := known[node.Name]; ok && previous.EnrollmentID != "" && (previous.EnrollmentID != status.GetEnrollmentId() || previous.MachineID != status.GetMachineId()) {
 			// Authentication follows the selected mode. Instance IDs bind an

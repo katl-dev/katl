@@ -122,23 +122,33 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	}
 	var endpoints map[string]inventory.HostPort
 	if strings.TrimSpace(opts.endpoint) != "" {
-		change, current, err := planClusterAddressChange(opts)
+		current, err := clusterApplyEndpoint(opts)
 		if err != nil {
 			return err
 		}
 		endpoints = map[string]inventory.HostPort{opts.selectedNodes[0]: current}
-		if change != nil {
+	}
+	refreshed, checked, err := refreshConfiguredManagementAt(ctx, opts.configPath, "", "", endpoints, stderr, opts.selectedNodes...)
+	if err != nil {
+		return err
+	}
+	ctx = refreshed
+	for name := range endpoints {
+		node, ok := checked[name]
+		if !ok {
+			return fmt.Errorf("internal error: %s was not checked at %s", name, endpoints[name])
+		}
+		if m, ok := node.move(); ok {
+			change, err := clusterApplyMove(m, opts)
+			if err != nil {
+				return err
+			}
 			// A worker moves only through a staged generation and reboot, so
 			// the management session is never cut by a live network reload.
 			opts.addressChange = change
 			opts.mode = generation.ApplyModeNextBoot
 		}
 	}
-	refreshed, err := refreshConfiguredManagementAt(ctx, opts.configPath, "", "", endpoints, stderr, opts.selectedNodes...)
-	if err != nil {
-		return err
-	}
-	ctx = refreshed
 	warnPendingReaddress(ctx, opts.configPath, endpoints, opts.selectedNodes, stderr)
 	opts.progress = stderr
 	acknowledgements, err := normalizeDestructiveStorageAcknowledgements(opts.destructiveStorageAcknowledgements)
@@ -1006,45 +1016,43 @@ type clusterApplyAddressChange struct {
 	desiredEndpoint inventory.HostPort
 }
 
-// planClusterAddressChange validates --endpoint for one selected node and
-// returns its current management endpoint. The change is nil when the node
-// already answers at its configured address.
-func planClusterAddressChange(opts kubeadmControlPlaneConfigOptions) (*clusterApplyAddressChange, inventory.HostPort, error) {
+// clusterApplyEndpoint validates --endpoint for one selected node and returns
+// the endpoint to check it at.
+func clusterApplyEndpoint(opts kubeadmControlPlaneConfigOptions) (inventory.HostPort, error) {
 	if strings.TrimSpace(opts.configPath) == "" {
-		return nil, inventory.HostPort{}, fmt.Errorf("--endpoint requires --config")
+		return inventory.HostPort{}, fmt.Errorf("--endpoint requires --config")
 	}
 	selected := slices.Compact(slices.Sorted(slices.Values(opts.selectedNodes)))
 	if len(selected) != 1 {
-		return nil, inventory.HostPort{}, fmt.Errorf("--endpoint names one node's current address; select that node with exactly one --node NAME")
+		return inventory.HostPort{}, fmt.Errorf("--endpoint names one node's current address; select that node with exactly one --node NAME")
 	}
 	name := selected[0]
 	current, err := parseEndpointFlag(opts.endpoint)
 	if err != nil {
-		return nil, inventory.HostPort{}, err
+		return inventory.HostPort{}, err
 	}
 	inv, err := readManagementInventory(opts.configPath)
 	if err != nil {
-		return nil, inventory.HostPort{}, err
+		return inventory.HostPort{}, err
 	}
 	index := slices.IndexFunc(inv.Nodes, func(node inventory.Node) bool { return node.Name == name })
 	if index < 0 {
-		return nil, inventory.HostPort{}, fmt.Errorf("node %q is not in the config; use a node name from the complete ClusterConfig", name)
+		return inventory.HostPort{}, fmt.Errorf("node %q is not in the config; use a node name from the complete ClusterConfig", name)
 	}
-	node := inv.Nodes[index]
-	desired := node.ManagementEndpoint()
-	if desired.IsZero() {
-		return nil, inventory.HostPort{}, fmt.Errorf("node %s has no management.address in %s; set it to the node's new address", name, opts.configPath)
+	if inv.Nodes[index].ManagementEndpoint().IsZero() {
+		return inventory.HostPort{}, fmt.Errorf("node %s has no management.address in %s; set it to the node's new address", name, opts.configPath)
 	}
-	if desired == current {
-		return nil, current, nil
+	return current, nil
+}
+
+// clusterApplyMove applies the role policies to a node that answered at
+// --endpoint on a host other than its management.address.
+func clusterApplyMove(m move, opts kubeadmControlPlaneConfigOptions) (*clusterApplyAddressChange, error) {
+	switch {
+	case m.from.candidate.role == inventory.RoleControlPlane:
+		return nil, m.refuse(refuseControlPlane, opts.configPath)
+	case opts.mode == generation.ApplyModeLive:
+		return nil, m.refuse(refuseLiveMove, opts.configPath)
 	}
-	currentHost := current.Host.String()
-	desiredHost := desired.Host.String()
-	if node.SystemRole == inventory.RoleControlPlane {
-		return nil, inventory.HostPort{}, fmt.Errorf("refusing to move control-plane node %s from %s to %s: Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address; restore management.address to %s, or plan 'katlctl node wipe %s --config %s --plan', reinstall it with the new address, and join it with 'katlctl node join %s --config %s'; no node was changed", name, currentHost, desiredHost, currentHost, name, opts.configPath, name, opts.configPath)
-	}
-	if opts.mode == generation.ApplyModeLive {
-		return nil, inventory.HostPort{}, fmt.Errorf("moving %s from %s to %s requires a reboot; omit --mode live so apply stages the change for the next boot", name, currentHost, desiredHost)
-	}
-	return &clusterApplyAddressChange{Node: name, Current: currentHost, Desired: desiredHost, desiredEndpoint: desired}, current, nil
+	return &clusterApplyAddressChange{Node: m.from.candidate.node, Current: m.from.candidate.endpoint.Host.String(), Desired: m.to.Host.String(), desiredEndpoint: m.to}, nil
 }

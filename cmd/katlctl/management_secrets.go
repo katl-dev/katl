@@ -51,36 +51,38 @@ func loadManagementContext(ctx context.Context, path string) (workstation.Config
 }
 
 func refreshConfiguredManagement(ctx context.Context, sourcePath, contextPath, contextName string, stderr io.Writer, selectedNodes ...string) (context.Context, error) {
-	return refreshConfiguredManagementAt(ctx, sourcePath, contextPath, contextName, nil, stderr, selectedNodes...)
+	ctx, _, err := refreshConfiguredManagementAt(ctx, sourcePath, contextPath, contextName, nil, stderr, selectedNodes...)
+	return ctx, err
 }
 
 // refreshConfiguredManagementAt observes nodes as refreshConfiguredManagement
 // does, except that each node named in endpoints is observed at that endpoint
-// instead of its configured management address.
-func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath, contextName string, endpoints map[string]inventory.HostPort, stderr io.Writer, selectedNodes ...string) (context.Context, error) {
+// instead of its configured management address. It returns the checked
+// address of every node it observed, and always of each node in endpoints.
+func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath, contextName string, endpoints map[string]inventory.HostPort, stderr io.Writer, selectedNodes ...string) (context.Context, map[string]verified, error) {
 	if strings.TrimSpace(sourcePath) == "" {
-		return ctx, nil
+		return ctx, nil, nil
 	}
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
-		return ctx, fmt.Errorf("read --config %s: %w", sourcePath, err)
+		return ctx, nil, fmt.Errorf("read --config %s: %w", sourcePath, err)
 	}
 	source, err := configbundle.DecodeSource(bytes.NewReader(data))
 	if err != nil {
 		bundle, bundleErr := configbundle.ReadBundle(bytes.NewReader(data), "")
 		if bundleErr != nil || bundle.Authentication != managementidentity.TrustedNetwork {
 			if bundleErr == nil {
-				return withSavedEndpoints(ctx, bundle.Manifest.ClusterName, endpoints)
+				return withCheckedSavedEndpoints(ctx, sourcePath, bundle.Manifest.ClusterName, endpoints)
 			}
-			return ctx, nil
+			return ctx, nil, nil
 		}
 	} else {
 		authentication, err := source.ManagementAuthentication()
 		if err != nil {
-			return ctx, err
+			return ctx, nil, err
 		}
 		if authentication == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
-			return withSavedEndpoints(ctx, source.Metadata.Name, endpoints)
+			return withCheckedSavedEndpoints(ctx, sourcePath, source.Metadata.Name, endpoints)
 		}
 	}
 	// Instance IDs bind this operation to the observed installations. Only an
@@ -88,11 +90,22 @@ func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath,
 	if ctx.Value(observedManagementKey{}) == nil {
 		ctx = context.WithValue(ctx, observedManagementKey{}, workstation.Config{})
 	}
-	observed, _, err := prepareContext(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: defaultManagementTimeout, output: "text", selectedNodes: selectedNodes, endpoints: endpoints, endpointSource: addressUnverified}, "the same command")
+	observed, report, err := prepareContext(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: defaultManagementTimeout, output: "text", selectedNodes: selectedNodes, endpoints: endpoints, endpointSource: sourceFlag}, "the same command")
 	if err != nil {
-		return ctx, err
+		return ctx, nil, err
 	}
-	return context.WithValue(ctx, observedManagementKey{}, observed), nil
+	return context.WithValue(ctx, observedManagementKey{}, observed), report.verified, nil
+}
+
+// withCheckedSavedEndpoints checks each node in endpoints with the saved
+// credentials before overlaying the endpoints on the saved context.
+func withCheckedSavedEndpoints(ctx context.Context, sourcePath, clusterName string, endpoints map[string]inventory.HostPort) (context.Context, map[string]verified, error) {
+	checked, err := checkSavedEndpoints(ctx, sourcePath, clusterName, endpoints)
+	if err != nil {
+		return ctx, nil, err
+	}
+	ctx, err = withSavedEndpoints(ctx, clusterName, endpoints)
+	return ctx, checked, err
 }
 
 // withSavedEndpoints overlays endpoints on the saved context for clusterName

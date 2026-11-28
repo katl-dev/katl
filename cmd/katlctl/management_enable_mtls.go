@@ -779,7 +779,7 @@ func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName strin
 		bound[node.name], endpoints[node.name] = node, node.endpoint
 	}
 	// This run confirmed every node at its endpoint before reaching here.
-	opts := contextSaveOptions{configInput: configPath, contextPath: path, contextName: contextName, timeout: timeout, endpoints: endpoints, endpointSource: addressBound}
+	opts := contextSaveOptions{configInput: configPath, contextPath: path, contextName: contextName, timeout: timeout, endpoints: endpoints, endpointSource: sourceConfirmed}
 	opts.observeStatus = func(ctx context.Context, name string, endpoint inventory.HostPort) (*agentapi.NodeStatus, error) {
 		node, ok := bound[name]
 		if !ok {
@@ -791,10 +791,7 @@ func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName strin
 		}
 		return status, node.verifyCommittedStatus(status, authority)
 	}
-	cfg, _, err := prepareContextWithCredentials(ctx, opts, clusterName, client, func(check managementCheck, err error) error {
-		check.claim, check.authorityRemedy = "the saved context can reach the nodes over mTLS", enableMTLSAuthorityRemedy
-		return managementTrustChangeError(check, trustReplacementAuthority, err)
-	})
+	cfg, _, err := prepareContextWithCredentials(ctx, opts, clusterName, client, addressStep{claim: "the saved context can reach the nodes over mTLS", authorityRemedy: enableMTLSAuthorityRemedy, prior: trustReplacementAuthority})
 	if err != nil {
 		return nil, "", err
 	}
