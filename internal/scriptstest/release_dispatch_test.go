@@ -112,21 +112,23 @@ func TestReleaseWriters(t *testing.T) {
 	}
 }
 
-// Final publication and its check both use the repository-scoped App token.
-func TestReleaseCredential(t *testing.T) {
-	const action = "./.github/actions/release-credential"
-	const checkFile = "release-credential.yml"
+// requireCredential checks that step mints the App token through the shared
+// action, the only place a caller may reference the App credential.
+func requireCredential(t *testing.T, step workflowStep) {
+	t.Helper()
 	wantInputs := map[string]string{
 		"app-id":      "${{ vars.KATL_RELEASE_APP_ID }}",
 		"private-key": "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
 	}
-	requireCredential := func(step workflowStep) {
-		t.Helper()
-		if step.Uses != action || !maps.Equal(step.With, wantInputs) ||
-			step.Run != "" || step.If != "" || step.ContinueOnError {
-			t.Errorf("credential step = %+v, want a mandatory shared App credential", step)
-		}
+	if step.Uses != "./.github/actions/release-credential" || !maps.Equal(step.With, wantInputs) ||
+		step.Run != "" || step.If != "" || step.ContinueOnError {
+		t.Errorf("credential step = %+v, want a mandatory shared App credential", step)
 	}
+}
+
+// Final publication and its check both use the repository-scoped App token.
+func TestReleaseCredential(t *testing.T) {
+	const checkFile = "release-credential.yml"
 
 	check, source := readWorkflow(t, checkFile)
 	var events map[string]any
@@ -145,7 +147,7 @@ func TestReleaseCredential(t *testing.T) {
 	if len(job.Steps) != 3 || !strings.HasPrefix(job.Steps[0].Uses, "actions/checkout@") || job.Steps[2].Uses != "" {
 		t.Fatal("credential check must only check out the repository, verify the credential and write the summary")
 	}
-	requireCredential(job.Steps[1])
+	requireCredential(t, job.Steps[1])
 	secretReferences := regexp.MustCompile(`(?i)\bsecrets\s*[.\[]`)
 	if refs := secretReferences.FindAllString(source, -1); len(refs) != 1 {
 		t.Errorf("%s references %d secrets, want only the release App private key", checkFile, len(refs))
@@ -173,7 +175,7 @@ func TestReleaseCredential(t *testing.T) {
 				t.Fatal("more than one credential step")
 			}
 			credential = i
-			requireCredential(step)
+			requireCredential(t, step)
 		}
 		if writesRelease(step) || apiWrites(step.Run, "/git/refs") {
 			writes++
@@ -206,9 +208,11 @@ func TestReleaseCredential(t *testing.T) {
 }
 
 func TestReleaseAppReferences(t *testing.T) {
-	// TestReleaseCredential pins both references to the shared action's inputs.
-	// Any additional reference, including in a different YAML field, is invalid.
+	// TestReleaseCredential and TestCutReleaseWorkflow pin both references to
+	// the shared action's inputs. Any additional reference, including in a
+	// different YAML field, is invalid.
 	allowed := map[string]int{
+		"workflows/cut-release.yml":                                2,
 		"workflows/release-credential.yml":                         2,
 		"workflows/" + filepath.Base(releasestate.ReleaseWorkflow): 2,
 	}

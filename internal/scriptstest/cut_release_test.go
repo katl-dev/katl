@@ -69,16 +69,10 @@ func TestCutReleaseWorkflow(t *testing.T) {
 				t.Fatal("more than one credential step")
 			}
 			credential = i
-			want := map[string]string{
-				"app-id":              "${{ vars.KATL_RELEASE_APP_ID }}",
-				"private-key":         "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
-				"owner":               "${{ github.repository_owner }}",
-				"repositories":        "${{ github.event.repository.name }}",
-				"permission-contents": "write",
-			}
-			if step.Uses != "actions/create-github-app-token@v3" || !maps.Equal(step.With, want) || step.If != "" || step.ContinueOnError {
-				t.Error("credential step must request the repository-scoped App token unconditionally")
-			}
+			requireCredential(t, step)
+		}
+		if strings.HasPrefix(step.Uses, "actions/create-github-app-token@") {
+			t.Error("cut must mint the App token only through the shared credential action")
 		}
 		if strings.Contains(step.Run, "cut-branch") {
 			if create >= 0 {

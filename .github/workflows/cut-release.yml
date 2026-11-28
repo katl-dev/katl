@@ -40,13 +40,10 @@ jobs:
       - uses: ./.github/actions/setup-go
       - name: Select the branch creation credential
         id: credential
-        uses: actions/create-github-app-token@v3
+        uses: ./.github/actions/release-credential
         with:
           app-id: ${{ vars.KATL_RELEASE_APP_ID }}
           private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
       - name: Cut the branch
         env:
           GH_TOKEN: ${{ steps.credential.outputs.token }}

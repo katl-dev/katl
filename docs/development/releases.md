@@ -40,7 +40,7 @@ publication under the
    head. The release branch creation ruleset,
    `.github/rulesets/release-branch-creation.json`, enforces this path: only
    the App that the workflow uses can create release branches. See the
-   [release rulesets](https://github.com/katl-dev/katl/blob/main/docs/development/release-rulesets.md).
+   [release rulesets](release-rulesets.md).
 
    After the cut, check the journey gate with the previous final release tag.
 
