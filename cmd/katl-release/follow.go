@@ -158,10 +158,33 @@ func (target workflowDispatch) hasIdentity(run restRun) bool {
 	return run.ID > 0 && run.Branch == target.ref && run.Path == target.file && run.Event == releaseEvent
 }
 
-// titlePending reports a run whose title is still the workflow name because
-// GitHub has not yet evaluated the workflow's run-name.
+// identityPending reports a run that GitHub has not finished describing:
+// every identity field it reports agrees with the target and some are empty.
+func (target workflowDispatch) identityPending(run restRun) bool {
+	fields := [][2]string{{run.Branch, target.ref}, {run.Path, target.file}, {run.Event, releaseEvent}}
+	if target.head != "" {
+		fields = append(fields, [2]string{run.SHA, target.head})
+	}
+	empty := false
+	for _, field := range fields {
+		if field[0] == "" {
+			empty = true
+		} else if field[0] != field[1] {
+			return false
+		}
+	}
+	return empty
+}
+
+// titlePending reports a run whose title is still empty or the workflow name
+// because GitHub has not yet evaluated the workflow's run-name.
 func (target workflowDispatch) titlePending(run restRun) bool {
-	return target.title != "" && run.DisplayTitle != target.title && run.DisplayTitle == target.name
+	return target.title != "" && run.DisplayTitle != target.title && (run.DisplayTitle == target.name || run.DisplayTitle == "")
+}
+
+// titleConsistent reports a title that matches or may still converge.
+func (target workflowDispatch) titleConsistent(run restRun) bool {
+	return target.title == "" || run.DisplayTitle == target.title || target.titlePending(run)
 }
 
 func dispatchedRun(ctx context.Context, r *reader, target workflowDispatch, after int64, output string) (restRun, error) {
@@ -187,43 +210,58 @@ func dispatchedRun(ctx context.Context, r *reader, target workflowDispatch, afte
 	return awaitDispatch(ctx, r, target, found.ID, found.HTMLURL)
 }
 
-// dispatchWait bounds each wait for a dispatched run to appear or converge.
-const dispatchWait = 2 * time.Minute
+// readbackWait bounds each wait for GitHub to show the result of a write.
+const readbackWait = 2 * time.Minute
 
-// awaitDispatch reads the dispatched run until its eventually consistent
-// display title converges. A mismatch in the fields GitHub fixes at creation,
-// or a title that settled on another value, is refused without waiting.
-func awaitDispatch(ctx context.Context, r *reader, target workflowDispatch, id int64, url string) (restRun, error) {
-	deadline, cancel := context.WithTimeout(ctx, dispatchWait)
+// awaitReadback reads GitHub after a write until observe reports that the
+// write shows, retrying the errors transient classifies, within readbackWait.
+func awaitReadback[T any](ctx context.Context, r *reader, observe func(context.Context) (T, bool, error), transient func(error) bool) (T, error) {
+	deadline, cancel := context.WithTimeout(ctx, readbackWait)
 	defer cancel()
-	backoff := retry.NewBackoff(2*time.Second, 15*time.Second)
-	run, err := retry.Await(deadline, &backoff, func(ctx context.Context) (restRun, bool, error) {
+	backoff := r.backoff()
+	return retry.Await(deadline, &backoff, observe, transient)
+}
+
+// awaitDispatch reads the dispatched run until it exists and its eventually
+// consistent display title converges. GitHub can answer 404 for a run it has
+// just reported creating, and empty fields while it fills the run in. A
+// non-empty mismatch in the fields GitHub fixes at creation, or a title that
+// settled on another value, is refused without waiting.
+func awaitDispatch(ctx context.Context, r *reader, target workflowDispatch, id int64, url string) (restRun, error) {
+	expected := fmt.Sprintf("%s on %s", target.name, target.ref)
+	if target.head != "" {
+		expected += " at " + target.head
+	}
+	if target.title != "" {
+		expected += fmt.Sprintf(" with title %q", target.title)
+	}
+	describe := func(run restRun) string {
+		return fmt.Sprintf("The dispatched run %s reported ID %d, branch %s, workflow %s, event %s, commit %s and title %q",
+			url, run.ID, run.Branch, run.Path, run.Event, run.SHA, run.DisplayTitle)
+	}
+
+	run, err := awaitReadback(ctx, r, func(ctx context.Context) (restRun, bool, error) {
 		var run restRun
 		if err := r.decode(ctx, r.repo(fmt.Sprintf("actions/runs/%d", id)), &run); err != nil {
 			return run, false, fmt.Errorf("read dispatched %s run %s: %w", target.name, url, err)
 		}
-		if run.ID == id && target.hasIdentity(run) && (target.head == "" || run.SHA == target.head) {
-			if target.matchesDispatch(run) {
-				return run, true, nil
-			}
-			if target.titlePending(run) {
-				return run, false, nil
-			}
+		complete := target.hasIdentity(run) && (target.head == "" || run.SHA == target.head)
+		if run.ID == id && target.titleConsistent(run) && (complete || target.identityPending(run)) {
+			return run, complete && target.matchesDispatch(run), nil
 		}
-
-		expected := fmt.Sprintf("%s on %s", target.name, target.ref)
-		if target.head != "" {
-			expected += " at " + target.head
-		}
-		if target.title != "" {
-			expected += fmt.Sprintf(" with title %q", target.title)
-		}
-		return run, false, fmt.Errorf("The dispatched run %s reported ID %d, branch %s, workflow %s, event %s, commit %s and title %q. Expected %s",
-			url, run.ID, run.Branch, run.Path, run.Event, run.SHA, run.DisplayTitle, expected)
-	}, nil)
-	if errors.Is(err, context.DeadlineExceeded) && target.titlePending(run) {
+		return run, false, fmt.Errorf("%s. Expected %s", describe(run), expected)
+	}, notFound)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return run, err
+	}
+	switch {
+	case run.ID == 0:
+		return restRun{}, fmt.Errorf("GitHub still reports the dispatched run %s as not found after %s", url, readbackWait)
+	case target.identityPending(run):
+		return restRun{}, fmt.Errorf("%s after %s. Expected %s", describe(run), readbackWait, expected)
+	case target.titlePending(run):
 		return restRun{}, fmt.Errorf("The dispatched run %s still has the workflow name %q as its title after %s. Expected title %q",
-			url, run.DisplayTitle, dispatchWait, target.title)
+			url, run.DisplayTitle, readbackWait, target.title)
 	}
 	return run, err
 }
@@ -237,12 +275,9 @@ func waitHint(version releaseversion.Version) string {
 }
 
 func findDispatch(ctx context.Context, r *reader, target workflowDispatch, after int64) (restRun, error) {
-	deadline, cancel := context.WithTimeout(ctx, dispatchWait)
-	defer cancel()
-	backoff := retry.NewBackoff(2*time.Second, 15*time.Second)
 	var moved restRun
-	run, err := retry.Await(deadline, &backoff, func(ctx context.Context) (restRun, bool, error) {
-		runs, err := r.dispatchedRuns(ctx, target)
+	run, err := awaitReadback(ctx, r, func(ctx context.Context) (restRun, bool, error) {
+		runs, err := r.workflowRuns(ctx, target.file, target.ref, "event="+releaseEvent)
 		if err != nil {
 			return restRun{}, false, err
 		}
@@ -250,7 +285,8 @@ func findDispatch(ctx context.Context, r *reader, target workflowDispatch, after
 		var urls []string
 		seen := map[int64]bool{}
 		for _, run := range runs {
-			if run.ID <= after || seen[run.ID] {
+			// awaitDispatch waits for a pending title to converge.
+			if run.ID <= after || seen[run.ID] || !target.hasIdentity(run) || !target.titleConsistent(run) {
 				continue
 			}
 			seen[run.ID] = true

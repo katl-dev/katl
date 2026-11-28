@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 )
 
 const fixturePayloadDigest = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -228,14 +229,13 @@ func TestPublishRelease(t *testing.T) {
 		{name: "candidate", tag: "v2026.12.1-rc.1", state: "draft", wantWrite: true},
 		{name: "tag points elsewhere", tag: "v2026.12.1", state: "wrong-commit", wantWrite: true, wantErr: "published tag v2026.12.1 points to"},
 		{name: "SHA256SUMS differs", tag: "v2026.12.1", state: "wrong-bytes", wantWrite: true, wantErr: "published SHA256SUMS of v2026.12.1 differs from the bundle"},
-		{name: "still draft", tag: "v2026.12.1", state: "still-draft", wantWrite: true, wantErr: "published release v2026.12.1 does not match"},
 		{name: "draft has wrong digest", tag: "v2026.12.1", state: "bad-draft", wantErr: "no unique draft of v2026.12.1 matches the bundle"},
 		{name: "two drafts", tag: "v2026.12.1", state: "two-drafts", wantErr: "no unique draft of v2026.12.1 matches the bundle"},
 		{name: "already published", tag: "v2026.12.1-rc.1", state: "published"},
 		{name: "absent", tag: "v2026.12.1", wantErr: "Run katl-release draft first"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := publicationWorld(t, tc.tag, tc.state == "still-draft")
+			f := publicationWorld(t, tc.tag, false)
 			if tc.state == "published" {
 				f.list(f.readback)
 			} else if tc.state != "" {
@@ -654,6 +654,81 @@ func TestDraftRequiresReleaseList(t *testing.T) {
 			}); created != (tc.wantErr == "") {
 				t.Errorf("draft created a release = %v after release list failures %v", created, tc.failures)
 			}
+		})
+	}
+}
+
+// GitHub can answer 404 for a draft it has just created, list its assets
+// before every upload shows, and report a release it has just published as
+// a draft. Each readback waits for the write to show, and a readback that
+// contradicts the bundle is refused at once.
+func TestPublicationReadback(t *testing.T) {
+	const never = 1 << 30
+	for _, tc := range []struct {
+		name, action string
+		// stale is how many reads of the release show it before the write.
+		stale    int
+		notFound bool
+		// change makes a readback contradict the bundle.
+		change  bool
+		wantErr string
+		reads   int
+	}{
+		{name: "draft not found yet", action: "draft", stale: 2, notFound: true, reads: 3},
+		{name: "uploads show late", action: "draft", stale: 2, reads: 3},
+		{name: "uploads never show", action: "draft", stale: never, wantErr: "draft of v2026.12.1 still lacks uploaded assets of the bundle after " + readbackWait.String()},
+		{name: "upload differs while others show late", action: "draft", stale: never, change: true, wantErr: "draft of v2026.12.1 does not match", reads: 1},
+		{name: "publication shows late", action: "publish", stale: 2, reads: 3},
+		{name: "publication never shows", action: "publish", stale: never, wantErr: "GitHub still reports v2026.12.1 as a draft after " + readbackWait.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := publicationWorld(t, "v2026.12.1", true)
+				release := repoPrefix + "releases/42"
+				if tc.action == "publish" {
+					f.list(maps.Clone(f.readback))
+				}
+				assets := f.readback["assets"].([]map[string]any)
+				fresh := maps.Clone(assets[1])
+				stale := func(reads int) {
+					switch {
+					case reads >= tc.stale:
+						assets[1] = fresh
+						f.readback["draft"] = tc.action == "draft"
+					case tc.action == "draft":
+						assets[1] = map[string]any{"id": 12, "name": "payload", "state": "starter", "digest": ""}
+					}
+					if tc.change {
+						assets[2]["digest"] = fixturePayloadDigest
+					}
+				}
+				stale(0)
+				if tc.notFound {
+					f.api.failures = map[string][]error{release: make([]error, tc.stale)}
+					for i := range tc.stale {
+						f.api.failures[release][i] = &apiError{status: 404, text: "gh: Not Found (HTTP 404)"}
+					}
+				}
+				reads := 0
+				f.onRead = func(endpoint string) {
+					if endpoint == release {
+						reads++
+						stale(reads)
+					}
+				}
+
+				start := time.Now()
+				err := f.run(tc.action)
+				elapsed := time.Since(start)
+
+				requireReleaseError(t, err, tc.wantErr)
+				switch {
+				case tc.reads != 0 && reads != tc.reads:
+					t.Fatalf("read the release %d times; want %d", reads, tc.reads)
+				case tc.reads == 0 && elapsed != readbackWait:
+					t.Fatalf("gave up after %s; want the %s deadline", elapsed, readbackWait)
+				}
+			})
 		})
 	}
 }

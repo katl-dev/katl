@@ -107,12 +107,31 @@ func cutBranchExists(ctx context.Context, r *reader, version releaseversion.Vers
 	return true, nil
 }
 
+// awaitCutBranch reads the release branch after a write that creates it until
+// the branch shows or readbackWait passes. A branch at another commit is
+// refused at once.
+func awaitCutBranch(ctx context.Context, r *reader, version releaseversion.Version, commit string) (bool, error) {
+	exists, err := awaitReadback(ctx, r, func(ctx context.Context) (bool, bool, error) {
+		exists, err := cutBranchExists(ctx, r, version, commit)
+		return exists, exists, err
+	}, nil)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return false, nil
+	}
+	return exists, err
+}
+
 func createReleaseBranch(ctx context.Context, r *reader, call command, version releaseversion.Version, commit string) error {
 	endpoint := r.repo("git/refs")
 	_, writeErr := call("gh", "api", "--method", "POST", endpoint, "-f", "ref="+releasestate.Ref(version), "-f", "sha="+commit)
 	// A concurrent cut or a lost response can leave the ref in place. Check
-	// the actual ref after the single create request, including on error.
-	exists, err := cutBranchExists(ctx, r, version, commit)
+	// the actual ref after the single create request, including on error. A
+	// refused request is checked once; an accepted one waits for the ref.
+	read := cutBranchExists
+	if writeErr == nil {
+		read = awaitCutBranch
+	}
+	exists, err := read(ctx, r, version, commit)
 	if !exists && writeErr != nil {
 		writeErr = ghFailure("create "+releasestate.Ref(version), writeErr, stderrOf(writeErr))
 		return errors.Join(writeErr, err)
@@ -146,7 +165,7 @@ func dispatchCut(ctx context.Context, r *reader, call command, version releaseve
 		return workflowFailure(target.name, run, jobs)
 	}
 
-	exists, err := cutBranchExists(ctx, r, version, commit)
+	exists, err := awaitCutBranch(ctx, r, version, commit)
 	if err != nil {
 		return fmt.Errorf("Cut release run %s succeeded, but %w", run.HTMLURL, err)
 	}
