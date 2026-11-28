@@ -84,7 +84,7 @@ func requireNeeds(t *testing.T, workflow workflowFile, edges [][2]string) {
 const (
 	productionBuild    = "production-build.yml"
 	runtimeInputsName  = "katl-runtime-${{ inputs.flavour }}-${{ github.sha }}"
-	bundlesArtifact    = "katl-extension-bundles-${{ inputs.flavour }}-${{ github.sha }}"
+	bundlesArtifact    = "${{ steps.names.outputs.extension-bundles }}"
 	extensionsMatrixFn = "${{ fromJSON(needs.runtime.outputs.extensions) }}"
 )
 
@@ -185,12 +185,10 @@ func TestProductionBuildEmbedsKernelExtensions(t *testing.T) {
 		if strings.Contains(step.Run, "scripts/katl-release-artifacts stage") {
 			staging = i
 		}
-		if step.With["name"] == bundlesArtifact {
-			paths := step.With["path"]
-			carried = strings.Contains(paths, "_build/mkosi/extension-bundles/") && strings.Contains(paths, "_build/mkosi/release-extensions.json")
-			if step.With["retention-days"] != "30" {
-				t.Error("extension publication inputs must survive the 30-day publication retention window")
-			}
+		paths := step.With["path"]
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && strings.Contains(paths, "_build/mkosi/extension-bundles/") &&
+			strings.Contains(paths, "_build/mkosi/release-extensions.json") {
+			carried = true
 		}
 	}
 	if composition < 0 || packaging <= composition || staging <= packaging {
@@ -227,37 +225,69 @@ func TestProductionBuildIsUnprivileged(t *testing.T) {
 	}
 }
 
-func TestProductionBuildPublicationOnlyGatesRetention(t *testing.T) {
+func TestProductionBuildArtifactRetention(t *testing.T) {
 	workflow, _ := readWorkflow(t, productionBuild)
+	uploads := 0
+	for _, step := range workflow.Jobs["assemble"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
+			uploads++
+			if got := step.With["retention-days"]; got != "${{ inputs.retention-days }}" {
+				t.Errorf("%s retention-days = %q, want the caller input", step.Name, got)
+			}
+		}
+	}
+	if uploads == 0 {
+		t.Fatal("assemble has no artifact uploads")
+	}
+}
 
-	for name, job := range workflow.Jobs {
-		for key, value := range job.Env {
-			if strings.Contains(value, "inputs.publication") {
-				t.Errorf("%s env %s depends on publication", name, key)
-			}
+func TestProductionBuildExtensionBundles(t *testing.T) {
+	workflow, _ := readWorkflow(t, productionBuild)
+	var on struct {
+		Call struct {
+			Outputs map[string]struct{ Value string }
+		} `yaml:"workflow_call"`
+	}
+	if err := workflow.On.Decode(&on); err != nil {
+		t.Fatal(err)
+	}
+	if got := on.Call.Outputs["extension-bundles"].Value; got != "${{ jobs.assemble.outputs.extension-bundles }}" {
+		t.Errorf("workflow extension-bundles output = %q, want the assemble output", got)
+	}
+
+	assemble := workflow.Jobs["assemble"]
+	if got := assemble.Outputs["extension-bundles"]; got != bundlesArtifact {
+		t.Errorf("assemble extension-bundles output = %q, want the upload name", got)
+	}
+	var names workflowStep
+	var upload workflowStep
+	for _, step := range assemble.Steps {
+		if step.ID == "names" {
+			names = step
 		}
-		for _, step := range job.Steps {
-			uploads := strings.HasPrefix(step.Uses, "actions/upload-artifact@")
-			publicationNamesOutput := step.Name == "Resolve artifact names"
-			for context, value := range map[string]string{"run": step.Run, "name": step.Name, "uses": step.Uses} {
-				if context != "name" && strings.Contains(value, "inputs.publication") {
-					t.Errorf("%s step %q reads publication in %s", name, step.Name, context)
-				}
-			}
-			for key, value := range step.With {
-				if strings.Contains(value, "inputs.publication") && !(uploads && key == "retention-days") {
-					t.Errorf("%s step %q passes publication in with.%s", name, step.Name, key)
-				}
-			}
-			for key, value := range step.Env {
-				if strings.Contains(value, "inputs.publication") && !publicationNamesOutput {
-					t.Errorf("%s step %q passes publication in env %s", name, step.Name, key)
-				}
-			}
-			if strings.Contains(step.If, "inputs.publication") && !uploads {
-				t.Errorf("%s step %q is conditional on publication but is not an upload", name, step.Name)
-			}
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && step.With["name"] == bundlesArtifact {
+			upload = step
 		}
+	}
+	if upload.Uses == "" || upload.If != "" {
+		t.Fatal("assemble must upload the named extension bundles on every successful build")
+	}
+	if names.If != "" || names.Run == "" {
+		t.Fatal("assemble must resolve the extension bundles name on every successful build")
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "output")
+	command := exec.Command("bash", "-euo", "pipefail", "-c", names.Run)
+	command.Env = []string{"KATL_FLAVOUR=lts", "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "GITHUB_OUTPUT=" + outputPath}
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("resolve artifact names: %v\n%s", err, output)
+	}
+	output, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "\nextension-bundles=katl-extension-bundles-lts-0123456789abcdef0123456789abcdef01234567\n") {
+		t.Errorf("artifact outputs = %q, want the extension bundle named for the flavour and commit", output)
 	}
 }
 
@@ -270,8 +300,8 @@ func TestReleaseBuildsBothKernelFlavours(t *testing.T) {
 		if build.Uses != "./.github/workflows/"+productionBuild {
 			t.Errorf("build-%s uses %q", flavour, build.Uses)
 		}
-		if build.With["flavour"] != flavour || build.With["publication"] != "true" || !version.MatchString(build.With["version"]) {
-			t.Errorf("build-%s inputs = %v, want literal flavour %s with publication", flavour, build.With, flavour)
+		if build.With["flavour"] != flavour || !version.MatchString(build.With["version"]) {
+			t.Errorf("build-%s inputs = %v, want literal flavour %s and the release version", flavour, build.With, flavour)
 		}
 		if !build.needs("identity") {
 			t.Errorf("build-%s does not wait for release identity", flavour)
@@ -658,32 +688,30 @@ func TestNightlyCandidateScheduled(t *testing.T) {
 	}
 }
 
-// The nightly candidate keeps its bundle and assembled artifacts for a week;
-// tags and dispatches keep them for the full publication window.
+// The nightly candidate retains its artifacts for a week. Tags and dispatches
+// keep them for the full publication window.
 func TestNightlyArtifactRetention(t *testing.T) {
 	release, _ := readWorkflow(t, "release-artifacts.yml")
-	build, _ := readWorkflow(t, "production-build.yml")
-	retention := map[string]string{}
+	for _, job := range []string{"build-standard", "build-lts"} {
+		if got := release.Jobs[job].With["retention-days"]; got != "${{ fromJSON(needs.identity.outputs.retention-days) }}" {
+			t.Errorf("%s retention-days = %q, want the release retention as a number", job, got)
+		}
+	}
+	bundleRetention := ""
 	for _, step := range release.Jobs["bundle"].Steps {
 		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
-			retention["bundle"] = step.With["retention-days"]
+			bundleRetention = step.With["retention-days"]
 		}
 	}
-	for _, step := range build.Jobs["assemble"].Steps {
-		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && strings.HasPrefix(step.With["name"], "katl-assembled-") {
-			retention["assembled"] = step.With["retention-days"]
-		}
-	}
-	if len(retention) != 2 {
-		t.Fatalf("found retention for %v, want the bundle and assembled uploads", retention)
+	if bundleRetention != "${{ needs.identity.outputs.retention-days }}" {
+		t.Errorf("bundle retention-days = %q, want the release retention", bundleRetention)
 	}
 
-	for name, expression := range retention {
-		for event, want := range map[string]string{"schedule": "7", "push": "30", "workflow_dispatch": "30"} {
-			ctx := map[string]string{"github.event_name": event, "inputs.publication": "true"}
-			if got := expandExpressions(t, expression, ctx); got != want {
-				t.Errorf("%s retention on %s = %s, want %s", name, event, got, want)
-			}
+	expression := release.Jobs["identity"].Outputs["retention-days"]
+	for event, want := range map[string]string{"schedule": "7", "push": "30", "workflow_dispatch": "30"} {
+		ctx := map[string]string{"github.event_name": event}
+		if got := expandExpressions(t, expression, ctx); got != want {
+			t.Errorf("release retention on %s = %s, want %s", event, got, want)
 		}
 	}
 }

@@ -11,16 +11,16 @@ on:
         description: Canonical CalVer embedded in artifacts
         type: string
         required: true
-      publication:
-        description: Retain the build for publication and upload the extension publication inputs
-        type: boolean
-        default: false
+      retention-days:
+        description: Retention in days for the assembled artifact and extension publication inputs
+        type: number
+        required: true
     outputs:
       artifact:
         description: Assembled release artifact for this flavour
         value: ${{ jobs.assemble.outputs.artifact }}
       extension-bundles:
-        description: Extension publication inputs artifact; empty unless publication is set
+        description: Name of the extension publication inputs artifact for this flavour
         value: ${{ jobs.assemble.outputs.extension-bundles }}
 
 permissions:
@@ -378,15 +378,9 @@ jobs:
       - name: Resolve artifact names
         id: names
         shell: bash
-        env:
-          PUBLICATION: ${{ inputs.publication }}
         run: |
           echo "artifact=katl-assembled-${KATL_FLAVOUR}-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          bundles=""
-          if [[ "$PUBLICATION" == true ]]; then
-            bundles="katl-extension-bundles-${KATL_FLAVOUR}-${GITHUB_SHA}"
-          fi
-          echo "extension-bundles=$bundles" >> "$GITHUB_OUTPUT"
+          echo "extension-bundles=katl-extension-bundles-${KATL_FLAVOUR}-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Upload GitHub Actions artifact
         uses: actions/upload-artifact@v7
@@ -394,19 +388,18 @@ jobs:
           name: katl-assembled-${{ inputs.flavour }}-${{ github.sha }}
           path: dist/
           if-no-files-found: error
-          retention-days: ${{ inputs.publication && (github.event_name == 'schedule' && 7 || 30) || 1 }}
+          retention-days: ${{ inputs.retention-days }}
           compression-level: 0
 
       - name: Upload extension publication inputs
-        if: inputs.publication
         uses: actions/upload-artifact@v7
         with:
-          name: katl-extension-bundles-${{ inputs.flavour }}-${{ github.sha }}
+          name: ${{ steps.names.outputs.extension-bundles }}
           path: |
             _build/mkosi/release-extensions.json
             _build/mkosi/extension-bundles/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: ${{ inputs.retention-days }}
           compression-level: 0
 
       - name: Record disk margin

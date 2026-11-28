@@ -1056,8 +1056,7 @@ func TestPlanRequiresTestedBase(t *testing.T) {
 	}
 }
 
-// The production jobs are the reusable production build without publication,
-// planned from the matrix the plan job selects.
+// CI retains artifacts for one day for each planned production flavour.
 func TestCIProductionJobs(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/ci.yml"))
 	if err != nil {
@@ -1078,8 +1077,8 @@ func TestCIProductionJobs(t *testing.T) {
 	if production.Uses != "./.github/workflows/production-build.yml" {
 		t.Errorf("production uses %q, want the reusable production build", production.Uses)
 	}
-	if got := production.With["publication"]; got != false {
-		t.Errorf("production publication = %v, want false", got)
+	if got := production.With["retention-days"]; got != 1 {
+		t.Errorf("production retention-days = %v, want 1", got)
 	}
 	if got := production.Strategy.Matrix.Flavour; got != "${{ fromJSON(needs.plan.outputs.production-flavours) }}" {
 		t.Errorf("production matrix = %q, want the planned flavours", got)
