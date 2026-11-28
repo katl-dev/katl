@@ -300,7 +300,7 @@ jobs:
       # A resume downloads by the IDs candidate-artifacts bound to the recorded
       # build attempt; otherwise each inventory name selects this run's.
       - name: Download candidate extension publication inputs
-        timeout-minutes: 20
+        timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
           RECORDED: ${{ steps.recorded.outputs.extensions }}
@@ -362,7 +362,7 @@ jobs:
     runs-on: ubuntu-24.04
     # GitHub starts this budget when the job is assigned a runner, after the
     # release environment's approval, so the approval wait is not counted here.
-    timeout-minutes: 90
+    timeout-minutes: 110
     environment: release
     permissions:
       contents: write
@@ -421,7 +421,7 @@ jobs:
           done <<< "$records"
           scripts/katl-release equivalent dist "${evidence[@]}"
       - name: Download final extension publication inputs
-        timeout-minutes: 20
+        timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

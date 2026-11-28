@@ -18,6 +18,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/katl-dev/katl/internal/flavour"
 	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
@@ -55,11 +56,23 @@ func (s budgetStep) label(i int) string {
 	return "step " + strconv.Itoa(i)
 }
 
+// perBundle matches a run script that iterates the extension bundle
+// inventory, which the release workflow carries from katl-release
+// extension-bundles as EXTENSION_BUNDLES.
+var perBundle = regexp.MustCompile(`\.bundles\[\][^\n]*<<< "\$EXTENSION_BUNDLES"`)
+
+// downloadBudget is the longest a step's hosted-download calls may run. A
+// step that loops over the extension bundle inventory downloads once per
+// bundle, so its worst case grows with the inventory.
 func (s budgetStep) downloadBudget() int {
-	if strings.Contains(s.Run, "hosted-download") {
-		return downloadWorstCase(s.Env)
+	if !strings.Contains(s.Run, "hosted-download") {
+		return 0
 	}
-	return 0
+	worst := downloadWorstCase(s.Env)
+	if perBundle.MatchString(s.Run) {
+		worst *= len(flavour.Supported())
+	}
+	return worst
 }
 
 // budgetViolations reports how a workflow or composite action breaks the time
@@ -360,6 +373,11 @@ func TestWorkflowBudgets(t *testing.T) {
 `, "job timeout 60 does not exceed setup 25 plus go test -timeout 36m"},
 		{"download step shorter than its attempts", strings.Replace(budgeted, "timeout-minutes: 20", "timeout-minutes: 15", 1), "has 15 minutes for downloads that may take 1185 seconds"},
 		{"ID download step shorter than its attempts", strings.NewReplacer("timeout-minutes: 20", "timeout-minutes: 15", "artifact inputs _build/import", "--id 9 artifact inputs _build/import 7").Replace(budgeted), "has 15 minutes for downloads that may take 1185 seconds"},
+		{"inventory download step shorter than its bundles", strings.Replace(budgeted, "run: .github/scripts/hosted-download artifact inputs _build/import", `run: |
+          jq -er '.bundles[].name' <<< "$EXTENSION_BUNDLES" |
+          while IFS= read -r name; do
+            .github/scripts/hosted-download artifact "$name" "artifacts/$name"
+          done`, 1), fmt.Sprintf("has 20 minutes for downloads that may take %d seconds", 1185*len(flavour.Supported()))},
 		{"cache restore failing the job", budgeted + `      - uses: actions/cache/restore@v6
         timeout-minutes: 5
 `, "must continue on error"},
