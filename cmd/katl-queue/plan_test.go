@@ -341,27 +341,6 @@ func TestStartable(t *testing.T) {
 	}
 }
 
-func TestDeclaredHold(t *testing.T) {
-	tests := []struct {
-		name, body, want string
-	}{
-		{"none", "Closes #5\nholding pattern\n", ""},
-		{"plain", "Closes #5\n\nHold: awaiting the VM gate\n", "awaiting the VM gate"},
-		{"case and indentation", "   hOLD:   needs a journey  \n", "needs a journey"},
-		{"empty reason", "Hold:\nHold:   \n", ""},
-		{"inline mention", "see Hold: later\n", ""},
-		{"fenced", "```\nHold: example\n```\n~~~sh\nHold: another\n~~~\n", ""},
-		{"after a fence", "```\nHold: example\n```\nHold: real\n", "real"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := declaredHold(tt.body); got != tt.want {
-				t.Errorf("declaredHold() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPlanHoldsDeclaredHold(t *testing.T) {
 	f := newPlanFixture(t)
 	held := f.pr(1, "a", 0)

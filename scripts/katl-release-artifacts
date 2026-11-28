@@ -19,6 +19,7 @@ usage: scripts/katl-release-artifacts version EVENT [MANUAL_VERSION]
        scripts/katl-release-artifacts upgrade-baseline
        scripts/katl-release-artifacts dev-version STABLE_TAG
        scripts/katl-release-artifacts notes VERSION
+       scripts/katl-release-artifacts count-release-notes < MESSAGE
        scripts/katl-release-artifacts build-katlctl VERSION
        scripts/katl-release-artifacts verify-katlctl VERSION
        scripts/katl-release-artifacts stage VERSION OUTPUT_DIR
@@ -40,19 +41,23 @@ stable_tags() {
     release_tool stable-tags "${tags[@]}"
 }
 
-# Prints the last reader note, or skip if every Release-Note asks to skip.
-# Squash commits can also carry notes in the prose before the trailer block.
-commit_release_note() {
-    local message boundary="Katl-Trailer-Boundary: $1"
-    message="$(git show -s --format=%B "$1")"
+# Reads the Release-Note trailers of the commit message MESSAGE. Squash
+# commits can also carry notes in the prose before the trailer block. In note
+# mode it prints the last reader note, or skip if every Release-Note asks to
+# skip. In count mode it prints "<count> <multiline>": how many notes there
+# are, skip included, and 1 when a body note continued onto a second line.
+# BOUNDARY_ID must not occur in the message.
+release_note_trailers() {
+    local mode="$1" message="$2" boundary="Katl-Trailer-Boundary: $3"
 
     # Let Git locate and unfold the trailer block. Only notes in the preceding
     # body can continue on an unindented line.
     git interpret-trailers --no-divider --unfold --where=start --if-exists=add \
         --trailer "$boundary" <<<"$message" |
-        awk -v boundary="$boundary" '
+        awk -v boundary="$boundary" -v mode="$mode" '
             function flush() {
                 if (!inside) return
+                count++
                 if (note == "skip") skipped = 1
                 else { last = note; have_note = 1 }
                 inside = 0
@@ -60,10 +65,26 @@ commit_release_note() {
             NR == 1 { next }
             $0 == boundary { flush(); in_trailers = 1; next }
             /^Release-Note:/ { flush(); note = $0; sub(/^Release-Note:[ \t]*/, "", note); inside = 1; next }
-            !in_trailers && inside && NF { note = note " " $0; next }
+            !in_trailers && inside && NF { note = note " " $0; multiline = 1; next }
             { flush() }
-            END { flush(); if (have_note) print last; else if (skipped) print "skip" }
+            END {
+                flush()
+                if (mode == "count") print count + 0, multiline + 0
+                else if (have_note) print last
+                else if (skipped) print "skip"
+            }
         '
+}
+
+commit_release_note() {
+    release_note_trailers note "$(git show -s --format=%B "$1")" "$1"
+}
+
+# Counts the Release-Note trailers of the commit message on stdin.
+count_release_notes() {
+    local message
+    message="$(cat)"
+    release_note_trailers count "$message" "$(git hash-object --stdin <<<"$message")"
 }
 
 # Candidates and finals describe the same version's changes. Read the pin
@@ -503,6 +524,10 @@ case "${1:-}" in
     notes)
         [[ $# -eq 2 ]] || usage
         generate_release_notes "$2"
+        ;;
+    count-release-notes)
+        [[ $# -eq 1 ]] || usage
+        count_release_notes
         ;;
     build-katlctl)
         [[ $# -eq 2 ]] || usage

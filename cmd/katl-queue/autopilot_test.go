@@ -303,6 +303,25 @@ func TestWorldFrom(t *testing.T) {
 	}
 }
 
+func TestWorldHold(t *testing.T) {
+	snap := queueSnapshot{Branch: "main", PRs: []prResponse{
+		{Number: 1, HeadRefOid: "h1", BaseRefName: "main", Body: "Waits on the operator.\n\nHold:\n"},
+		{Number: 2, HeadRefOid: "h2", BaseRefName: "main", Body: "Mentions holding in prose.\n\n```\nHold: example\n```\n"},
+	}}
+
+	w := worldFrom(snap, "")
+
+	if len(w.PRs) != 2 {
+		t.Fatalf("pull requests = %+v, want both", w.PRs)
+	}
+	if w.PRs[0].Hold == "" {
+		t.Error("a bare Hold: line does not hold the pull request")
+	}
+	if w.PRs[1].Hold != "" {
+		t.Errorf("Hold = %q for a body without a Hold: line, want none", w.PRs[1].Hold)
+	}
+}
+
 func TestApplyScope(t *testing.T) {
 	tests := []struct {
 		command, milestone string

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/katl-dev/katl/internal/queueadmission"
 )
 
 const parentStallAge = 7 * 24 * time.Hour
@@ -59,7 +61,7 @@ type parentCandidate struct {
 
 func candidateParent(issue trackerIssue) parentCandidate {
 	p := parentCandidate{inScope: issue.SubIssuesSummary.Total > 0}
-	for line := range unfencedLines(issue.Body) {
+	for line := range queueadmission.UnfencedLines(issue.Body) {
 		p.inScope = p.inScope || designLine.MatchString(line)
 		if condition := closesWhenLine.FindStringSubmatch(line); condition != nil {
 			p.hasLine = true
@@ -129,7 +131,7 @@ func evaluateParents(facts trackerFacts, start, now time.Time) parentReport {
 			r.finished = append(r.finished, f)
 		}
 		if p.inScope && len(p.links) > 0 && !slices.ContainsFunc(p.links, func(link issueLink) bool {
-			return !facts.references[link].resolved()
+			return !facts.references[link].Resolved()
 		}) {
 			r.conditionsMet = append(r.conditionsMet, f)
 		}

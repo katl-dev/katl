@@ -1199,3 +1199,31 @@ func TestKatlReleaseArtifactBaseline(t *testing.T) {
 		t.Fatalf("upgrade-baseline = %q, error %v, want the checkout's v2026.11.5", output, err)
 	}
 }
+
+// A count that ignored skip, counted only the trailer block, or missed a
+// wrapped body note would let a squash message carry an ambiguous note.
+func TestKatlReleaseArtifactCountReleaseNotes(t *testing.T) {
+	repo := repoRoot(t)
+	script := filepath.Join(repo, "scripts", "katl-release-artifacts")
+	for _, tc := range []struct{ name, message, want string }{
+		{name: "none", message: "area: change\n\nWhy.\n", want: "0 0"},
+		{name: "one", message: "area: change\n\nWhy.\n\nRelease-Note: Reader summary\n", want: "1 0"},
+		{name: "two", message: "area: change\n\n* area: first\n\nRelease-Note: First\n\n* area: second\n\nRelease-Note: Second\n", want: "2 0"},
+		{name: "wrapped body note", message: "area: change\n\n* area: first\n\nRelease-Note: wrapped summary\nacross lines\n\n* area: second\n\nDetails.\n", want: "1 1"},
+		{name: "skip", message: "area: change\n\nWhy.\n\nRelease-Note: skip\n", want: "1 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(script, "count-release-notes")
+			cmd.Dir = t.TempDir()
+			cmd.Env = gittest.Env(os.Environ(), cmd.Dir)
+			cmd.Stdin = strings.NewReader(tc.message)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("count-release-notes failed: %v\n%s", err, output)
+			}
+			if got := strings.TrimSpace(string(output)); got != tc.want {
+				t.Fatalf("count-release-notes = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

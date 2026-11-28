@@ -1,0 +1,8 @@
+[
+  {"name": "ready", "branch": "automation/kernels-test", "file": "kernels/fedora-44/x86_64/standard.json", "accepted": true},
+  {"name": "unrelated file", "branch": "automation/kernels-test", "file": ".github/workflows/release-artifacts.yml", "accepted": false},
+  {"name": "builder pin", "branch": "automation/mkosi-builder-test", "file": "mkosi-builder.lock", "accepted": true},
+  {"name": "builder branch with a kernel lock", "branch": "automation/mkosi-builder-test", "file": "kernels/fedora-44/x86_64/standard.json", "accepted": false},
+  {"name": "kernel branch with the builder pin", "branch": "automation/kernels-test", "file": "mkosi-builder.lock", "accepted": false},
+  {"name": "other automation branch", "branch": "automation/other-test", "file": "mkosi-builder.lock", "accepted": false}
+]
