@@ -106,42 +106,6 @@ func TestKatlReleaseArtifactDevVersion(t *testing.T) {
 
 func TestKatlReleaseArtifactNotes(t *testing.T) {
 	repo := repoRoot(t)
-	gitDir := t.TempDir()
-	runGit(t, gitDir, "init", "--quiet")
-
-	commits := []string{
-		"runtime: establish KatlOS root",
-		"release: publish first artifacts",
-		"release: automate Kubernetes bundles",
-		"release: attest KatlOS artifacts",
-		"test: exercise release note suppression",
-		"management: rotate credentials internally",
-	}
-	var hashes []string
-	for index, subject := range commits {
-		path := filepath.Join(gitDir, fmt.Sprintf("change-%d", index))
-		if err := os.WriteFile(path, []byte(subject+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		runGit(t, gitDir, "add", filepath.Base(path))
-		args := []string{"commit", "--quiet", "-m", subject}
-		if index == 4 {
-			args = append(args, "-m", "Release-Note: skip")
-		} else if index == 5 {
-			args = append(args, "-m", "Release-Note: Rotate node credentials\n\n* Follow-up cleanup\n\nRelease-Note: skip")
-		}
-		runGit(t, gitDir, args...)
-		hashes = append(hashes, strings.TrimSpace(runGit(t, gitDir, "rev-parse", "HEAD")))
-		if index == 1 {
-			runGit(t, gitDir, "tag", "v2026.6.2")
-			runGit(t, gitDir, "tag", "v1.36.0-katl.99")
-		}
-	}
-	// The existing-series final is tagged locally but has no published release.
-	for _, tag := range []string{"v2026.7.0-dev.4", "v2026.6.3-rc.1", "v2026.6.3", "v2026.7.0"} {
-		runGit(t, gitDir, "tag", tag)
-	}
-	published := fakeReleaseListing(t, `[{"tag_name":"v2026.6.2","draft":false,"prerelease":false}]`)
 
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	const repositoryURL = "https://github.example/katl-dev/katl"
@@ -150,7 +114,7 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 		"**release:** automate Kubernetes bundles",
 		"Rotate node credentials",
 	}
-	for _, tc := range []struct {
+	versions := []struct {
 		name        string
 		versionArgs []string
 		wantVersion string
@@ -180,52 +144,132 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 			wantVersion: "2026.7.0",
 			wantBundle:  "katl-2026.7.0-x86_64-0123456789ab",
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			run := func(script string, args ...string) string {
-				t.Helper()
-				cmd := exec.Command(filepath.Join(repo, "scripts", script), args...)
-				cmd.Dir = gitDir
-				cmd.Env = append(
-					gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_REPO_ROOT"), gitDir),
-					published,
-					"GITHUB_REF_TYPE="+tc.versionArgs[1],
-					"GITHUB_SHA=not-a-commit-in-the-test-repository",
-					"KATL_RELEASE_REPOSITORY_URL="+repositoryURL,
-				)
-				output, err := cmd.CombinedOutput()
-				if err != nil {
-					t.Fatalf("%s %v: %v\n%s", script, args, err, output)
+	}
+	guidance := []struct {
+		name         string
+		next         string // docs/releases/next.md in the fixture; empty means absent
+		wantGuidance []string
+	}{
+		{name: "no guidance"},
+		{
+			name:         "next.md with bullets",
+			next:         "## Pending guidance\n\n- Drain workloads before upgrading.\n- Upgrade control-plane nodes first.\n",
+			wantGuidance: []string{"- Drain workloads before upgrading.", "- Upgrade control-plane nodes first."},
+		},
+	}
+
+	for _, g := range guidance {
+		t.Run(g.name, func(t *testing.T) {
+			gitDir := t.TempDir()
+			runGit(t, gitDir, "init", "--quiet")
+			if g.next != "" {
+				releases := filepath.Join(gitDir, "docs", "releases")
+				if err := os.MkdirAll(releases, 0o755); err != nil {
+					t.Fatal(err)
 				}
-				return string(output)
-			}
-
-			version := strings.TrimSpace(run("katl-release-artifacts", append([]string{"version"}, tc.versionArgs...)...))
-			if version != tc.wantVersion {
-				t.Fatalf("version = %q, want %q", version, tc.wantVersion)
-			}
-			if bundle := strings.TrimSpace(run("katl-release", "bundle-name", version, commit)); bundle != tc.wantBundle {
-				t.Fatalf("bundle name = %q, want %q", bundle, tc.wantBundle)
-			}
-
-			notes := run("katl-release-artifacts", "notes", version)
-			changes := releaseNoteSubjects(notes)
-			slices.Sort(changes)
-			if !slices.Equal(changes, wantChanges) {
-				t.Fatalf("changes = %q, want %q\n%s", changes, wantChanges, notes)
-			}
-
-			tag := "v" + tc.wantVersion
-			for _, value := range []string{
-				"## Changes", "## Verify", "## Support",
-				repositoryURL + "/commit/" + hashes[3],
-				"[PROVENANCE.md](" + repositoryURL + "/releases/download/" + tag + "/PROVENANCE.md)",
-				"[SUPPORT.md](" + repositoryURL + "/releases/download/" + tag + "/SUPPORT.md)",
-				repositoryURL + "/compare/v2026.6.2..." + tag,
-			} {
-				if !strings.Contains(notes, value) {
-					t.Errorf("release notes missing %q:\n%s", value, notes)
+				if err := os.WriteFile(filepath.Join(releases, "next.md"), []byte(g.next), 0o644); err != nil {
+					t.Fatal(err)
 				}
+			}
+
+			commits := []string{
+				"runtime: establish KatlOS root",
+				"release: publish first artifacts",
+				"release: automate Kubernetes bundles",
+				"release: attest KatlOS artifacts",
+				"test: exercise release note suppression",
+				"management: rotate credentials internally",
+			}
+			var hashes []string
+			for index, subject := range commits {
+				path := filepath.Join(gitDir, fmt.Sprintf("change-%d", index))
+				if err := os.WriteFile(path, []byte(subject+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, gitDir, "add", filepath.Base(path))
+				args := []string{"commit", "--quiet", "-m", subject}
+				if index == 4 {
+					args = append(args, "-m", "Release-Note: skip")
+				} else if index == 5 {
+					args = append(args, "-m", "Release-Note: Rotate node credentials\n\n* Follow-up cleanup\n\nRelease-Note: skip")
+				}
+				runGit(t, gitDir, args...)
+				hashes = append(hashes, strings.TrimSpace(runGit(t, gitDir, "rev-parse", "HEAD")))
+				if index == 1 {
+					runGit(t, gitDir, "tag", "v2026.6.2")
+					runGit(t, gitDir, "tag", "v1.36.0-katl.99")
+				}
+			}
+			// The existing-series final is tagged locally but has no published release.
+			for _, tag := range []string{"v2026.7.0-dev.4", "v2026.6.3-rc.1", "v2026.6.3", "v2026.7.0"} {
+				runGit(t, gitDir, "tag", tag)
+			}
+			published := fakeReleaseListing(t, `[{"tag_name":"v2026.6.2","draft":false,"prerelease":false}]`)
+
+			for _, tc := range versions {
+				t.Run(tc.name, func(t *testing.T) {
+					run := func(script string, args ...string) string {
+						t.Helper()
+						cmd := exec.Command(filepath.Join(repo, "scripts", script), args...)
+						cmd.Dir = gitDir
+						// The fixture is the repository root, so guidance comes
+						// from its docs/releases and never from this checkout.
+						cmd.Env = append(
+							gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+							published,
+							"GITHUB_REF_TYPE="+tc.versionArgs[1],
+							"GITHUB_SHA=not-a-commit-in-the-test-repository",
+							"KATL_RELEASE_REPOSITORY_URL="+repositoryURL,
+							"KATL_REPO_ROOT="+gitDir,
+						)
+						output, err := cmd.CombinedOutput()
+						if err != nil {
+							t.Fatalf("%s %v: %v\n%s", script, args, err, output)
+						}
+						return string(output)
+					}
+
+					version := strings.TrimSpace(run("katl-release-artifacts", append([]string{"version"}, tc.versionArgs...)...))
+					if version != tc.wantVersion {
+						t.Fatalf("version = %q, want %q", version, tc.wantVersion)
+					}
+					if bundle := strings.TrimSpace(run("katl-release", "bundle-name", version, commit)); bundle != tc.wantBundle {
+						t.Fatalf("bundle name = %q, want %q", bundle, tc.wantBundle)
+					}
+
+					notes := run("katl-release-artifacts", "notes", version)
+					changes := releaseNoteSubjects(notes)
+					slices.Sort(changes)
+					if !slices.Equal(changes, wantChanges) {
+						t.Fatalf("changes = %q, want %q\n%s", changes, wantChanges, notes)
+					}
+
+					// Guidance follows the Changes section and precedes Verify.
+					body, _, _ := strings.Cut(notes, "\n## Verify\n")
+					_, guidanceText, _ := strings.Cut(strings.TrimPrefix(body, "## Changes\n"), "\n## ")
+					var gotGuidance []string
+					for _, line := range strings.Split(guidanceText, "\n") {
+						if strings.HasPrefix(line, "- ") {
+							gotGuidance = append(gotGuidance, line)
+						}
+					}
+					if !slices.Equal(gotGuidance, g.wantGuidance) {
+						t.Fatalf("guidance bullets = %q, want %q\n%s", gotGuidance, g.wantGuidance, notes)
+					}
+
+					tag := "v" + tc.wantVersion
+					for _, value := range []string{
+						"## Changes", "## Verify", "## Support",
+						repositoryURL + "/commit/" + hashes[3],
+						"[PROVENANCE.md](" + repositoryURL + "/releases/download/" + tag + "/PROVENANCE.md)",
+						"[SUPPORT.md](" + repositoryURL + "/releases/download/" + tag + "/SUPPORT.md)",
+						repositoryURL + "/compare/v2026.6.2..." + tag,
+					} {
+						if !strings.Contains(notes, value) {
+							t.Errorf("release notes missing %q:\n%s", value, notes)
+						}
+					}
+				})
 			}
 		})
 	}
@@ -879,6 +923,7 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 		published,
 		"GITHUB_REF_TYPE=branch",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
+		"KATL_REPO_ROOT="+gitDir,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -988,8 +1033,11 @@ func assertReleaseNoteSubjects(t *testing.T, dir, target, version string, want [
 	}
 }
 
+// releaseNoteSubjects returns the change entries: the bullets of the Changes
+// section, which ends at the next heading.
 func releaseNoteSubjects(notes string) []string {
-	changes, _, _ := strings.Cut(notes, "\n## Verify\n")
+	_, changes, _ := strings.Cut(notes, "## Changes\n")
+	changes, _, _ = strings.Cut(changes, "\n## ")
 	var subjects []string
 	for _, line := range strings.Split(changes, "\n") {
 		if subject, ok := strings.CutPrefix(line, "- "); ok {
