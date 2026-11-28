@@ -177,8 +177,10 @@ func assertPowerCutRecovery(ctx context.Context, katlctl katlctlRunner, dir, lab
 		probe, probeCancel := context.WithTimeout(ctx, 20*time.Second)
 		stdout, stderr, err := runProofKatlctl(probe, katlctl, dir, label+"-status", "node", "status", node.Name, "-o", "json")
 		probeCancel()
-		// The node is back once management answers and its local Kubernetes API
-		// serves again; the next leg's apply needs both.
+		// Waiting for the local Kubernetes API avoids the pre-CNI kubelet baseline
+		// race in #1086: an apply that starts as the API returns can record a Ready
+		// requirement this CNI-less node never meets. An operator is not required
+		// to wait here. Remove the wait once #1086 is fixed.
 		var status struct {
 			APIProxy struct {
 				LocalAPIEligible bool `json:"localAPIEligible"`
