@@ -75,21 +75,32 @@ connection at once and poll for themselves.
 
 If verification reports `could not confirm the node answers with the
 configured management credentials`, the rest of the message says what the
-check observed and gives one next step:
+check observed and gives one next step. The step depends on whether an earlier
+verified observation bound the address to the node. Only the endpoint the saved
+context records for the node is bound. An address given with `--endpoint`, an
+address in `cluster.yaml` that the saved context does not record, and every
+address on a first `katlctl context save` are not.
 
-- `the node did not answer` means no connection reached the node at its
-  configured address. It is down or still booting, and its trust is unchanged.
-  Rerun the command in the message once `katlctl node status` shows it up.
+- `the node did not answer` means no connection reached the node at its saved
+  address. It is down or still booting, and its trust is unchanged. Rerun the
+  command in the message once `katlctl node status` shows it up.
 - `the node did not answer at ADDRESS` means nothing answered at an address
-  given with `--endpoint`, for example by
+  that is not bound to the node, for example one given by
   `katlctl cluster apply --node NAME --endpoint ADDRESS`. `katlctl node status`
   uses the saved address, so it cannot tell whether this one works. Check that
   ADDRESS is the node's management address, then rerun.
 - `the node may still trust a different management authority` means the node
-  answered with a certificate from another authority, so the address is not
-  the problem. After a rotation, use the updated ClusterConfig and refresh
-  saved contexts. Otherwise restore the installed authority's secrets or, if
-  they are lost, run `katlctl management identity recover`.
+  presented a certificate from another authority at its saved address, so the
+  address is not the problem. After a rotation, use the updated ClusterConfig
+  and refresh saved contexts. Otherwise restore the installed authority's
+  secrets or, if they are lost, run `katlctl management identity recover`.
+- `the endpoint at ADDRESS presented a certificate the configured authority did
+  not sign` means something answered at an address that is not bound to the
+  node. It may be the node, or another cluster's node, another TLS service or
+  an intercepting proxy. Check that ADDRESS is the node's management address
+  first. Only if it is, follow the authority remedy above. Restoring secrets
+  that make a wrong endpoint verify would bind the node's credentials to
+  whatever answers there.
 - `the node may still trust an mTLS authority` means the node closed a
   plaintext connection. Check the address and node reachability, then rerun
   the `katlctl context save` command in the message.
@@ -135,9 +146,11 @@ keeps the previous address. If it reports `the node did not answer at ADDRESS`,
 nothing answered at the proposed address, whether the connection was refused
 or got no reply. `katlctl node status` still uses the saved address, so check
 that the proposed address and port are the node's management address, then
-rerun the `katlctl context rebind` command in the message. A node that answers
-with a certificate from another authority gets the same remedy as
-`katlctl context save`. For any other failure, check the address and node
+rerun the `katlctl context rebind` command in the message. If it reports `the
+endpoint at ADDRESS presented a certificate the configured authority did not
+sign`, the proposed address may not be the node. Check that it is the node's
+management address first, and only then follow the authority remedy that
+`katlctl context save` gives. For any other failure, check the address and node
 reachability, then rerun; if the check timed out after the node took the
 connection, you can increase `--timeout`.
 

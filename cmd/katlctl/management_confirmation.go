@@ -38,31 +38,47 @@ func (t managementTrust) String() string {
 	}
 }
 
-// managementAddress names where a check's address came from. It decides what
-// a reader can do about a node that did not answer: 'katlctl node status' uses
-// the saved address, so it shows when a node there comes back, but it says
-// nothing about an address the caller supplied.
+// managementAddress says whether a check's address is bound to the node. An
+// address is bound when an earlier verified observation recorded it for this
+// node: the saved context's endpoint, which 'katlctl node status' uses, or an
+// endpoint this command has already confirmed. A failure at a bound address is
+// about the node. At any other address, whatever answered, or did not, may not
+// be the node, so the address is the first thing to check.
 type managementAddress uint8
 
 const (
-	// addressSaved is the address the ClusterConfig or saved context records.
-	addressSaved managementAddress = iota + 1
-	// addressSupplied is an address the caller gave with --endpoint.
-	addressSupplied
+	// addressBound is an address an earlier verified observation bound to the
+	// node.
+	addressBound managementAddress = iota + 1
+	// addressUnverified is any other address: one given with --endpoint, or a
+	// ClusterConfig address the saved context does not record for the node.
+	addressUnverified
 )
+
+// addressBinding returns how endpoint relates to saved, the endpoint the saved
+// context records for the node, which is zero when there is none.
+func addressBinding(saved, endpoint inventory.HostPort) managementAddress {
+	if !saved.IsZero() && saved.Equal(endpoint) {
+		return addressBound
+	}
+	return addressUnverified
+}
 
 // managementCheck is a check of one node's management endpoint.
 type managementCheck struct {
 	// claim is what the check confirms when it passes.
 	claim string
-	// address is where endpoint came from. It is zero when the caller names
-	// its own next step, and the explanation then gives no advice.
+	// address says whether endpoint is bound to the node. It is zero when the
+	// caller names its own next step, and the explanation then gives no advice.
 	address  managementAddress
 	endpoint inventory.HostPort
 	// rerun is the command that repeats the check, if the reader can rerun it.
 	rerun string
 	// timeout is the command's --timeout, if a longer one could help.
 	timeout time.Duration
+	// authorityRemedy replaces transport.ManagementAuthorityRemedy for a
+	// command whose credentials that remedy does not describe.
+	authorityRemedy string
 }
 
 // managementReadError explains a failed check that changed nothing. Its cause
@@ -81,14 +97,17 @@ func managementTrustChangeError(check managementCheck, prior managementTrust, er
 
 func explainManagementFailure(check managementCheck, prior *managementTrust, err error) error {
 	evidence := transport.ClassifyManagementEvidence(err, nil, nil)
+	unverified := check.address == addressUnverified
 	explanation := "could not confirm " + check.claim
 	switch {
 	case prior != nil:
 		explanation += "; the node may still trust " + prior.String()
-	case evidence == transport.ManagementUnreachable && check.address == addressSupplied:
+	case evidence == transport.ManagementUnreachable && unverified:
 		explanation += fmt.Sprintf(": the node did not answer at %s", check.endpoint)
 	case evidence == transport.ManagementUnreachable:
 		explanation += ": the node did not answer"
+	case evidence == transport.ManagementAuthorityMismatch && unverified:
+		explanation += fmt.Sprintf(": the endpoint at %s presented a certificate the configured authority did not sign", check.endpoint)
 	case evidence == transport.ManagementAuthorityMismatch:
 		explanation += "; the node may still trust a different management authority"
 	case evidence == transport.ManagementRequiresTLS:
@@ -108,11 +127,16 @@ func (c managementCheck) advice(evidence transport.ManagementEvidence, err error
 	switch {
 	case c.address == 0:
 		return ""
+	case evidence == transport.ManagementAuthorityMismatch && c.address == addressUnverified:
+		// The certificate shows only that whatever answered is not signed by
+		// the configured authority. Trust material that made it verify would
+		// bind the node's credentials to whatever answers at this address.
+		return fmt.Sprintf("check that %s is the node's management address; if it is, %s", c.endpoint, c.remedy())
 	case evidence == transport.ManagementAuthorityMismatch:
-		// The node answered at this address, so neither the address nor a
-		// rerun can help.
-		return transport.ManagementAuthorityRemedy
-	case evidence == transport.ManagementUnreachable && c.address == addressSupplied:
+		// A verified observation already bound this address to the node, so
+		// neither the address nor a rerun can help.
+		return c.remedy()
+	case evidence == transport.ManagementUnreachable && c.address == addressUnverified:
 		return c.thenRerun(fmt.Sprintf("check that %s is the node's management address", c.endpoint))
 	case evidence == transport.ManagementUnreachable && c.rerun == "":
 		return "retry once 'katlctl node status' shows it up"
@@ -123,6 +147,13 @@ func (c managementCheck) advice(evidence transport.ManagementEvidence, err error
 	default:
 		return c.thenRerun("check the address and node reachability")
 	}
+}
+
+func (c managementCheck) remedy() string {
+	if c.authorityRemedy != "" {
+		return c.authorityRemedy
+	}
+	return transport.ManagementAuthorityRemedy
 }
 
 func (c managementCheck) thenRerun(step string) string {

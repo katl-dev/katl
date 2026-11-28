@@ -27,6 +27,10 @@ import (
 const (
 	enableMTLSActor             = "katlctl management enable-mtls"
 	upgradeManagementTrialAgent = "upgrade the node with `katlctl node upgrade`, then rerun"
+	// enableMTLSAuthorityRemedy replaces the authority remedy while the
+	// ClusterConfig is still trusted-network: 'identity recover' refuses it,
+	// and a node on trial returns to trusted-network by itself.
+	enableMTLSAuthorityRemedy = "rerun with the secrets file of the enable-mtls attempt that left the node on trial, or wait for its trial window to end, when the node returns to trusted-network by itself; if the node already committed to mTLS, use the mTLS ClusterConfig and secrets that attempt wrote"
 )
 
 // enableMTLSPoll is how often a node is polled while its trial starts and
@@ -56,8 +60,11 @@ const (
 )
 
 type enableMTLSNode struct {
-	name         string
-	endpoint     inventory.HostPort
+	name     string
+	endpoint inventory.HostPort
+	// address says whether the saved context already binds endpoint to the
+	// node.
+	address      managementAddress
 	savedMachine string
 	controlPlane bool
 	externalAPI  bool
@@ -308,14 +315,15 @@ func enableMTLSNodes(ctx context.Context, source configbundle.SourceConfig) ([]e
 		if node.ManagementEndpoint.IsZero() {
 			return nil, fmt.Errorf("node %q needs management.address before moving to mTLS", node.Name)
 		}
-		// The config names each node's address; a saved context only adds the
-		// machine the node was enrolled as.
-		saved := ""
+		// The config names each node's address; a saved context adds the
+		// machine the node was enrolled as, and binds the address when it
+		// records the same one.
+		saved, address := "", addressUnverified
 		if target, ok := enrolledTarget(ctx, "", "", source.Metadata.Name, node.Name); ok {
-			saved = target.machineID
+			saved, address = target.machineID, addressBinding(target.endpoint, node.ManagementEndpoint)
 		}
 		nodes = append(nodes, enableMTLSNode{
-			name: node.Name, endpoint: node.ManagementEndpoint, savedMachine: saved,
+			name: node.Name, endpoint: node.ManagementEndpoint, address: address, savedMachine: saved,
 			controlPlane: node.SystemRole == inventory.RoleControlPlane,
 			externalAPI:  topology.ExternalControlPlane, managedVIP: inv.ControlPlaneEndpointManaged,
 		})
@@ -353,7 +361,7 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 		// Only a timely, complete plaintext server preface warrants a
 		// plaintext status request. A failed TLS connection alone never does.
 		if grpcstatus.Code(err) != codes.Unavailable || !observation.PlaintextHTTP2() {
-			check := managementCheck{claim: "the node accepts the replacement authority", address: addressSaved, endpoint: node.endpoint}
+			check := managementCheck{claim: "the node accepts the replacement authority", address: node.address, endpoint: node.endpoint, authorityRemedy: enableMTLSAuthorityRemedy}
 			return fmt.Errorf("%s at %s: %w", node.name, node.endpoint, managementTrustChangeError(check, trustNodePreviousAuthority, err))
 		}
 	}
@@ -361,7 +369,7 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 	status, err := enableMTLSStatus(ctx, *node, trustedNetworkClient, probe)
 	observedAt := time.Now()
 	if transport.ClassifyManagementEvidence(err, nil, nil) != transport.ManagementConfirmed {
-		check := managementCheck{claim: "the node uses trusted-network management", address: addressSaved, endpoint: node.endpoint}
+		check := managementCheck{claim: "the node uses trusted-network management", address: node.address, endpoint: node.endpoint}
 		return fmt.Errorf("%s at %s: %w", node.name, node.endpoint, managementReadError(check, err))
 	}
 	if err := node.bind(status, observedAt); err != nil {
@@ -601,7 +609,8 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 	}
 	observedDeadline, err := waitEnableMTLSTrial(ctx, node, client, authority, trialID, min(time.Until(deadline), timeout))
 	if err != nil {
-		return fmt.Errorf("%w; check management.address", managementTrustChangeError(managementCheck{claim: "the node accepts the replacement authority"}, trustTrustedNetwork, err))
+		check := managementCheck{claim: "the node accepts the replacement authority", address: node.address, endpoint: node.endpoint, authorityRemedy: enableMTLSAuthorityRemedy}
+		return managementTrustChangeError(check, trustTrustedNetwork, err)
 	}
 	if !observedDeadline.IsZero() {
 		confirmErr := enableMTLSCall(ctx, *node, client, min(timeout, time.Until(deadline), time.Until(observedDeadline)), func(ctx context.Context, agent agentapi.KatlcAgentClient) error {
@@ -769,7 +778,8 @@ func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName strin
 		node := &nodes[i]
 		bound[node.name], endpoints[node.name] = node, node.endpoint
 	}
-	opts := contextSaveOptions{configInput: configPath, contextPath: path, contextName: contextName, timeout: timeout, endpoints: endpoints, endpointSource: addressSaved}
+	// This run confirmed every node at its endpoint before reaching here.
+	opts := contextSaveOptions{configInput: configPath, contextPath: path, contextName: contextName, timeout: timeout, endpoints: endpoints, endpointSource: addressBound}
 	opts.observeStatus = func(ctx context.Context, name string, endpoint inventory.HostPort) (*agentapi.NodeStatus, error) {
 		node, ok := bound[name]
 		if !ok {
@@ -782,7 +792,7 @@ func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName strin
 		return status, node.verifyCommittedStatus(status, authority)
 	}
 	cfg, _, err := prepareContextWithCredentials(ctx, opts, clusterName, client, func(check managementCheck, err error) error {
-		check.claim = "the saved context can reach the nodes over mTLS"
+		check.claim, check.authorityRemedy = "the saved context can reach the nodes over mTLS", enableMTLSAuthorityRemedy
 		return managementTrustChangeError(check, trustReplacementAuthority, err)
 	})
 	if err != nil {

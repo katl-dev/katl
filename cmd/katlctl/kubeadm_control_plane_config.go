@@ -662,7 +662,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 		if err != nil {
 			_ = conn.Close()
-			if change := opts.addressChange; change != nil && change.Node == node.Name && addressHintApplies(err) {
+			if change := opts.addressChange; change != nil && change.Node == node.Name && addressHintApplies(err, addressUnverified) {
 				return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w; %s", node.Name, err, movedHint(node.Name, change.desiredEndpoint, opts.configPath))
 			}
 			return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w", node.Name, err)

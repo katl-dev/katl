@@ -296,7 +296,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	status, err := session.client.GetNodeStatus(session.ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
 		err = fmt.Errorf("read status from %s: %w", node, err)
-		if !desiredEndpoint.IsZero() && addressHintApplies(err) {
+		if !desiredEndpoint.IsZero() && addressHintApplies(err, addressUnverified) {
 			return fmt.Errorf("%w; %s", err, movedHint(node, desiredEndpoint, opts.target.clusterConfigPath))
 		}
 		return err
