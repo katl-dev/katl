@@ -187,7 +187,10 @@ offers. It keys on the loader entry rather than on status, because slot
 invalidation projects `slotReplaced` before the move resolves but removes
 the entry only afterwards. The rule fails towards the v1 form: an unreadable
 generation record counts as an old release, and without a readable entries
-directory every record counts as bootable. The running generation is
+directory every record counts as bootable. A directory with neither
+`spec.json` nor `metadata.json`, as a candidate has while it is staged or
+after an interrupted apply, is skipped: every staging path on a node writes
+the record before the loader entry, so no release boots such a directory. The running generation is
 excluded, so the initial publication on an installation target always
 carries a revision.
 
@@ -203,6 +206,14 @@ changes `updatedAt`, so the token changes with each one. In the v1 form,
 at-most-one-reboot rests on the intent's durable `reboot.spent` and on
 `failedBootGenerationID` naming the running generation; the spent trial ID
 cannot survive a boot of the old release, which rewrites the file.
+
+The form follows the move, not only the generations present when it
+publishes. A desired selection whose revision follows a content token is
+published in the v1 form even if the last old release's entry or record went
+while the move was in flight, because that revision written as a counter
+would match no later read. The next read then finds the v1 form in reader
+mode and counts from revision 0 again. Prune reads the selection again after
+each removal, since a removal can end the v1 form.
 
 `internal/generation` owns the reader rule: final releases and alpha, beta
 and rc candidates are judged by base, and one whose base is below 2026.11.6
