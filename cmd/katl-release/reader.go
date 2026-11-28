@@ -726,8 +726,8 @@ func (r *reader) extensionRepositories(ctx context.Context, commit string) ([]st
 // releaseTags lists the references of the repository's tags that belong to
 // the final version, each pinned by the manifest digest the tag resolves to.
 // Extension packages are public, so the registry is read anonymously and
-// needs no GitHub token. A repository the registry does not know has
-// published nothing.
+// needs no GitHub token. A repository the registry does not know, or one it
+// refuses an anonymous pull token for, has published nothing.
 func (r *reader) releaseTags(ctx context.Context, name string, version releaseversion.Version) ([]string, error) {
 	repository, err := remote.NewRepository(name)
 	if err != nil {
@@ -751,7 +751,7 @@ func (r *reader) releaseTags(ctx context.Context, name string, version releaseve
 			}
 			return nil
 		})
-		if unknownRepository(err) {
+		if unknownRepository(err) || tokenDenied(err) {
 			return nil
 		}
 		if err != nil {
@@ -782,13 +782,25 @@ func unknownRepository(err error) bool {
 	return slices.ContainsFunc(response.Errors, func(e errcode.Error) bool { return e.Code == errcode.ErrorCodeNameUnknown })
 }
 
-// registryFailure explains a registry read that has no answer. ghcr.io
-// answers an anonymous read of a private repository, and of one that does not
-// exist, with a refusal, which says nothing about what is published.
+// tokenDenied reports whether the registry's token endpoint refused an
+// anonymous pull token for the repository. ghcr.io answers a package that was
+// never published exactly as it answers a private one. A never-published
+// extension must not block release decisions, and publication refuses to
+// overwrite a tag with different content, so the refusal counts as "not
+// published". The auth client reports a failed token fetch as an error
+// response for the realm's URL, while every registry API request is under
+// /v2/, so a refusal from the registry API itself still fails the read.
+func tokenDenied(err error) bool {
+	var response *errcode.ErrorResponse
+	return errors.As(err, &response) && response.StatusCode == http.StatusForbidden &&
+		response.URL != nil && !strings.HasPrefix(response.URL.Path, "/v2/")
+}
+
+// registryFailure explains a registry read that has no answer.
 func registryFailure(name string, err error) error {
 	var response *errcode.ErrorResponse
 	if errors.As(err, &response) && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
-		return fmt.Errorf("read the published tags of %s: the registry refused an anonymous read, so the package is private or does not exist; make it public, or create it: %w", name, err)
+		return fmt.Errorf("read the published tags of %s: the registry refused an anonymous read, so the package is not public; make it public: %w", name, err)
 	}
 	return fmt.Errorf("read the published tags of %s: %w", name, err)
 }
