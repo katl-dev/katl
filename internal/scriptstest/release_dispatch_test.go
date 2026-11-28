@@ -1,6 +1,7 @@
 package scriptstest
 
 import (
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -34,8 +35,8 @@ func allWorkflows(t *testing.T, visit func(string, workflowFile)) {
 	}
 }
 
-// A second protected job or an environment on a candidate would create
-// another approval wait or expose the release environment to unattended jobs.
+// Only final publication and the standalone credential check need release
+// approval. Candidate jobs must run unattended.
 func TestReleaseEnvironment(t *testing.T) {
 	var got []string
 	allWorkflows(t, func(file string, workflow workflowFile) {
@@ -59,7 +60,9 @@ func TestReleaseEnvironment(t *testing.T) {
 			}
 		}
 	})
-	if want := []string{filepath.Base(releasestate.ReleaseWorkflow) + ":publish"}; !slices.Equal(got, want) {
+	slices.Sort(got)
+	want := []string{"release-credential.yml:check", filepath.Base(releasestate.ReleaseWorkflow) + ":publish"}
+	if !slices.Equal(got, want) {
 		t.Errorf("jobs in %s = %v, want %v", releasestate.ReleaseEnvironment, got, want)
 	}
 }
@@ -109,14 +112,60 @@ func TestReleaseWriters(t *testing.T) {
 	}
 }
 
-// Every final release mutation uses the single, repository-scoped App token.
-// An optional App step, a workflow-token fallback or a wider scope fails here.
+// Final publication and its check both use the repository-scoped App token.
 func TestReleaseCredential(t *testing.T) {
+	const action = "./.github/actions/release-credential"
+	const checkFile = "release-credential.yml"
+	wantInputs := map[string]string{
+		"app-id":      "${{ vars.KATL_RELEASE_APP_ID }}",
+		"private-key": "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
+	}
+	requireCredential := func(step workflowStep) {
+		t.Helper()
+		if step.Uses != action || !maps.Equal(step.With, wantInputs) ||
+			step.Run != "" || step.If != "" || step.ContinueOnError {
+			t.Errorf("credential step = %+v, want a mandatory shared App credential", step)
+		}
+	}
+
+	check, source := readWorkflow(t, checkFile)
+	var events map[string]any
+	if err := check.On.Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	if _, manual := events["workflow_dispatch"]; !manual || len(events) != 1 ||
+		!maps.Equal(check.Permissions, map[string]string{"contents": "read"}) {
+		t.Error("credential check must be dispatch-only with contents: read")
+	}
+	job := check.Jobs["check"]
+	if len(check.Jobs) != 1 || job.Permissions.Kind != 0 ||
+		job.Environment.Kind != yaml.ScalarNode || job.Environment.Value != releasestate.ReleaseEnvironment {
+		t.Error("credential check must have one job in the release environment with inherited read permissions")
+	}
+	if len(job.Steps) != 3 || !strings.HasPrefix(job.Steps[0].Uses, "actions/checkout@") || job.Steps[2].Uses != "" {
+		t.Fatal("credential check must only check out the repository, verify the credential and write the summary")
+	}
+	requireCredential(job.Steps[1])
+	secretReferences := regexp.MustCompile(`(?i)\bsecrets\s*[.\[]`)
+	if refs := secretReferences.FindAllString(source, -1); len(refs) != 1 {
+		t.Errorf("%s references %d secrets, want only the release App private key", checkFile, len(refs))
+	}
+
+	checkDir := t.TempDir()
+	checkSummary := filepath.Join(checkDir, "summary")
+	if output, err := runReleaseStep(checkDir, job.Steps[2].Run, "GITHUB_STEP_SUMMARY="+checkSummary); err != nil {
+		t.Fatalf("credential check summary: %v: %s", err, output)
+	}
+	const wantSummary = "The katl-release App minted a token scoped to this repository with Contents write permission. The token read repository contents.\n"
+	if body, err := os.ReadFile(checkSummary); err != nil || string(body) != wantSummary {
+		t.Errorf("credential check summary = %q, %v", body, err)
+	}
+
 	workflow, _ := readReleaseWorkflow(t)
 	credential := -1
 	writes := 0
 	for i, step := range workflow.Jobs["publish"].Steps {
-		if strings.HasPrefix(step.Uses, "actions/create-github-app-token@") && step.ID != "credential" {
+		if strings.HasPrefix(step.Uses, "actions/create-github-app-token@") {
 			t.Error("another App token is created in publish")
 		}
 		if step.ID == "credential" {
@@ -124,17 +173,7 @@ func TestReleaseCredential(t *testing.T) {
 				t.Fatal("more than one credential step")
 			}
 			credential = i
-			want := map[string]string{
-				"app-id":              "${{ vars.KATL_RELEASE_APP_ID }}",
-				"private-key":         "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
-				"owner":               "${{ github.repository_owner }}",
-				"repositories":        "${{ github.event.repository.name }}",
-				"permission-contents": "write",
-			}
-			if step.Uses != "actions/create-github-app-token@v3" || !maps.Equal(step.With, want) ||
-				step.Run != "" || step.If != "" || step.ContinueOnError {
-				t.Errorf("credential step = %+v, want a mandatory, repository-scoped App token", step)
-			}
+			requireCredential(step)
 		}
 		if writesRelease(step) || apiWrites(step.Run, "/git/refs") {
 			writes++
@@ -163,6 +202,206 @@ func TestReleaseCredential(t *testing.T) {
 		if writesRelease(step) || apiWrites(step.Run, "/git/refs") {
 			t.Errorf("qualification step %s mutates a release or tag before approval", step.Name)
 		}
+	}
+}
+
+func TestReleaseAppReferences(t *testing.T) {
+	// TestReleaseCredential pins both references to the shared action's inputs.
+	// Any additional reference, including in a different YAML field, is invalid.
+	allowed := map[string]int{
+		"workflows/release-credential.yml":                         2,
+		"workflows/" + filepath.Base(releasestate.ReleaseWorkflow): 2,
+	}
+	root := os.DirFS(filepath.Join(repoRoot(t), ".github"))
+	err := fs.WalkDir(root, ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		ext := filepath.Ext(path)
+		workflow := filepath.Dir(path) == "workflows" && (ext == ".yml" || ext == ".yaml")
+		if !workflow && entry.Name() != "action.yml" && entry.Name() != "action.yaml" {
+			return nil
+		}
+		data, err := fs.ReadFile(root, path)
+		if err != nil {
+			return err
+		}
+		var document any
+		if err := yaml.Unmarshal(data, &document); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if got, want := releaseAppReferences(document), allowed[path]; got != want {
+			t.Errorf("%s has %d KATL_RELEASE_APP_ references, want %d", path, got, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func releaseAppReferences(value any) int {
+	var count int
+	switch value := value.(type) {
+	case string:
+		return strings.Count(strings.ToUpper(value), "KATL_RELEASE_APP_")
+	case []any:
+		for _, item := range value {
+			count += releaseAppReferences(item)
+		}
+	case map[string]any:
+		for key, item := range value {
+			count += releaseAppReferences(key) + releaseAppReferences(item)
+		}
+	case map[any]any:
+		for key, item := range value {
+			count += releaseAppReferences(key) + releaseAppReferences(item)
+		}
+	}
+	return count
+}
+
+type releaseCredentialStep struct {
+	Name, Run, Uses string
+	Env, With       map[string]string
+	If              yaml.Node
+	ContinueOnError yaml.Node `yaml:"continue-on-error"`
+}
+
+func releaseCredentialSteps(t *testing.T) []releaseCredentialStep {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "actions", "release-credential", "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action struct {
+		Runs struct {
+			Steps []releaseCredentialStep
+		}
+	}
+	if err := yaml.Unmarshal(data, &action); err != nil {
+		t.Fatal(err)
+	}
+	return action.Runs.Steps
+}
+
+func releaseAppSlugStep(t *testing.T) releaseCredentialStep {
+	t.Helper()
+	for _, step := range releaseCredentialSteps(t) {
+		if step.Env["EXPECTED_APP_SLUG"] != "" {
+			return step
+		}
+	}
+	t.Fatal("release credential action has no expected App slug")
+	return releaseCredentialStep{}
+}
+
+func expectedReleaseAppSlug(t *testing.T) string {
+	t.Helper()
+	return releaseAppSlugStep(t).Env["EXPECTED_APP_SLUG"]
+}
+
+func TestReleaseCredentialSlug(t *testing.T) {
+	step := releaseAppSlugStep(t)
+	const source = "${{ steps.mint.outputs.app-slug }}"
+	if got := step.Env["APP_SLUG"]; got != source {
+		t.Errorf("APP_SLUG = %q, want %q", got, source)
+	}
+	expected := step.Env["EXPECTED_APP_SLUG"]
+
+	t.Run("match", func(t *testing.T) {
+		out, err := runReleaseStep(t.TempDir(), step.Run, "APP_SLUG="+expected, "EXPECTED_APP_SLUG="+expected)
+		if err != nil {
+			t.Fatalf("matching slug was rejected: %v: %s", err, out)
+		}
+	})
+	t.Run("mismatch", func(t *testing.T) {
+		const actual = "other-release-app"
+		out, err := runReleaseStep(t.TempDir(), step.Run, "APP_SLUG="+actual, "EXPECTED_APP_SLUG="+expected)
+		if _, exited := err.(*exec.ExitError); !exited {
+			t.Fatalf("mismatching slug must exit non-zero: %v: %s", err, out)
+		}
+		if !strings.Contains(string(out), actual) || !strings.Contains(string(out), expected) {
+			t.Errorf("output = %q, want actual slug %q and expected slug %q", out, actual, expected)
+		}
+	})
+}
+
+func TestReleaseCredentialScope(t *testing.T) {
+	want := map[string]string{
+		"app-id":              "${{ inputs.app-id }}",
+		"private-key":         "${{ inputs.private-key }}",
+		"owner":               "${{ github.repository_owner }}",
+		"repositories":        "${{ github.event.repository.name }}",
+		"permission-contents": "write",
+	}
+	var mints, checks int
+	var verify string
+	for _, step := range releaseCredentialSteps(t) {
+		if apiWrites(step.Run, "") {
+			t.Errorf("credential step %q makes a mutating API call", step.Name)
+		}
+		if step.ContinueOnError.Kind != 0 {
+			t.Errorf("credential step %q sets continue-on-error", step.Name)
+		}
+		if step.If.Kind != 0 && (step.Name != "Report a token mint failure" ||
+			step.If.Value != "failure() && steps.mint.outcome == 'failure'") {
+			t.Errorf("credential step %q is conditional", step.Name)
+		}
+		if strings.HasPrefix(step.Uses, "actions/create-github-app-token@") {
+			mints++
+			if !maps.Equal(step.With, want) || step.If.Kind != 0 {
+				t.Error("mint step must request a token scoped to the release repository")
+			}
+		}
+		if step.Env["GH_TOKEN"] == "${{ steps.mint.outputs.token }}" {
+			checks++
+			verify = step.Run
+			if step.If.Kind != 0 {
+				t.Error("repository scope and access verification must run after minting succeeds")
+			}
+		}
+	}
+	if mints != 1 {
+		t.Errorf("token mint steps = %d, want 1", mints)
+	}
+	if checks != 1 || verify == "" {
+		t.Fatal("want one verification step using the minted token")
+	}
+
+	const repo = "katl-dev/katl"
+	for _, tc := range []struct {
+		name, repos, readStatus, wantError string
+	}{
+		{name: "exact", repos: repo, readStatus: "0"},
+		{name: "extra repository", repos: repo + "\nkatl-dev/other", readStatus: "0", wantError: "must list only " + repo},
+		{name: "wrong repository", repos: "katl-dev/other", readStatus: "0", wantError: "must list only " + repo},
+		{name: "unreadable repository", repos: repo, readStatus: "1", wantError: "Could not read repository contents"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			const gh = `#!/bin/sh
+case "$*" in
+  "api --method GET --paginate /installation/repositories --jq .repositories[].full_name")
+    printf '%s\n' "$INSTALLATION_REPOSITORIES";;
+  "api --method GET /repos/$GITHUB_REPOSITORY/contents")
+    exit "$REPOSITORY_READ_STATUS";;
+  *) exit 2;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(gh), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out, err := runReleaseStep(dir, verify, "PATH="+dir+":"+os.Getenv("PATH"), "GITHUB_REPOSITORY="+repo,
+				"INSTALLATION_REPOSITORIES="+tc.repos, "REPOSITORY_READ_STATUS="+tc.readStatus)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("verification failed: %v: %s", err, out)
+				}
+			} else if err == nil || !strings.Contains(string(out), tc.wantError) {
+				t.Fatalf("verification output = %q, %v, want error containing %q", out, err, tc.wantError)
+			}
+		})
 	}
 }
 
@@ -448,7 +687,7 @@ func TestReleasePublicationOrder(t *testing.T) {
 	for _, id := range []string{"publish-candidate", "publish"} {
 		checks := []string{"attempt guard"}
 		if id == "publish" {
-			checks = append(checks, "credential", "confirm-final", "digest check", "equivalent")
+			checks = append(checks, "checkout", "credential", "confirm-final", "digest check", "equivalent")
 		} else {
 			checks = append(checks, "require-candidate", "digest check")
 		}
@@ -461,6 +700,8 @@ func TestReleasePublicationOrder(t *testing.T) {
 			switch {
 			case step.Env["DECISION_ATTEMPT"] != "":
 				got = append(got, "attempt guard")
+			case id == "publish" && strings.HasPrefix(step.Uses, "actions/checkout@"):
+				got = append(got, "checkout")
 			case step.ID == "credential":
 				got = append(got, "credential")
 			case strings.Contains(step.Run, "katl-release confirm-final"):

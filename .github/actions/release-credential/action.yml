@@ -1,0 +1,54 @@
+name: Verify the release App credential
+description: Mint the repository-scoped katl-release token and verify its read access.
+inputs:
+  app-id:
+    description: ID of the katl-release GitHub App
+    required: true
+  private-key:
+    description: Private key of the katl-release GitHub App
+    required: true
+outputs:
+  token:
+    description: Installation token for the release repository
+    value: ${{ steps.mint.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - name: Mint the katl-release token
+      id: mint
+      uses: actions/create-github-app-token@v3
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+        permission-contents: write
+    - name: Report a token mint failure
+      if: failure() && steps.mint.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::error::Could not mint the katl-release token. Check the release environment's App ID variable and private key secret, and confirm that the App is installed on this repository with Contents write permission."
+    - name: Verify the release App slug
+      shell: bash
+      env:
+        APP_SLUG: ${{ steps.mint.outputs.app-slug }}
+        EXPECTED_APP_SLUG: katl-release
+      run: |
+        if [[ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]]; then
+          printf '::error::The release App slug is "%s", but release-artifacts.yml skips legacy tag-push runs only for "%s[bot]"; rename the App or update that guard.\n' "$APP_SLUG" "$EXPECTED_APP_SLUG"
+          exit 1
+        fi
+    - name: Verify installation scope and repository access
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.mint.outputs.token }}
+      run: |
+        if ! repositories="$(gh api --method GET --paginate /installation/repositories --jq '.repositories[].full_name')" ||
+          [[ "${repositories,,}" != "${GITHUB_REPOSITORY,,}" ]]; then
+          echo "::error::The katl-release token must list only $GITHUB_REPOSITORY. Check that the App installation covers this repository and the token request selects only this repository, then rerun the check."
+          exit 1
+        fi
+        if ! gh api --method GET "/repos/$GITHUB_REPOSITORY/contents" > /dev/null; then
+          echo "::error::Could not read repository contents with the katl-release token. Check that the App installation on $GITHUB_REPOSITORY has approved Contents write permission."
+          exit 1
+        fi

@@ -323,19 +323,16 @@ jobs:
       DIGEST: ${{ needs.qualify.outputs.digest }}
     steps:
       - *attempt-guard
-      - name: Select the publishing credential
+      - *checkout
+      - name: Verify the publishing credential
         id: credential
-        uses: actions/create-github-app-token@v3
+        uses: ./.github/actions/release-credential
         with:
           app-id: ${{ vars.KATL_RELEASE_APP_ID }}
           private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
       - name: Summarize the publishing credential
         run: |
           echo "Publishing credential: katl-release App." >> "$GITHUB_STEP_SUMMARY"
-      - *checkout
       - *setup-go
       - name: Confirm the final decision after approval
         env:

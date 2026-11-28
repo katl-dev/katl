@@ -135,7 +135,9 @@ the Release role; it keeps delivery and its queue cycle running on `main`.
    the cut.
 2. Fetch `origin/main` at the cut and create a branch for this version from
    that exact SHA, for example `release/2026.12.1`. Push `release/<version>`
-   and start candidate qualification from the branch, never from `main`.
+   and [check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
+   before dispatching a candidate or final release. Start candidate
+   qualification from the branch, never from `main`.
 3. Create milestone `v<version>` and move into it every **Next release**
    issue whose fix is on the branch. Open issues and open PRs stay in
    **Next release** unless they block this release. Use the

@@ -355,11 +355,26 @@ func TestReleaseCallConcurrency(t *testing.T) {
 	}
 }
 
+func TestReleaseAppActorGuards(t *testing.T) {
+	_, source := readWorkflow(t, "release-artifacts.yml")
+	guards := regexp.MustCompile(`\bgithub\.actor\s*!=\s*'([^']*)'`).FindAllStringSubmatch(source, -1)
+	if len(guards) == 0 {
+		t.Fatal("release-artifacts.yml has no App actor guards")
+	}
+
+	want := expectedReleaseAppSlug(t) + "[bot]"
+	for _, guard := range guards {
+		if guard[1] != want {
+			t.Errorf("release-artifacts.yml guard %q must use %q from the release credential action", guard[0], want)
+		}
+	}
+}
+
 // A tag created by the release App has already been built and published by
 // Release. Its push event must not start the legacy build or publication jobs.
 func TestReleaseAppTagPush(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
-	ctx := map[string]string{"github.event_name": "push", "github.ref_type": "tag", "github.actor": "katl-release[bot]", "inputs.qualify_run": "0"}
+	ctx := map[string]string{"github.event_name": "push", "github.ref_type": "tag", "github.actor": expectedReleaseAppSlug(t) + "[bot]", "inputs.qualify_run": "0"}
 	if got := jobsRun(t, workflow, ctx); len(got) != 0 {
 		t.Errorf("App tag push runs legacy jobs %v", got)
 	}

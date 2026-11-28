@@ -27,8 +27,10 @@ publication under the
    for an earlier version, the notes use the highest stable tag below the
    version being rendered that has a published, non-prerelease GitHub release.
 3. Cut `release/<version>` from the selected `main` commit SHA, using the
-   final version for the branch name. Dispatch qualification from that branch and
-   wait for it to pass. Production-image checks run only in this workflow, so
+   final version for the branch name.
+   [Check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
+   before dispatching a candidate or final release. Dispatch qualification
+   from that branch and wait for it to pass. Production-image checks run only in this workflow, so
    qualify the commit before tagging it. Dispatch only after the branch
    exists, with `--ref release/<version>`. Until
    [#863](https://github.com/katl-dev/katl/issues/863) loads the modules in
