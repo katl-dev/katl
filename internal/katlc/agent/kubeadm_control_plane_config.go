@@ -130,7 +130,7 @@ func (s *Server) acceptKubeadmControlPlaneConfigOperation(req *agentapi.SubmitOp
 		if body.CoordinatorUpload {
 			phases = append(phases, "kubelet-config-upload-running", "kubelet-config-upload-complete")
 		}
-		phases = append(phases, "kubelet-config-running", "kubelet-config-complete", "kubelet-restart-running", "post-kubelet-health-complete", operation.HostBookkeepingCompletionPhase)
+		phases = append(phases, "kubelet-config-running", "kubelet-config-complete", "kubelet-restart-running", "post-kubelet-health-running", "post-kubelet-health-complete", operation.HostBookkeepingCompletionPhase)
 	} else {
 		phases = []string{"accepted", "preflight-complete", "cordon-complete", "manifest-backup-complete", "control-plane-manifests-running", "control-plane-manifests-complete", "post-manifest-health-complete"}
 		if body.CoordinatorUpload {
@@ -733,6 +733,13 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-restart-running", []string{"/usr/bin/systemctl", "restart", "kubelet.service"}, true); err != nil {
 			return err
 		}
+	}
+	if _, err := e.Store.Update(record.OperationID, "post-kubelet-health-running", "post-kubelet-health-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "post-kubelet-health-running"
+		current.UpdatedAt = e.clock()
+		return current, nil
+	}); err != nil {
+		return err
 	}
 	if result := e.runKubeletConfigHealth(ctx, record); result.Err != nil || result.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "post-kubelet-health", fmt.Errorf("post-kubelet health failed: %s", toolFailure(result)))
