@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,30 +82,33 @@ func sha256Hex(data string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// writeUpgradeImage writes an upgrade image and its sidecar metadata to
+// mkosiDir and returns the metadata.
+func writeUpgradeImage(t *testing.T, mkosiDir, name, version, contents string) string {
+	t.Helper()
+	data, err := json.Marshal(katlosimage.ArtifactMetadata{
+		APIVersion: katlosimage.APIVersion, Kind: katlosimage.ArtifactMetadataKind,
+		ImageRole: katlosimage.RoleUpgrade, Format: katlosimage.FormatSquashFS,
+		Version: version, BuildID: "0.0.0-dev", Architecture: "x86_64",
+		RuntimeInterface: "katl-runtime-1", Path: name, SizeBytes: int64(len(contents)),
+		SHA256: sha256Hex(contents), ChecksumPath: name + ".sha256",
+		EmbeddedIndexPath: "katlos/image.json", CreatedAt: "2026-11-26T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, name), contents)
+	writeFile(t, filepath.Join(mkosiDir, name+".json"), string(data))
+	return string(data)
+}
+
 func TestPrepareMkosiPinsBuildsUpgradeImage(t *testing.T) {
 	stubPrepareMkosi(t)
 	mkosiDir := pinTestBuild(t)
 	const stale = "katlos-upgrade-0.0.0-dev.1-x86_64.squashfs"
 	const selected = "katlos-upgrade-0000.0.0-dev.1-x86_64.squashfs"
-	writeUpgrade := func(name, version, contents string) string {
-		t.Helper()
-		data, err := json.Marshal(katlosimage.ArtifactMetadata{
-			APIVersion: katlosimage.APIVersion, Kind: katlosimage.ArtifactMetadataKind,
-			ImageRole: katlosimage.RoleUpgrade, Format: katlosimage.FormatSquashFS,
-			Version: version, BuildID: "0.0.0-dev", Architecture: "x86_64",
-			RuntimeInterface: "katl-runtime-1", Path: name, SizeBytes: int64(len(contents)),
-			SHA256: sha256Hex(contents), ChecksumPath: name + ".sha256",
-			EmbeddedIndexPath: "katlos/image.json", CreatedAt: "2026-11-26T00:00:00Z",
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeFile(t, filepath.Join(mkosiDir, name), contents)
-		writeFile(t, filepath.Join(mkosiDir, name+".json"), string(data))
-		return string(data)
-	}
-	staleMetadata := writeUpgrade(stale, "0.0.0-dev.1", "leftover")
-	selectedMetadata := writeUpgrade(selected, "0000.0.0-dev.1", "this build")
+	staleMetadata := writeUpgradeImage(t, mkosiDir, stale, "0.0.0-dev.1", "leftover")
+	selectedMetadata := writeUpgradeImage(t, mkosiDir, selected, "0000.0.0-dev.1", "this build")
 	sharedReceipt := filepath.Join(mkosiDir, "katlos-upgrade.json")
 
 	for _, tc := range []struct {
@@ -149,6 +154,54 @@ func TestPrepareMkosiPinsBuildsUpgradeImage(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(pinDir, stale)); !os.IsNotExist(err) {
 				t.Fatalf("stale upgrade image should be absent from the pin, stat error = %v", err)
+			}
+		})
+	}
+}
+
+// The receipt binds the run to one build's image, so an image that no longer
+// matches it must stop the run rather than be pinned in its place.
+func TestPrepareMkosiRejectsUpgradeImageThatDiffersFromReceipt(t *testing.T) {
+	const selected = "katlos-upgrade-0000.0.0-dev.1-x86_64.squashfs"
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, image string)
+	}{
+		{name: "replaced after the receipt", change: func(t *testing.T, image string) {
+			replacement := image + ".tmp"
+			writeFile(t, replacement, "another build's image")
+			if err := os.Rename(replacement, image); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "absent", change: func(t *testing.T, image string) {
+			if err := os.Remove(image); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubPrepareMkosi(t)
+			mkosiDir := pinTestBuild(t)
+			metadata := writeUpgradeImage(t, mkosiDir, selected, "0000.0.0-dev.1", "this build")
+			receipt := filepath.Join(t.TempDir(), "receipt.json")
+			writeFile(t, receipt, metadata)
+			tc.change(t, filepath.Join(mkosiDir, selected))
+			pinDir := filepath.Join(t.TempDir(), "artifacts")
+
+			_, err := prepareMkosiPinned(t, mkosiDir, pinDir, "--upgrade-metadata", receipt)
+
+			if err == nil || !strings.Contains(err.Error(), selected) {
+				t.Fatalf("prepare-mkosi error = %v, want a failure naming %s", err, selected)
+			}
+			manifest, readErr := readManifest(filepath.Join(filepath.Dir(pinDir), "resource-manifest.json"))
+			if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+				t.Fatalf("read manifest: %v", readErr)
+			}
+			for _, artifact := range manifest.Artifacts {
+				if artifact.Name == "katlos-upgrade-image" {
+					t.Fatalf("manifest records upgrade image %+v after the receipt check failed", artifact)
+				}
 			}
 		})
 	}

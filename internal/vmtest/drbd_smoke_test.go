@@ -58,7 +58,7 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	if upgradeMetadata.ExtensionRelease == nil || upgradeMetadata.ExtensionRelease.Extensions["ghcr.io/katl-dev/katl/extensions/drbd9"] == "" {
-		t.Fatal("qualification target must advertise its release-owned DRBD9 bundle")
+		t.Fatalf("qualification target %s must advertise its release-owned DRBD9 bundle; run scripts/assemble-release-extensions, build the target with KATL_EXTENSION_RELEASE=_build/mkosi/release-extensions.json scripts/mkosi build-katlos-upgrade-image, then rerun with --no-rebuild, or name a qualifying image with KATL_VMTEST_DRBD_UPGRADE_IMAGE", upgradeImage)
 	}
 	initialImage, initialMetadata := upgradeImage, upgradeMetadata
 	previousImage := strings.TrimSpace(os.Getenv("KATL_VMTEST_DRBD_PREVIOUS_IMAGE"))

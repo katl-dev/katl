@@ -4,14 +4,9 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-index="${KATL_MKOSI_ARTIFACT_INDEX:-}"
-if [[ -n "${KATL_VMTEST_WORLD_MANIFEST:-}" ]]; then
-    artifact_dir="$(jq -er 'select(.artifactsPinned) | .artifactDir' "$KATL_VMTEST_WORLD_MANIFEST")"
-    index="$artifact_dir/artifacts.json"
-fi
 args=(
     bind-install-manifest-image
-    --artifact-index "${index:-${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}/artifacts.json}"
+    --artifact-index "${KATL_MKOSI_ARTIFACT_INDEX:-$repo_root/_build/mkosi/artifacts.json}"
 )
 if [[ -n "${KATL_INSTALL_MANIFEST_TEMPLATE:-}" ]]; then
     args+=(--template "$KATL_INSTALL_MANIFEST_TEMPLATE")

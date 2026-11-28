@@ -83,12 +83,23 @@ func pinUpgradeImage(mkosiDir, pinDir, receipt string) (resourcetest.Artifact, e
 	if err != nil {
 		return resourcetest.Artifact{}, fmt.Errorf("read upgrade build metadata: %w", err)
 	}
-	var metadata katlosimage.ArtifactMetadata
-	if err := json.Unmarshal(data, &metadata); err != nil {
-		return resourcetest.Artifact{}, fmt.Errorf("decode upgrade build metadata: %w", err)
+	// Decode the snapshot the pin keeps, with the reader the run's consumers
+	// use, so the metadata that selects the image is the metadata they read.
+	snapshot, err := os.CreateTemp(pinDir, ".katlos-upgrade-*.json")
+	if err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("create pinned upgrade metadata: %w", err)
 	}
-	if err := metadata.Validate(katlosimage.RoleUpgrade); err != nil {
-		return resourcetest.Artifact{}, fmt.Errorf("validate upgrade build metadata: %w", err)
+	defer os.Remove(snapshot.Name())
+	if _, err := snapshot.Write(data); err != nil {
+		snapshot.Close()
+		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
+	}
+	metadata, err := katlosimage.ReadArtifactMetadata(snapshot.Name(), katlosimage.RoleUpgrade)
+	if err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("read upgrade build metadata %s: %w", receipt, err)
 	}
 
 	source := filepath.Join(mkosiDir, metadata.Path)
@@ -105,7 +116,10 @@ func pinUpgradeImage(mkosiDir, pinDir, receipt string) (resourcetest.Artifact, e
 	}
 	// Keep the metadata snapshot that selected the image even if the builder
 	// has since replaced the build directory's sidecars.
-	if err := os.WriteFile(path+".json", data, 0o444); err != nil {
+	if err := os.Chmod(snapshot.Name(), 0o444); err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
+	}
+	if err := os.Rename(snapshot.Name(), path+".json"); err != nil {
 		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
 	}
 	return artifact, nil
