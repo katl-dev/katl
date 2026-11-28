@@ -115,15 +115,20 @@ artifacts again.
 scripts/katl-release regression 2026.12.0-rc.1 "$QUALIFIED_SHA"
 ```
 
-The tag workflow uses this command to decide whether to repeat VM regression.
-It prints `skip` only for an RC or final version when successful merge-queue
-CI on the exact commit ran regression for both flavours with the default
-Kubernetes payload and the commit is reachable from `main`. Missing or
-unreadable CI evidence yields `run`. A final version also requires a
-successful matching RC tag run on the same commit. If that evidence is
-missing, the command fails. Qualify an RC on that commit before rerunning
-the final release workflow. Production VM qualification remains part of
-the tag workflow.
+The command checks CI evidence for the exact source commit. **Fast checks**
+must succeed in a CI merge-queue run for a commit that landed on `main`, or
+in a successful CI push or manual run on `release/<base-version>`. For
+example, `2026.12.0-rc.1` uses `release/2026.12.0`. If Fast checks evidence
+is missing, pending, failed, or unreadable, the command exits nonzero and
+prints recovery instructions to stderr.
+
+When Fast checks pass, the command prints one JSON object to stdout. Its
+`decision` is `skip` if the merge-queue run's latest attempt passed VM
+regression for both flavours with the default Kubernetes payload. Then
+`vm_flavours` is `[]` and `evidence` is the merge-queue run URL. If the VM
+evidence is missing, incomplete, or unreadable, `decision` is `run`,
+`vm_flavours` is `["standard","lts"]`, and `evidence` is an empty string.
+Production VM qualification remains part of the tag workflow.
 
 ### `record`
 

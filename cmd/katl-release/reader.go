@@ -164,6 +164,12 @@ func (r *reader) decode(ctx context.Context, endpoint string, value any) error {
 	return nil
 }
 
+func (r *reader) compare(ctx context.Context, base, head string) (string, error) {
+	var comparison struct{ Status string }
+	err := r.decode(ctx, r.repo("compare/"+base+"..."+head+"?per_page=1"), &comparison)
+	return comparison.Status, err
+}
+
 // pages reads every page of a list endpoint; each page decodes into page,
 // and collect receives it.
 func pages[T any](ctx context.Context, r *reader, endpoint string, collect func(T)) error {
@@ -233,11 +239,11 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 	}
 	for _, pair := range releasestate.AncestryQueries(version, in.Head, in.Tags) {
 		// GitHub compares base...head: "ahead" means head descends from base.
-		var comparison struct{ Status string }
-		if err := r.decode(ctx, r.repo("compare/"+pair[0]+"..."+pair[1]+"?per_page=1"), &comparison); err != nil {
+		status, err := r.compare(ctx, pair[0], pair[1])
+		if err != nil {
 			return in, err
 		}
-		in.Ancestry[pair] = comparison.Status == "identical" || comparison.Status == "ahead"
+		in.Ancestry[pair] = status == "identical" || status == "ahead"
 	}
 
 	if err := r.records(ctx, version, &in); err != nil {
