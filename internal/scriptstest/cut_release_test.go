@@ -96,15 +96,15 @@ func TestCutReleaseWorkflow(t *testing.T) {
 
 func TestCutReleaseRestoresNoCache(t *testing.T) {
 	// A poisoned cache entry would run attacker-built code beside the
-	// release App token, so the token job builds katl-release from source.
+	// release App token, so the token job builds katl-release from source
+	// and reaches only actions known not to restore a cache.
 	workflow, _ := readWorkflow(t, "cut-release.yml")
+	reached := map[string]bool{}
 	setupGo, build := 0, -1
 	for i, step := range workflow.Jobs["cut"].Steps {
 		for _, uses := range reachableUses(t, step.Uses) {
-			if strings.HasPrefix(uses, "actions/cache") || uses == "./.github/actions/image-caches" ||
-				uses == "./.github/actions/setup-go" {
-				t.Errorf("step %d reaches %s, which restores a cache", i, uses)
-			}
+			name, _, _ := strings.Cut(uses, "@")
+			reached[name] = true
 		}
 		if strings.HasPrefix(step.Uses, "actions/setup-go@") {
 			setupGo++
@@ -118,6 +118,16 @@ func TestCutReleaseRestoresNoCache(t *testing.T) {
 	}
 	if setupGo != 1 || build < 0 {
 		t.Fatalf("want one uncached setup-go and a go build of katl-release, got %d setup-go steps and build step %d", setupGo, build)
+	}
+
+	allowed := []string{
+		"./.github/actions/release-credential",
+		"actions/checkout",
+		"actions/create-github-app-token",
+		"actions/setup-go",
+	}
+	if got := slices.Sorted(maps.Keys(reached)); !slices.Equal(got, allowed) {
+		t.Errorf("cut job reaches actions %q, want exactly %q", got, allowed)
 	}
 }
 

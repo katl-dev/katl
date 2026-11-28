@@ -57,7 +57,7 @@ func TestCutCheck(t *testing.T) {
 		{name: "unused final version", version: cutVersion},
 		{name: "already cut", version: cutVersion, head: cutCommit},
 		{name: "already cut and tagged", version: cutVersion, head: cutCommit, tag: "v2026.12.1-rc.1"},
-		{name: "another commit and tagged", version: cutVersion, head: movedMain, tag: "v2026.12.1-rc.1", want: []string{"Choose the next version"}},
+		{name: "another commit and tagged", version: cutVersion, head: movedMain, tag: "v2026.12.1-rc.1", want: []string{movedMain, "Choose the next version"}},
 		{name: "another commit", version: cutVersion, head: movedMain, want: []string{cutCommit, movedMain, "Choose the next version"}},
 		{name: "candidate tag", version: cutVersion, tag: "v2026.12.1-rc.1", want: []string{"v2026.12.1-rc.1", "Choose the next version"}},
 		{name: "final tag", version: cutVersion, tag: "v2026.12.1", want: []string{"v2026.12.1", "Choose the next version"}},
