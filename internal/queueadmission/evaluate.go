@@ -140,13 +140,8 @@ func (e *evaluation) draft() {
 
 func (e *evaluation) hold() {
 	body, _ := e.pull.Body.get()
-	holds := HoldLines(body)
-	switch {
-	case len(holds) == 0:
-	case holds[0] == "":
-		e.add(newReason(codeHold, "Hold: line names nothing that clears it; say what must happen"))
-	default:
-		e.add(newReason(codeHold, "Hold: "+holds[0]))
+	if reason, held := DeclaredHold(body); held {
+		e.add(newReason(codeHold, "Hold: "+reason))
 	}
 }
 
@@ -298,21 +293,26 @@ func (e *evaluation) review(automation bool) {
 			}
 		}
 	}
-	if !paths.Complete {
+	switch {
+	case !paths.Complete:
 		why = append(why, "the changed-file list is incomplete")
+	case len(paths.Files) == 0:
+		why = append(why, "the changed-file list is empty")
 	}
 	if len(why) == 0 {
 		return
 	}
 
+	// A match this switch does not name gates, so a new kind of match
+	// cannot admit a pull request without review.
 	var r Reason
 	switch rec.Match {
-	case reviewrecord.Missing:
-		r = newReason(codeReviewMissing, "review required ("+strings.Join(why, ", ")+"); no review record")
+	case reviewrecord.Direct, reviewrecord.EquivalentPatch:
+		return
 	case reviewrecord.Stale:
 		r = newReason(codeReviewStale, "review required ("+strings.Join(why, ", ")+"); the review record is for an older head")
 	default:
-		return
+		r = newReason(codeReviewMissing, "review required ("+strings.Join(why, ", ")+"); no review record")
 	}
 	r.Paths = classified[:min(len(classified), shownPaths)]
 	e.add(r)

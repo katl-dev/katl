@@ -100,18 +100,6 @@ func declaredDeps(body string) []int {
 	return queueadmission.DeclaredDeps(body)
 }
 
-// declaredHold returns the reason on the first "Hold: <reason>" line of a pull
-// request body outside a code fence, or empty when there is none. A "Hold:"
-// line that names nothing does not hold a plan.
-func declaredHold(body string) string {
-	for _, hold := range queueadmission.HoldLines(body) {
-		if hold != "" {
-			return hold
-		}
-	}
-	return ""
-}
-
 // waits is a candidate's resolved ordering constraints. A dependency counts as
 // satisfied once it has merged, so a candidate never joins the queue in the
 // same pass as something it depends on.

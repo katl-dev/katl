@@ -74,13 +74,20 @@ func TestReviewAcrossRebases(t *testing.T) {
 	}
 }
 
-// A patch identity that hashes context lines would make the moved-context
-// rebase stale; one that ignored content would keep the changed-line rebase.
-func TestReviewPatchIdentityCountsChangedLines(t *testing.T) {
-	lines := func(changed map[int]string) string {
+// Patch identity hashes the changed lines with their default context but not
+// the hunk line numbers. An identity over changed lines alone (-U0) would
+// carry an approval to the same line added at another site; one over line
+// numbers would make every rebase over earlier changes stale.
+func TestReviewPatchIdentity(t *testing.T) {
+	// policy returns twenty numbered lines, with insert placed before the
+	// lines whose numbers key it and replace substituted for theirs.
+	policy := func(insert, replace map[int]string) string {
 		var b strings.Builder
-		for i := 1; i <= 9; i++ {
-			line, ok := changed[i]
+		for i := 1; i <= 20; i++ {
+			if extra, ok := insert[i]; ok {
+				b.WriteString(extra + "\n")
+			}
+			line, ok := replace[i]
 			if !ok {
 				line = fmt.Sprintf("line %d", i)
 			}
@@ -91,19 +98,22 @@ func TestReviewPatchIdentityCountsChangedLines(t *testing.T) {
 	repo := fixtureRepo{t: t, dir: t.TempDir()}
 	repo.git("init", "--quiet", "--initial-branch=main")
 	repo.git("commit", "--quiet", "--allow-empty", "-m", "root")
-	base := repo.commit(repo.git("rev-parse", "HEAD"), map[string]string{"policy": lines(nil)})
-	reviewed := repo.commit(base, map[string]string{"policy": lines(map[int]string{5: "reviewed"})})
-	// main changes a line inside the reviewed change's context without
-	// touching the changed line.
-	contextBase := repo.commit(base, map[string]string{"policy": lines(map[int]string{7: "moved context"})})
+	base := repo.commit(repo.git("rev-parse", "HEAD"), map[string]string{"policy": policy(nil, nil)})
+	reviewed := repo.commit(base, map[string]string{"policy": policy(map[int]string{15: "added"}, nil)})
+	elsewhere := repo.commit(base, map[string]string{"policy": policy(map[int]string{5: "added"}, nil)})
 
-	repo.git("checkout", "--quiet", "--detach", reviewed)
-	repo.git("rebase", contextBase)
-	rebased := repo.git("rev-parse", "HEAD")
-	if got := repo.git("show", rebased+":policy"); got != strings.TrimSpace(lines(map[int]string{5: "reviewed", 7: "moved context"})) {
-		t.Fatalf("rebased policy = %q", got)
+	rebase := func(onto string) string {
+		repo.git("checkout", "--quiet", "--detach", reviewed)
+		repo.git("rebase", onto)
+		return repo.git("rev-parse", "HEAD")
 	}
-	changedLine := repo.commit(contextBase, map[string]string{"policy": lines(map[int]string{5: "reviewed differently", 7: "moved context"})})
+	// main inserts lines far above the reviewed hunk, so only its line
+	// numbers move.
+	shiftedBase := repo.commit(base, map[string]string{"policy": "header 1\nheader 2\nheader 3\n" + policy(nil, nil)})
+	shifted := rebase(shiftedBase)
+	// main changes a line inside the reviewed hunk's context.
+	contextBase := repo.commit(base, map[string]string{"policy": policy(nil, map[int]string{17: "new context"})})
+	contextChanged := rebase(contextBase)
 
 	objects, err := newScratchObjects(repo.dir, gittest.Env(os.Environ(), repo.dir))
 	if err != nil {
@@ -116,15 +126,16 @@ func TestReviewPatchIdentityCountsChangedLines(t *testing.T) {
 	}}
 
 	for _, test := range []struct {
-		name string
-		head string
-		want reviewrecord.Match
+		name       string
+		base, head string
+		want       reviewrecord.Match
 	}{
-		{"context moved", rebased, reviewrecord.EquivalentPatch},
-		{"added line changed", changedLine, reviewrecord.Stale},
+		{"line numbers moved", shiftedBase, shifted, reviewrecord.EquivalentPatch},
+		{"same line added elsewhere", base, elsewhere, reviewrecord.Stale},
+		{"context changed", contextBase, contextChanged, reviewrecord.Stale},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, match, err := reviewrecord.Select(comments, test.head, contextBase, func(base, head string) (string, error) {
+			_, match, err := reviewrecord.Select(comments, test.head, test.base, func(base, head string) (string, error) {
 				return objects.patchID(t.Context(), base, head)
 			})
 			if err != nil || match != test.want {

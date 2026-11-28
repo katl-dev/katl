@@ -93,6 +93,10 @@ that head. A subsequent verdict can supersede it.
 The review record is advisory. Record selection considers comments from
 repository members and owners. A review can carry forward to another head
 when the PR diff has the same `git patch-id --stable` as the reviewed diff.
+That identity covers each change and its surrounding context lines but not
+their line numbers, so a rebase that only shifts a change keeps the review,
+while a change to nearby lines, or the same lines added elsewhere, needs a
+new one.
 
 ### `watch`
 

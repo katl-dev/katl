@@ -25,8 +25,7 @@ type pathRow struct {
 var pathRows = []pathRow{
 	{[]string{".github/workflows/**", ".github/actions/**", ".github/scripts/**", ".github/rulesets/**"},
 		classReviewRequired, "workflows"},
-	{[]string{"internal/queueadmission/**", "internal/reviewrecord/**", "internal/queuemarker/**",
-		"cmd/katl-queue/facts.go", "cmd/katl-queue/conflicts.go", "cmd/katl-queue/simulate.go"},
+	{[]string{"internal/queueadmission/**", "internal/reviewrecord/**", "internal/queuemarker/**", "cmd/katl-queue/**"},
 		classReviewRequired, "admission"},
 	{[]string{"internal/efiboot/**", "internal/boothealth/**", "cmd/katl-boot-health/**", "internal/kernelcmdline/**"},
 		classReviewRequired, "boot"},
@@ -35,10 +34,18 @@ var pathRows = []pathRow{
 	{[]string{"internal/generation/**", "cmd/katl-generation-activate/**", "internal/releasestate/**", "internal/sysextimage/**"},
 		classReviewRequired, "update"},
 	{[]string{"internal/managementidentity/**", "internal/sshhostkey/**", "internal/katlc/transport/**",
-		"containers-policy.json", "scripts/katl-release-artifacts"},
+		"containers-policy.json", "scripts/katl-release-artifacts", "cmd/katl-ssh-host-keys/**"},
 		classReviewRequired, "security and trust"},
 	{[]string{"kernels/**", "mkosi-builder.lock", "mkosi.conf", "mkosi.profiles/runtime/**", "mkosi.profiles/installer-image/**"},
 		classReviewRequired, "boot inputs"},
+	{[]string{"Containerfile.mkosi", "scripts/mkosi-builder", "scripts/mkosi"},
+		classReviewRequired, "builder image"},
+	{[]string{"cmd/katl-kernel-release/**", "internal/kernelrelease/**"},
+		classReviewRequired, "kernel lock"},
+	{[]string{"cmd/katl-release/**", "scripts/katl-release*"},
+		classReviewRequired, "release tooling"},
+	{[]string{"flake.lock"},
+		classReviewRequired, "toolchain inputs"},
 	// These are not sharedVMPath in cmd/katl-vmtest-plan/vm_selection.go:
 	// that list answers which suites a change runs, while this one answers
 	// which changes alter what every merge group runs. internal/vmtest is

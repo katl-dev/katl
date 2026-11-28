@@ -26,17 +26,28 @@ func DeclaredDeps(body string) []int {
 
 var holdLine = regexp.MustCompile(`(?i)^\s*hold:(.*)$`)
 
-// HoldLines returns the text of each "Hold:" line of a pull request body
-// outside a code fence, in order. A line that names nothing gives an empty
-// string.
-func HoldLines(body string) []string {
-	var holds []string
+// noHoldReason stands in for the reason of a hold whose lines all name
+// nothing.
+const noHoldReason = "no reason given"
+
+// DeclaredHold reports whether a pull request body holds it with a "Hold:"
+// line outside a code fence. Any such line holds, including a bare one. The
+// reason is that of the first line that gives one, or noHoldReason.
+func DeclaredHold(body string) (reason string, declared bool) {
 	for line := range UnfencedLines(body) {
-		if m := holdLine.FindStringSubmatch(line); m != nil {
-			holds = append(holds, strings.TrimSpace(m[1]))
+		m := holdLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		declared = true
+		if r := strings.TrimSpace(m[1]); r != "" {
+			return r, true
 		}
 	}
-	return holds
+	if declared {
+		return noHoldReason, true
+	}
+	return "", false
 }
 
 // UnfencedLines yields the lines of a Markdown body outside code fences.

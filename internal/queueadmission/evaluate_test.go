@@ -23,7 +23,7 @@ func cleanPull(number int) Pull {
 		Labels:         Of([]string{"enhancement", "area: dev-tooling"}),
 		Closes:         Of([]int{}),
 		BlockedBy:      Of(Blockers{}),
-		Paths:          Of(ChangedPaths{Files: []string{"cmd/katl-queue/plan.go"}, Complete: true}),
+		Paths:          Of(ChangedPaths{Files: []string{"docs/README.md"}, Complete: true}),
 		Review:         Of(Review{Match: reviewrecord.Missing}),
 		ReviewDecision: Of(""),
 		ReleaseNotes:   Of(ReleaseNotes{Count: 1}),
@@ -239,7 +239,7 @@ func TestEvaluateHold(t *testing.T) {
 		{name: "inside a fence", body: "Example:\n\n```\nHold: after #12\n```\n"},
 		{name: "inside a tilde fence", body: "~~~\nHold: after #12\n~~~\n"},
 		{name: "outside a fence", body: "Why.\n\nHold: until the cutover lands\n", want: "Hold: until the cutover lands"},
-		{name: "names nothing", body: "Why.\n\nHold:\n", want: "Hold: line names nothing that clears it; say what must happen"},
+		{name: "names nothing", body: "Why.\n\nHold:\n", want: "Hold: no reason given"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pull := cleanPull(10)
@@ -258,6 +258,11 @@ func TestEvaluateDependencies(t *testing.T) {
 	queued := cleanPull(22)
 	cycle := cleanPull(23)
 	cycle.Body = Of("Depends on #10\n")
+	// #24 waits for #25, which waits for #10: a check of direct back-edges
+	// alone would report #24 as merely open.
+	longCycle, longCycleBack := cleanPull(24), cleanPull(25)
+	longCycle.Body = Of("Depends on #25\n")
+	longCycleBack.Body = Of("Depends on #10\n")
 	refs := map[int]Ref{
 		70: {Pull: true, State: "MERGED"},
 		71: {Pull: true, State: "CLOSED"},
@@ -279,6 +284,7 @@ func TestEvaluateDependencies(t *testing.T) {
 		{name: "closed without merging", body: "Depends on #71\n", want: []string{"dependency-broken admission owner"}, prs: []int{71}},
 		{name: "other repository", blockedBy: Blockers{External: []string{"other/repo#5"}}, want: []string{"dependency-broken admission owner"}},
 		{name: "cycle", body: "Depends on #23\n", want: []string{"dependency-broken admission owner"}, prs: []int{23}},
+		{name: "cycle of three", body: "Depends on #24\n", want: []string{"dependency-broken admission owner"}, prs: []int{24}},
 		{name: "self and own closing issue", body: "Depends on #10, #90\n", closes: []int{90}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -286,7 +292,7 @@ func TestEvaluateDependencies(t *testing.T) {
 			pull.Body = Of(tc.body)
 			pull.Closes = Of(tc.closes)
 			pull.BlockedBy = Of(tc.blockedBy)
-			f := factsOf([]Entry{{Number: 22}}, refs, pull, cleanPull(20), closer, queued, cycle)
+			f := factsOf([]Entry{{Number: 22}}, refs, pull, cleanPull(20), closer, queued, cycle, longCycle, longCycleBack)
 			v := Evaluate(f, 10)
 			var got []string
 			var prs []int
@@ -321,7 +327,15 @@ func TestEvaluateReview(t *testing.T) {
 		{name: "changes requested on a plain change", paths: plain, review: Review{Match: reviewrecord.Direct, Verdict: reviewrecord.ChangesRequested},
 			want: []string{"changes-requested admission owner"}},
 		{name: "stale changes requested on a plain change", paths: plain, review: Review{Match: reviewrecord.Stale, Verdict: reviewrecord.ChangesRequested}},
+		{name: "equivalent changes requested on a plain change", paths: plain, review: Review{Match: reviewrecord.EquivalentPatch, Verdict: reviewrecord.ChangesRequested},
+			want: []string{"changes-requested admission owner"}},
+		{name: "equivalent changes requested on a risky change", paths: risky, review: Review{Match: reviewrecord.EquivalentPatch, Verdict: reviewrecord.ChangesRequested},
+			want: []string{"changes-requested admission owner"}},
 		{name: "incomplete file list", paths: ChangedPaths{Files: []string{"README.md"}}, review: Review{Match: reviewrecord.Missing},
+			want: []string{"review-missing admission reviewer"}},
+		{name: "empty file list", paths: ChangedPaths{Complete: true}, review: Review{Match: reviewrecord.Missing},
+			want: []string{"review-missing admission reviewer"}},
+		{name: "unknown match on a risky change", paths: risky, review: Review{Match: reviewrecord.Match(99), Verdict: reviewrecord.Approved},
 			want: []string{"review-missing admission reviewer"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -376,6 +390,9 @@ func TestEvaluateMergeAlone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pull := cleanPull(10)
 			pull.Paths = Of(ChangedPaths{Files: []string{"Containerfile.mkosi"}, Complete: true})
+			// The builder image also requires review; an approval leaves
+			// merge-alone as the only rule in play.
+			pull.Review = Of(Review{Match: reviewrecord.Direct, Verdict: reviewrecord.Approved})
 			v := Evaluate(factsOf(tc.queue, nil, pull, cleanPull(50)), 10)
 			if _, got := reasonFor(v, "merge-alone"); got != tc.want || v.Admitted() == tc.want {
 				t.Fatalf("merge-alone = %v, admitted %v; want %v", got, v.Admitted(), tc.want)
@@ -396,6 +413,9 @@ func TestEvaluateEjection(t *testing.T) {
 		{name: "push after an unrecorded removal", removal: Removal{Reason: "failed_checks", FailedChecks: []string{"vmtest"}, PushedAfter: true}},
 		{name: "linked after", removal: Removal{Reason: "failed_checks", FailedChecks: []string{"vmtest"}, HeadAtRemoval: testHead, LinkedAfter: true}},
 		{name: "only the admission check", removal: Removal{Reason: "failed_checks", FailedChecks: []string{"queue-admission"}, HeadAtRemoval: testHead}},
+		// An exemption for any removal naming the admission check would
+		// excuse the other failure.
+		{name: "the admission check and another", removal: Removal{Reason: "failed_checks", FailedChecks: []string{"queue-admission", "vmtest"}, HeadAtRemoval: testHead}, want: true},
 		{name: "manual", removal: Removal{Reason: "manual", HeadAtRemoval: testHead}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -531,8 +551,13 @@ func TestEvaluateAutomation(t *testing.T) {
 					paths, _ := p.Paths.get()
 					p.Paths = Of(ChangedPaths{Files: append(slices.Clone(paths.Files), "docs/README.md"), Complete: true})
 				},
-				"not a bot":     func(p *Pull) { p.Author = Of(Author{Login: automationLogin}) },
-				"another login": func(p *Pull) { p.Author = Of(Author{Login: "other-bot", Bot: true}) },
+				"incomplete file list": func(p *Pull) {
+					paths, _ := p.Paths.get()
+					p.Paths = Of(ChangedPaths{Files: paths.Files, Complete: false})
+				},
+				"empty file list": func(p *Pull) { p.Paths = Of(ChangedPaths{Complete: true}) },
+				"not a bot":       func(p *Pull) { p.Author = Of(Author{Login: automationLogin}) },
+				"another login":   func(p *Pull) { p.Author = Of(Author{Login: "other-bot", Bot: true}) },
 			} {
 				changed := pull
 				edit(&changed)

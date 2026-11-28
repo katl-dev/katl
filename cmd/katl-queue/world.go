@@ -205,7 +205,7 @@ func worldFrom(snap queueSnapshot, milestone string) world {
 			}
 		}
 		pr.Deps = declaredDeps(n.Body)
-		pr.Hold = declaredHold(n.Body)
+		pr.Hold, _ = queueadmission.DeclaredHold(n.Body)
 		w.PRs = append(w.PRs, pr)
 	}
 	return w
