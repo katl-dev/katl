@@ -141,6 +141,7 @@
           bubblewrap
           cacert
           dosfstools
+          e2fsprogs
           erofs-utils
           gh
           git
@@ -161,6 +162,7 @@
         ];
       testShellHookFor = pkgs: ''
         # Run Go tests through scripts/hermetic -- go test ...
+        export KATL_REQUIRE_TOOLS=1
         # Prepare the caches before the wrapper requires them as bind sources.
         if katl_go_caches="$(${pkgs.go}/bin/go env GOCACHE GOMODCACHE)"; then
           mapfile -t katl_go_cache_dirs <<< "$katl_go_caches"

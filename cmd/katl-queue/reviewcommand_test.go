@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestReviewCommand(t *testing.T) {
@@ -33,10 +34,7 @@ func TestReviewCommand(t *testing.T) {
 	writeComments("before", "COLLABORATOR", "unrelated")
 	writeComments("after", "OWNER", "owner")
 
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := workstationtest.Tool(t, "sh")
 	script := fmt.Sprintf(`#!%s
 case "$1 $2" in
     "repo view") printf 'example/katl\n' ;;

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 // fakeNS records the paths it is asked to remove and runs act on them.
@@ -346,12 +348,13 @@ func TestRemoveRefusesRealMounts(t *testing.T) {
 		realMountsHelper(t, dir)
 		return
 	}
-	if err := exec.Command("unshare", "-rm", "true").Run(); err != nil {
+	unshare := workstationtest.Tool(t, "unshare")
+	if err := exec.Command(unshare, "-rm", "true").Run(); err != nil {
 		t.Skipf("unprivileged mount namespaces unavailable: %v", err)
 	}
 	dir := t.TempDir()
 
-	cmd := exec.Command("unshare", "-rm", os.Args[0], "-test.run=^TestRemoveRefusesRealMounts$", "-test.v")
+	cmd := exec.Command(unshare, "-rm", os.Args[0], "-test.run=^TestRemoveRefusesRealMounts$", "-test.v")
 	cmd.Env = append(os.Environ(), mountHelperEnv+"="+dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -426,9 +429,7 @@ func TestRemoveLeftoversNameInnermostEntries(t *testing.T) {
 // TestRemoveSubuidOwnedFiles removes files that only the rootless user
 // namespace can delete, and checks the result without asking the code under test.
 func TestRemoveSubuidOwnedFiles(t *testing.T) {
-	if err := exec.Command("podman", "unshare", "true").Run(); err != nil {
-		t.Skipf("rootless podman user namespace unavailable: %v", err)
-	}
+	requireRootlessPodman(t)
 	base := t.TempDir()
 	outside := filepath.Join(base, "outside")
 	writeFile(t, filepath.Join(outside, "file"))
@@ -468,6 +469,15 @@ func TestRemoveSubuidOwnedFiles(t *testing.T) {
 	}
 	if !exists(filepath.Join(outside, "file")) {
 		t.Fatal("removal followed a symbolic link out of the run directory")
+	}
+}
+
+// These ownership tests need Podman configured with host subordinate ID
+// mappings. The CI shell does not supply that host capability.
+func requireRootlessPodman(t *testing.T) {
+	t.Helper()
+	if err := exec.Command("podman", "unshare", "true").Run(); err != nil {
+		t.Skipf("host rootless podman user namespace unavailable: %v", err)
 	}
 }
 

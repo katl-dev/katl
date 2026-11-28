@@ -8,16 +8,15 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 // requireUserNamespaces skips the test on hosts where Bubblewrap cannot
 // create a user namespace.
 func requireUserNamespaces(t *testing.T) {
 	t.Helper()
-	bwrap, err := exec.LookPath("bwrap")
-	if err != nil {
-		t.Fatalf("find bwrap (enter nix develop): %v", err)
-	}
+	bwrap := workstationtest.Tool(t, "bwrap")
 	if output, err := exec.Command(bwrap, "--unshare-user", "--dev-bind", "/", "/", "--", "true").CombinedOutput(); err != nil {
 		msg := string(output)
 		if strings.Contains(msg, "user namespace") || strings.Contains(msg, "Creating new namespace failed: Operation not permitted") {
@@ -53,6 +52,7 @@ func TestHermeticHidesHome(t *testing.T) {
 	t.Setenv("KATLCTL_CONFIG", "")
 	t.Setenv("KATL_HERMETIC_PROBE", "1")
 	t.Setenv("KATL_HERMETIC_OPT_IN", "value with spaces")
+	t.Setenv("KATL_REQUIRE_TOOLS", "1")
 	strayDir, err := os.MkdirTemp("/tmp", "katl-stray-git-")
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +102,7 @@ func TestHermeticHidesHome(t *testing.T) {
 		test ! -e "$6"
 		test -z "${KATL_HERMETIC_PROBE+x}"
 		test "$KATL_HERMETIC_OPT_IN" = 'value with spaces'
+		test "$KATL_REQUIRE_TOOLS" = 1
 		test "$GOTELEMETRY" = off
 		test "$KATLCTL_CONFIG" = "$PWD/_build/katlctl/config.yaml"
 		test "$(git log -1 --format=%s)" = fixture
@@ -165,10 +166,7 @@ func TestHermeticKatlctlConfig(t *testing.T) {
 
 func TestHermeticRequiresBubblewrap(t *testing.T) {
 	repo := repoRoot(t)
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Fatal(err)
-	}
+	bash := workstationtest.Tool(t, "bash")
 	bin := t.TempDir()
 	if err := os.Symlink(bash, filepath.Join(bin, "bash")); err != nil {
 		t.Fatal(err)

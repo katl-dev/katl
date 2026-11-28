@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/workstationtest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -339,9 +340,7 @@ func hasFixtureKind(records []FixtureRecord, kind string) bool {
 
 func TestInstallManifestFromImage(t *testing.T) {
 	for _, tool := range []string{"mksquashfs", "unsquashfs"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skip("install squashfs-tools to test self-contained image fixtures")
-		}
+		workstationtest.Tool(t, tool)
 	}
 	for _, damaged := range []bool{false, true} {
 		t.Run(fmt.Sprintf("damaged=%v", damaged), func(t *testing.T) {

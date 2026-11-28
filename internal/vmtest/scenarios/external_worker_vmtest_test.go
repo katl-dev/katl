@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/sysextimage"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"gopkg.in/yaml.v3"
 )
@@ -127,7 +125,7 @@ func installExternalWorkerFixture(world vmtest.World, repo, cpAddress, version s
 func runExternalWorkerJoin(t *testing.T, smoke operationBackedSmokeRun) {
 	t.Helper()
 	requireVMHost(t, smoke.Runner, smoke.Scenario, smoke.Result, vmtest.HostRequirements{Libvirt: true, OVMF: true, KVM: smoke.Options.KVM})
-	requireSmokePrereqs(t, smoke.Runner, smoke.Scenario, smoke.Result, "external worker prerequisites missing", twoNodeHostToolPrereqs(exec.LookPath, sysextimage.CheckExtractor))
+	requireScenarioHostTools(t, smoke.Runner, smoke.Scenario, smoke.Result, "external worker prerequisites missing")
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 	repo, result, inputs := katlRepoRoot(t), smoke.Result, smoke.Inputs

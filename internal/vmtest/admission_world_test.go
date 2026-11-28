@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 // useHostMemory replaces the host's memory figures, in MiB.
@@ -200,9 +202,7 @@ func TestScenarioAdmissionCountsMemoryOfUnadmittedVMs(t *testing.T) {
 }
 
 func TestEnsureWorldSSHKeyConcurrentRuns(t *testing.T) {
-	if _, err := exec.LookPath("ssh-keygen"); err != nil {
-		t.Skip("ssh-keygen is not available")
-	}
+	workstationtest.Tool(t, "ssh-keygen")
 	world := testWorld(t)
 	const runs = 8
 	keys := make([]string, runs)

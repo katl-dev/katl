@@ -363,10 +363,7 @@ func TestVMTestRunRecordsSourceInRunIndex(t *testing.T) {
 }
 
 func TestVMTestRunChecksTestsRanInHermeticJob(t *testing.T) {
-	realGo, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	realGo := workstationtest.Tool(t, "go")
 	poisoned := t.TempDir()
 	writeArtifact(t, poisoned, "operator-context", "operator configuration")
 	t.Setenv("HOME", poisoned)

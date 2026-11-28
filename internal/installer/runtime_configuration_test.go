@@ -13,6 +13,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestInstallRuntimeConfiguration(t *testing.T) {
@@ -139,9 +140,7 @@ func (r *runtimeConfigurationCommands) Output(ctx context.Context, name string, 
 func runtimeConfigurationFixture(t *testing.T, declaration string) katlosimage.Payload {
 	t.Helper()
 	for _, tool := range []string{"mksquashfs", "unsquashfs"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("runtime capability regression requires %s", tool)
-		}
+		workstationtest.Tool(t, tool)
 	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "sentinel"), []byte("runtime root"), 0o644); err != nil {

@@ -9,13 +9,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestReportArtifactFailures(t *testing.T) {
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := workstationtest.Tool(t, "sh")
 	dir := t.TempDir()
 	t.Setenv("PATH", dir)
 	t.Setenv("PASS_LOG", `{"Action":"output","Package":"p","Test":"TestPass","Output":"    pass_test.go:12: simulated failure\n"}
@@ -225,10 +224,7 @@ PASS`,
 // formats, so that the parser is checked against what go test prints rather
 // than against hand-written logs.
 func TestTestLogExcerptGoTest(t *testing.T) {
-	goTool, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	goTool := workstationtest.Tool(t, "go")
 	tests := []struct {
 		name   string
 		source string

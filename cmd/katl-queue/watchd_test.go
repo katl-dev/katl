@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,6 +20,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 const (
@@ -1051,10 +1052,7 @@ func TestWaitTimeoutKeepsRegistration(t *testing.T) {
 
 func TestWhyUsesKatlRepository(t *testing.T) {
 	removed := recordedWatch(t, "removed.json")
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := workstationtest.Tool(t, "sh")
 	dir := t.TempDir()
 	t.Chdir(dir)
 	t.Setenv("PATH", dir)
@@ -1083,10 +1081,7 @@ esac`
 
 func TestWatchLegacyCommand(t *testing.T) {
 	dir := t.TempDir()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := workstationtest.Tool(t, "sh")
 	script := `case "$1 $2" in
 "repo view") printf '%s\n' 'katl-dev/katl' ;;
 "api graphql")

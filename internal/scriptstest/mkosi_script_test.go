@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/gittest"
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
@@ -180,10 +181,7 @@ if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
 fi
 printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 `)
-	realGo, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	realGo := workstationtest.Tool(t, "go")
 	writeFakeExecutable(t, bin, "go", `if [[ "$*" == "run -buildvcs=false ./cmd/katl-kernel-release "* ]]; then
   exec `+realGo+` "$@"
 fi
@@ -256,10 +254,7 @@ func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
 `)
 	writeFakeExecutable(t, bin, "podman", `if [[ "${2:-}" == inspect ]]; then printf 'builder-id\n'; fi
 `)
-	realGo, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	realGo := workstationtest.Tool(t, "go")
 	writeFakeExecutable(t, bin, "go", `if [[ "$*" == "run -buildvcs=false ./cmd/katl-kernel-release "* ]]; then
   exec `+realGo+` "$@"
 fi

@@ -27,9 +27,10 @@ git_common="$(git rev-parse --path-format=absolute --git-common-dir)"
 source "$(dirname -- "${BASH_SOURCE[0]}")/job-environment"
 # Preserve the caller's PATH and TERM, isolated HOME and katlctl config, Go
 # caches with telemetry off, Nix compiler/linker/pkg-config and CA settings
-# listed in job-environment, and variables explicitly selected with --env.
+# listed in job-environment, the shell's test tool policy, and variables
+# explicitly selected with --env.
 declare -A job_env=()
-job_environment "$worktree" "$home" "${requested_env[@]}"
+job_environment "$worktree" "$home" KATL_REQUIRE_TOOLS "${requested_env[@]}"
 
 default_binds=(--bind "$worktree")
 case "$git_common" in

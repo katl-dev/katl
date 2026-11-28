@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/kernelrelease"
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func capturedLock(t *testing.T, flavour string) (kernelrelease.Lock, string) {
@@ -247,9 +247,7 @@ func TestDiscoveryVersionGuard(t *testing.T) {
 }
 
 func TestRPMVersionOrdering(t *testing.T) {
-	if _, err := exec.LookPath("rpm"); err != nil {
-		t.Skip("run inside scripts/mkosi box to exercise native RPM ordering")
-	}
+	workstationtest.Tool(t, "rpm")
 	lock, _ := capturedLock(t, "lts")
 	path := filepath.Join(t.TempDir(), "lock.json")
 	if err := kernelrelease.Write(path, lock); err != nil {
