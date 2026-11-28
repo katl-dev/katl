@@ -39,20 +39,19 @@ func TestReviewCommand(t *testing.T) {
 	}
 	script := fmt.Sprintf(`#!%s
 case "$1 $2" in
-    "repo view") printf 'example/katl\n' ;;
     "api graphql") printf '%%s\n' '{"data":{"viewer":{"login":"poster"},"repository":{"pullRequest":{"state":"OPEN","headRefOid":"%s"}}}}' ;;
-    "api repos/example/katl/compare/%s...%s?per_page=1")
+    "api repos/katl-dev/katl/compare/%s...%s?per_page=1")
         test "$3 $4" = "--jq .merge_base_commit.sha" || exit 2
         printf '%%s\n' '%s' ;;
     "api --paginate")
-        test "$3 $4" = "--slurp repos/example/katl/issues/950/comments?per_page=100" || exit 2
+        test "$3 $4" = "--slurp repos/katl-dev/katl/issues/950/comments?per_page=100" || exit 2
         if test -f "$REVIEW_FIXTURES/posted"; then
             cat "$REVIEW_FIXTURES/after"
         else
             cat "$REVIEW_FIXTURES/before"
         fi ;;
     "pr comment")
-        test "$3 $4 $6 $7" = "950 --body --repo example/katl" || exit 2
+        test "$3 $4 $6 $7" = "950 --body --repo github.com/katl-dev/katl" || exit 2
         test ! -e "$REVIEW_FIXTURES/posted" || exit 2
         printf '%%s' "$5" > "$REVIEW_FIXTURES/posted" ;;
     *) exit 2 ;;

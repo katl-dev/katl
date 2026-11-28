@@ -34,13 +34,14 @@ type watchHTTP struct {
 
 type watchQuery func(context.Context, string) (watchHTTP, error)
 
-func queryWatchGitHub(ctx context.Context, query string) (watchHTTP, error) {
-	cmd := exec.CommandContext(ctx, "gh", "api", "graphql", "--hostname", katlHost, "--include",
-		"-f", "query="+query, "-F", "owner="+katlOwner, "-F", "name="+katlRepo)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	raw, err := cmd.Output()
-	response := watchHTTP{stderr: strings.TrimSpace(stderr.String())}
+func (g *gh) queryWatchGitHub(ctx context.Context, query string) (watchHTTP, error) {
+	raw, err := g.api(ctx, "graphql", "--include", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
+	var response watchHTTP
+	var failed *ghError
+	if errors.As(err, &failed) {
+		response.stderr = failed.stderr
+		err = failed.err
+	}
 	if !bytes.HasPrefix(raw, []byte("HTTP/")) {
 		if err == nil {
 			err = errors.New("missing HTTP status from gh api")

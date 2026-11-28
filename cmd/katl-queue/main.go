@@ -208,7 +208,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err := needOne(); err != nil {
 			return err
 		}
-		return why(ctx, &gh{host: katlHost, owner: katlOwner, name: katlRepo}, numbers[0], stdout)
 	case "watchd":
 		if len(numbers) > 0 {
 			return errors.New("watchd takes no arguments")
@@ -244,11 +243,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unknown command %q", command)
 	}
 
-	g, err := newGH(ctx)
-	if err != nil {
-		return err
-	}
+	g := newGH()
 	switch command {
+	case "why":
+		return why(ctx, g, numbers[0], stdout)
 	case "status":
 		return status(ctx, g, stdout)
 	case "check":
@@ -349,7 +347,7 @@ func check(ctx context.Context, g *gh, number int, out io.Writer) (queueSnapshot
 		return snap, nil, fmt.Errorf("#%d is %s", number, strings.ToLower(pr.State))
 	}
 
-	objects, err := queueObjects(ctx, snap, pr.HeadRefOid)
+	objects, err := g.queueObjects(ctx, snap, pr.HeadRefOid)
 	if err != nil {
 		return snap, nil, err
 	}

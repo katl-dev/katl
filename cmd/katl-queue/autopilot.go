@@ -21,7 +21,7 @@ import (
 var httpsCredential = []string{"-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"}
 
 func (g *gh) remoteURL() string {
-	return "https://github.com/" + g.owner + "/" + g.name + ".git"
+	return "https://" + g.repo() + ".git"
 }
 
 type actionKind string
@@ -290,7 +290,7 @@ type ghEffects struct {
 	out   io.Writer
 }
 
-func (e ghEffects) repoArgs() []string { return []string{"--repo", e.g.owner + "/" + e.g.name} }
+func (e ghEffects) repoArgs() []string { return []string{"--repo", e.g.repo()} }
 
 // Enqueue enables auto-merge and waits for the entry to appear: GitHub queues
 // asynchronously, so enabling the next before then would reorder the queue.
@@ -303,7 +303,7 @@ func (e ghEffects) Enqueue(ctx context.Context, number int) error {
 }
 
 func (e ghEffects) Dequeue(ctx context.Context, id string) error {
-	_, err := runGH(ctx, "api", "graphql", "-f", "id="+id, "-f",
+	_, err := e.g.api(ctx, "graphql", "-f", "id="+id, "-f",
 		"query=mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }")
 	return err
 }

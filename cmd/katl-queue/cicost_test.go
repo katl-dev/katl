@@ -146,10 +146,9 @@ func TestCICostFailingJob(t *testing.T) {
 	}
 }
 
-// fakeGH puts a gh on PATH that answers `gh repo view` with example/katl and
-// each REST read with the file its route names. A route ending in "*" matches
-// any endpoint with that prefix. Every invocation is appended to the returned
-// log. The first failTimes reads of failEndpoint print failStderr and fail.
+// fakeGH puts a gh on PATH that answers each REST read with its route's file.
+// Routes ending in "*" match endpoint prefixes. The fake logs every call and
+// fails the first failTimes reads of failEndpoint with failStderr.
 func fakeGH(t *testing.T, routes map[string]string, failEndpoint string, failTimes int, failStderr string) (log string) {
 	t.Helper()
 	sh, err := exec.LookPath("sh")
@@ -161,7 +160,6 @@ func fakeGH(t *testing.T, routes map[string]string, failEndpoint string, failTim
 
 	var script strings.Builder
 	fmt.Fprintf(&script, "#!%s\nprintf '%%s\\n' \"$*\" >> '%s'\n", sh, log)
-	script.WriteString("case \"$*\" in \"repo view \"*) printf '%s\\n' example/katl; exit 0 ;; esac\n")
 	if failEndpoint != "" {
 		fmt.Fprintf(&script, "if [ \"$4\" = '%s' ] && [ \"$(grep -cxF -- \"$*\" '%s')\" -le %d ]; then\n  printf '%%s\\n' '%s' >&2; exit 1\nfi\n",
 			failEndpoint, log, failTimes, failStderr)
@@ -190,7 +188,7 @@ func countCalls(t *testing.T, log, endpoint string) int {
 	}
 	n := 0
 	for line := range strings.Lines(string(raw)) {
-		if strings.TrimSuffix(line, "\n") == "api --paginate --slurp "+endpoint {
+		if strings.TrimSuffix(line, "\n") == "api --paginate --slurp "+endpoint+" --hostname github.com" {
 			n++
 		}
 	}
@@ -207,12 +205,12 @@ var recordedWindow = ciCostWindow{
 }
 
 const (
-	recordedRuns      = "repos/example/katl/actions/runs?per_page=100&status=completed&created=2026-11-20T00%3A00%3A00Z..2026-11-28T00%3A00%3A00Z"
+	recordedRuns      = "repos/katl-dev/katl/actions/runs?per_page=100&status=completed&created=2026-11-20T00%3A00%3A00Z..2026-11-28T00%3A00%3A00Z"
 	recordedFailedRun = 45922785640
 )
 
 func recordedJobs(id int64) string {
-	return fmt.Sprintf("repos/example/katl/actions/runs/%d/jobs?per_page=100&filter=all", id)
+	return fmt.Sprintf("repos/katl-dev/katl/actions/runs/%d/jobs?per_page=100&filter=all", id)
 }
 
 func recordedRoutes(t *testing.T) map[string]string {
@@ -233,7 +231,7 @@ func minutes(seconds int) float64 { return (time.Duration(seconds) * time.Second
 func TestCICostRecorded(t *testing.T) {
 	fakeGH(t, recordedRoutes(t), "", 0, "")
 
-	report := runCICost(t, &gh{owner: "example", name: "katl"}, recordedWindow, 0)
+	report := runCICost(t, newGH(), recordedWindow, 0)
 
 	if report.RunsScanned != 8 {
 		t.Errorf("scanned %d runs, want 8", report.RunsScanned)
@@ -286,7 +284,8 @@ func TestCICostReadFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := fakeGH(t, recordedRoutes(t), failed, tc.failTimes, tc.stderr)
-			g := &gh{owner: "example", name: "katl", readDelay: time.Millisecond}
+			g := newGH()
+			g.readDelay = time.Millisecond
 
 			var out bytes.Buffer
 			err := ciCost(context.Background(), g, recordedWindow, 0, true, &out)
@@ -335,7 +334,7 @@ func TestRunsCreatedSplitsAtSearchLimit(t *testing.T) {
 		}
 		return file
 	}
-	const endpoint = "repos/example/katl/actions/runs?per_page=100&status=completed&created="
+	const endpoint = "repos/katl-dev/katl/actions/runs?per_page=100&status=completed&created="
 	// The whole range reaches the limit, so it is listed as two halves that
 	// share no second. Its first half reaches the limit again.
 	routes := map[string]string{
@@ -348,7 +347,7 @@ func TestRunsCreatedSplitsAtSearchLimit(t *testing.T) {
 	fakeGH(t, routes, "", 0, "")
 	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
-	runs, err := (&gh{owner: "example", name: "katl"}).completedRuns(context.Background(),
+	runs, err := newGH().completedRuns(context.Background(),
 		ciCostWindow{Since: since, Until: since.Add(11 * time.Second)})
 	if err != nil {
 		t.Fatal(err)
@@ -380,21 +379,21 @@ func TestCICostCommand(t *testing.T) {
     {"id":13,"path":".github/workflows/release.yml","event":"merge_group","status":"completed","conclusion":"success","run_attempt":1,
      "created_at":"2026-11-22T02:00:00Z","updated_at":"2026-11-22T02:40:00Z"}]}]`)
 	routes := map[string]string{
-		"repos/example/katl/actions/workflows?per_page=100": write("workflows.json",
+		"repos/katl-dev/katl/actions/workflows?per_page=100": write("workflows.json",
 			`[{"workflows":[{"id":2,"name":"CI"}]},{"workflows":[{"id":3,"name":"Release Build"}]}]`),
-		"repos/example/katl/actions/workflows/3/runs?per_page=100&status=completed&created=2026-11-22T00%3A00%3A00Z..*": runs,
-		"repos/example/katl/actions/runs?per_page=100&status=completed&created=2026-11-22T00%3A00%3A00Z..*":             runs,
-		"repos/example/katl/actions/runs/11/jobs?per_page=100&filter=all": write("jobs-11.json", `[
+		"repos/katl-dev/katl/actions/workflows/3/runs?per_page=100&status=completed&created=2026-11-22T00%3A00%3A00Z..*": runs,
+		"repos/katl-dev/katl/actions/runs?per_page=100&status=completed&created=2026-11-22T00%3A00%3A00Z..*":             runs,
+		"repos/katl-dev/katl/actions/runs/11/jobs?per_page=100&filter=all": write("jobs-11.json", `[
   {"jobs":[{"id":21,"name":"Build (lts)","conclusion":"failure","run_attempt":1,"runner_name":"runner",
     "created_at":"2026-11-22T00:00:00Z","started_at":"2026-11-22T00:00:00Z","completed_at":"2026-11-22T00:12:00Z"}]},
   {"jobs":[{"id":22,"name":"Build (lts)","conclusion":"success","run_attempt":2,"runner_name":"runner",
     "created_at":"2026-11-22T00:10:00Z","started_at":"2026-11-22T00:13:00Z","completed_at":"2026-11-22T00:19:00Z"},
    {"id":24,"name":"Publish","conclusion":"failure","run_attempt":2,"runner_name":"runner",
     "created_at":"2026-11-22T00:19:00Z","started_at":"2026-11-22T00:19:30Z","completed_at":"2026-11-22T00:20:00Z"}]}]`),
-		"repos/example/katl/actions/runs/12/jobs?per_page=100&filter=all": write("jobs-12.json", `[
+		"repos/katl-dev/katl/actions/runs/12/jobs?per_page=100&filter=all": write("jobs-12.json", `[
   {"jobs":[{"id":23,"name":"Build (standard)","conclusion":"cancelled","run_attempt":1,"runner_name":"runner",
     "created_at":"2026-11-22T01:00:00Z","started_at":"2026-11-22T01:00:00Z","completed_at":"2026-11-22T01:30:00Z"}]}]`),
-		"repos/example/katl/actions/runs/13/jobs?per_page=100&filter=all": write("jobs-13.json", `[{"jobs":[]}]`),
+		"repos/katl-dev/katl/actions/runs/13/jobs?per_page=100&filter=all": write("jobs-13.json", `[{"jobs":[]}]`),
 	}
 	fakeGH(t, routes, "", 0, "")
 	// Waits are 0, 3, 0.5 and 0 minutes; job minutes are 12, 6, 0.5 and 30.

@@ -41,7 +41,7 @@ esac`
 	}
 
 	var out bytes.Buffer
-	reportArtifactFailures(t.Context(), &gh{owner: "katl-dev", name: "katl"}, 123, &out)
+	reportArtifactFailures(t.Context(), newGH(), 123, &out)
 
 	want := "\ngo test failures in artifact failing-123\n  | --- FAIL: TestFail (0.01s)\n  | fail_test.go:20: configuration was lost\n"
 	if got := out.String(); got != want {

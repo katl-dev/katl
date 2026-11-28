@@ -1061,7 +1061,6 @@ func TestWhyUsesKatlRepository(t *testing.T) {
 	t.Setenv("GH_REPO", "other/repo")
 	t.Setenv("WHY_TEST_REMOVAL", removed)
 	script := `case "$1 $2" in
-"repo view") printf '%s\n' 'other/repo' ;;
 "api graphql")
   [ "$6 $8 $9 ${10}" = "owner=katl-dev name=katl --hostname github.com" ] || exit 90
   printf '%s' "$WHY_TEST_REMOVAL" ;;
@@ -1088,7 +1087,6 @@ func TestWatchLegacyCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := `case "$1 $2" in
-"repo view") printf '%s\n' 'katl-dev/katl' ;;
 "api graphql")
   case "$4" in *REMOVED_FROM_MERGE_QUEUE_EVENT*) ;; *) exit 90 ;; esac
   if [ -e "$WATCH_TEST_MARK" ]; then

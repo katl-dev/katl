@@ -56,23 +56,12 @@ func runGH(ctx context.Context, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-func newGH(ctx context.Context) (*gh, error) {
-	out, err := runGH(ctx, "repo", "view", "--json", "owner,name", "--jq", `.owner.login + "/" + .name`)
-	if err != nil {
-		return nil, err
-	}
-	owner, name, ok := strings.Cut(strings.TrimSpace(string(out)), "/")
-	if !ok {
-		return nil, fmt.Errorf("unexpected repository %q from gh repo view", out)
-	}
-	return &gh{owner: owner, name: name}, nil
+func newGH() *gh {
+	return &gh{host: katlHost, owner: katlOwner, name: katlRepo}
 }
 
 func (g *gh) api(ctx context.Context, args ...string) ([]byte, error) {
-	if g.host != "" {
-		args = append(args, "--hostname", g.host)
-	}
-	return runGH(ctx, append([]string{"api"}, args...)...)
+	return runGH(ctx, append(append([]string{"api"}, args...), "--hostname", g.host)...)
 }
 
 // ghError is a failed gh invocation. It keeps gh's standard error, which is
@@ -130,10 +119,7 @@ func (g *gh) read(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 func (g *gh) repo() string {
-	if g.host != "" {
-		return g.host + "/" + g.owner + "/" + g.name
-	}
-	return g.owner + "/" + g.name
+	return g.host + "/" + g.owner + "/" + g.name
 }
 
 func (g *gh) graphql(ctx context.Context, query string, out any) error {
@@ -495,7 +481,7 @@ func (r removalEvent) failedChecks() []failedCheck {
 }
 
 func (g *gh) enableAutoMerge(ctx context.Context, number int) error {
-	_, err := runGH(ctx, "pr", "merge", fmt.Sprint(number), "--auto", "--repo", g.owner+"/"+g.name)
+	_, err := runGH(ctx, "pr", "merge", fmt.Sprint(number), "--auto", "--repo", g.repo())
 	return err
 }
 
@@ -668,7 +654,7 @@ func decodeJSON(raw []byte, out any) error {
 }
 
 func (g *gh) disableAutoMerge(ctx context.Context, number int) error {
-	_, err := runGH(ctx, "pr", "merge", fmt.Sprint(number), "--disable-auto", "--repo", g.owner+"/"+g.name)
+	_, err := runGH(ctx, "pr", "merge", fmt.Sprint(number), "--disable-auto", "--repo", g.repo())
 	return err
 }
 

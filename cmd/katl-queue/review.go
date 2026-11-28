@@ -48,11 +48,7 @@ func reviewCommand(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer src.Close()
 
-	g, err := newGH(ctx)
-	if err != nil {
-		return err
-	}
-	return postReview(ctx, g, number, src, out)
+	return postReview(ctx, newGH(), number, src, out)
 }
 
 func postReview(ctx context.Context, g reviewGitHub, number int, src io.Reader, out io.Writer) error {

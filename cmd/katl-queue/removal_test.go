@@ -332,7 +332,7 @@ func TestCheckFailures(t *testing.T) {
 }
 
 func TestMarkersNeedViewer(t *testing.T) {
-	g := &gh{owner: "o", name: "n"}
+	g := newGH()
 
 	if _, err := g.markers(context.Background(), 1); err == nil {
 		t.Error("markers read comments without knowing which user is katl-queue")

@@ -33,9 +33,9 @@ func pendingPRs(snap queueSnapshot) []queuedPR {
 	return pending
 }
 
-// queueObjects fetches from origin the base, queued and pending heads of snap
-// and the extra commits into a throwaway object store.
-func queueObjects(ctx context.Context, snap queueSnapshot, extra ...string) (*scratchObjects, error) {
+// queueObjects fetches the base, queued and pending heads of snap and the
+// extra commits into a throwaway object store.
+func (g *gh) queueObjects(ctx context.Context, snap queueSnapshot, extra ...string) (*scratchObjects, error) {
 	oids := append([]string{snap.BaseOid}, extra...)
 	for _, pr := range append(queueOf(snap), pendingPRs(snap)...) {
 		oids = append(oids, pr.Head)
@@ -47,7 +47,7 @@ func queueObjects(ctx context.Context, snap queueSnapshot, extra ...string) (*sc
 	if err != nil {
 		return nil, err
 	}
-	if err := objects.fetch(ctx, "origin", oids...); err != nil {
+	if err := objects.fetch(ctx, g.remoteURL(), oids...); err != nil {
 		objects.Close()
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func reportUnmergeable(ctx context.Context, g *gh, number int, out io.Writer) er
 	if err != nil {
 		return err
 	}
-	objects, err := queueObjects(ctx, snap)
+	objects, err := g.queueObjects(ctx, snap)
 	if err != nil {
 		return err
 	}
