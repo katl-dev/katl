@@ -37,14 +37,21 @@ In the repository's environment settings, check both environments:
   administrator bypass. Narrow its deployment branch policy to `release/[0-9]*`
   before applying the rulesets.
 - `release-cut` admits only `main` and disables administrator bypass.
-- `release` stores the `katl-release` App's private key as
-  `KATL_RELEASE_APP_PRIVATE_KEY`, and `release-cut` stores the
-  `katl-release-cut` App's private key as `KATL_RELEASE_CUT_APP_PRIVATE_KEY`.
+- `release` stores the `katl-release` App's ID as the variable
+  `KATL_RELEASE_APP_ID` and its private key as the secret
+  `KATL_RELEASE_APP_PRIVATE_KEY`.
+- `release-cut` stores the `katl-release-cut` App's ID as the variable
+  `KATL_RELEASE_CUT_APP_ID` and its private key as the secret
+  `KATL_RELEASE_CUT_APP_PRIVATE_KEY`.
+
+Every job that reads an App ID runs in that App's environment, so the
+environment's variable takes precedence over a repository variable of the same
+name.
 
 Before applying either file, check its bypass actor's ID. For
-`final-release-tags.json` it must equal the variable `KATL_RELEASE_APP_ID`, and
-for `release-branch-creation.json` it must equal the variable
-`KATL_RELEASE_CUT_APP_ID`.
+`final-release-tags.json` it must equal `KATL_RELEASE_APP_ID` in the `release`
+environment, and for `release-branch-creation.json` it must equal
+`KATL_RELEASE_CUT_APP_ID` in the `release-cut` environment.
 
 ## Apply or revert the rulesets
 
@@ -69,8 +76,8 @@ two creation ruleset IDs.
 Read each applied ruleset with `gh api repos/katl-dev/katl/rulesets/<id>` and
 compare its definition fields with the corresponding file.
 
-Use a version that will never be released, such as `0.0.0`. With a repository
-credential other than the App's, push a final-style tag such as `v0.0.0`
+Use a version that will never be released, such as `0.0.0`. With a credential
+that is neither release App's, push a final-style tag such as `v0.0.0`
 and expect GitHub to reject it. Attempt to create
 `release/0.0.0` and expect GitHub to reject it.
 

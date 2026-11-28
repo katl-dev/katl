@@ -357,8 +357,14 @@ func TestReleaseCredentialScope(t *testing.T) {
 		"permission-contents": "write",
 	}
 	var mints, checks int
-	var verify string
+	var verify, report string
 	for _, step := range releaseCredentialSteps(t) {
+		if step.Name == "Report a token mint failure" {
+			report = step.Run
+			if step.Env["ENVIRONMENT"] != "${{ inputs.environment }}" {
+				t.Error("mint failure report must name the environment from the action input")
+			}
+		}
 		if apiWrites(step.Run, "") {
 			t.Errorf("credential step %q makes a mutating API call", step.Name)
 		}
@@ -391,6 +397,13 @@ func TestReleaseCredentialScope(t *testing.T) {
 	}
 	if checks != 1 || verify == "" {
 		t.Fatal("want one verification step using the minted token")
+	}
+	if report == "" {
+		t.Fatal("want a mint failure report step")
+	}
+	if out, err := runReleaseStep(t.TempDir(), report, "ENVIRONMENT=release-cut"); err != nil ||
+		!strings.Contains(string(out), "release-cut environment") {
+		t.Errorf("mint failure report = %q, %v, want it to name the release-cut environment", out, err)
 	}
 
 	const repo = "katl-dev/katl"
