@@ -143,19 +143,10 @@ jobs:
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         id: upload-diagnostics
-        if: always()
+        if: always() && steps.diagnostics.outcome == 'success'
         with:
           name: kernel-driver-${{ inputs.flavour }}-${{ github.run_id }}
-          path: |
-            _build/hosted-evidence/
-            _build/kernel-journey/**/*.log
-            _build/kernel-journey/**/*.json
-            _build/kernel-journey/**/*.xml
-            _build/kernel-journey/**/*.txt
-            _build/kernel-journey/**/*.stdout
-            _build/kernel-journey/**/*.stderr
-            _build/kernel-journey/**/stdout
-            _build/kernel-journey/**/stderr
+          path: ${{ steps.diagnostics.outputs.upload-dir }}
           retention-days: 3
 
   record-driver-result:

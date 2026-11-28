@@ -110,22 +110,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Collect diagnostics
+        id: diagnostics
         if: always()
         timeout-minutes: 5
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && steps.diagnostics.outcome == 'success'
         timeout-minutes: 10
         with:
           name: production-vmtest-${{ inputs.flavour }}-${{ github.run_id }}
-          path: |
-            _build/hosted-evidence/
-            _build/production-vmtest/**/*.log
-            _build/production-vmtest/**/*.json
-            _build/production-vmtest/**/*.xml
-            _build/production-vmtest/**/*.txt
-            _build/production-vmtest/**/*.stdout
-            _build/production-vmtest/**/*.stderr
-            _build/production-vmtest/**/stdout
-            _build/production-vmtest/**/stderr
+          path: ${{ steps.diagnostics.outputs.upload-dir }}
           retention-days: 3

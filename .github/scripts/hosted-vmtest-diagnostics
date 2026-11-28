@@ -27,3 +27,9 @@ for resource in memory.max memory.peak memory.events cpu.max cpu.stat; do
         cat "$cgroup_dir/$resource" > "_build/hosted-evidence/cgroup-$resource.txt"
     fi
 done
+
+# The run and host diagnostics directories are scratch inputs. Only the
+# redacted staging directory is eligible for upload.
+upload_dir=_build/vmtest-upload
+go run ./cmd/katl-vmtest-evidence _build/hosted-evidence "${KATL_VMTEST_RUN_DIR:?}" "$upload_dir"
+printf 'upload-dir=%s\n' "$upload_dir" >>"${GITHUB_OUTPUT:?}"
