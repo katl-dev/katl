@@ -3,13 +3,16 @@
 # backoff, so one stalled transfer cannot consume a job's budget.
 #
 #   hosted-download artifact NAME DEST [RUN_ID]
+#   hosted-download --id ID artifact NAME DEST RUN_ID
 #   hosted-download artifacts PATTERN DEST [RUN_ID]
 #   hosted-download release TAG DEST [PATTERN]
 #
-# An artifact's files land directly in DEST. Every artifact matching PATTERN
-# lands in DEST/<artifact name>, as actions/download-artifact places them. DEST
-# may already exist: a completed download is merged into it, and the owner
-# fails rather than replace a path that is already there.
+# An artifact's files land directly in DEST. With --id, the artifact is the
+# one with that ID, which must be named NAME and belong to run RUN_ID: names
+# can recur across the attempts of one run, IDs cannot. Every artifact
+# matching PATTERN lands in DEST/<artifact name>, as actions/download-artifact
+# places them. DEST may already exist: a completed download is merged into
+# it, and the owner fails rather than replace a path that is already there.
 #
 # scripts/retry bounds each attempt and allows five seconds by default
 # before SIGKILL. The default backoff starts at 1/24 of the attempt limit.
@@ -18,7 +21,7 @@
 set -euo pipefail
 
 usage() {
-    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | artifacts PATTERN DEST [RUN_ID] | release TAG DEST [PATTERN]' >&2
+    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | --id ID artifact NAME DEST RUN_ID | artifacts PATTERN DEST [RUN_ID] | release TAG DEST [PATTERN]' >&2
     exit 2
 }
 
@@ -37,13 +40,42 @@ if [[ "${1:-}" == --attempt ]]; then
     exec "$@" --dir "$staging"
 fi
 
+# One attempt of an --id download: the artifact's metadata goes to META for
+# the parent to check once the attempt succeeds, and its files to STAGING.
+if [[ "${1:-}" == --attempt-id ]]; then
+    staging=$2 meta=$3 repo=$4 id=$5
+    # Bash runs this trap only after the running command exits, so the
+    # attempt outlives a gh that ignores SIGTERM and timeout's SIGKILL still
+    # reaches both; exiting at once would orphan gh past the attempt limit.
+    trap 'exit 143' TERM
+    rm -rf -- "$staging" "$meta" "$staging.zip"
+    mkdir -- "$staging"
+    gh api "repos/$repo/actions/artifacts/$id" > "$meta"
+    gh api "repos/$repo/actions/artifacts/$id/zip" > "$staging.zip"
+    unzip -q -d "$staging" "$staging.zip"
+    rm -f -- "$staging.zip"
+    exit
+fi
+
+artifact_id=""
+if [[ "${1:-}" == --id ]]; then
+    [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || usage
+    artifact_id=$2
+    shift 2
+    # An ID names exactly one artifact of one run, so it cannot combine with
+    # a pattern or release, and the run is never implied.
+    [[ "${1:-}" == artifact && $# -eq 4 && "$4" =~ ^[1-9][0-9]*$ ]] || usage
+fi
+
 [[ $# -ge 3 ]] || usage
 kind=$1 subject=$2 dest=$3
 case "$kind" in
     artifact | artifacts)
         [[ $# -le 4 ]] || usage
         run_id=${4:-${GITHUB_RUN_ID:?}}
-        if [[ "$kind" == artifact ]]; then
+        if [[ -n "$artifact_id" ]]; then
+            what="artifact $artifact_id ($subject) from run $run_id"
+        elif [[ "$kind" == artifact ]]; then
             what="artifact $subject from run $run_id"
             select=(--name "$subject")
         else
@@ -98,19 +130,29 @@ deliver() {
     rm -rf -- "$staging"
 }
 
-if [[ "$kind" == release ]]; then
-    command=(gh release download "$subject" --repo "$repo" "${select[@]}")
-else
-    command=(gh run download "$run_id" --repo "$repo" "${select[@]}")
-fi
-
 scratch=$(mktemp -d "$dest.attempt-XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
+if [[ -n "$artifact_id" ]]; then
+    command -v unzip >/dev/null || fail 'unzip is not installed on this runner'
+    attempt=("${BASH_SOURCE[0]}" --attempt-id "$scratch/download" "$scratch/artifact.json" "$repo" "$artifact_id")
+elif [[ "$kind" == release ]]; then
+    attempt=("${BASH_SOURCE[0]}" --attempt "$scratch/download" gh release download "$subject" --repo "$repo" "${select[@]}")
+else
+    attempt=("${BASH_SOURCE[0]}" --attempt "$scratch/download" gh run download "$run_id" --repo "$repo" "${select[@]}")
+fi
+
 "$(dirname -- "${BASH_SOURCE[0]}")/../../scripts/retry" \
     --attempts "${KATL_DOWNLOAD_ATTEMPTS:-3}" \
     --timeout "$attempt_seconds" \
     --kill-after "${KATL_DOWNLOAD_KILL_AFTER_SECONDS:-5}" \
     --backoff "$backoff" \
     --title 'Download' --what "hosted-download: $what" \
-    -- "${BASH_SOURCE[0]}" --attempt "$scratch/download" "${command[@]}"
+    -- "${attempt[@]}"
+# A wrong ID is the caller's error, not a transient one, so it is checked
+# once after the download rather than retried, and nothing is delivered.
+if [[ -n "$artifact_id" ]]; then
+    found="$(jq -r '"\(.name) from run \(.workflow_run.id)"' "$scratch/artifact.json")" ||
+        fail 'the artifact metadata is unreadable'
+    [[ "$found" == "$subject from run $run_id" ]] || fail "the ID names $found"
+fi
 deliver "$scratch/download"

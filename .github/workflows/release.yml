@@ -231,7 +231,7 @@ jobs:
       ((needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate') &&
       needs.qualify.result == 'success'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 85
+    timeout-minutes: 105
     permissions:
       contents: write
       packages: write
@@ -265,16 +265,25 @@ jobs:
           BUILD_ATTEMPT: ${{ needs.decide.outputs.build-attempt }}
         run: |
           artifacts="$(scripts/katl-release candidate-artifacts "$VERSION" "$COMMIT" "$BUILD_RUN" "$BUILD_ATTEMPT")"
-          jq -r '"bundle=\(.bundle)\nextensions=\(.standard),\(.lts)"' <<< "$artifacts" >> "$GITHUB_OUTPUT"
+          jq -r '"bundle=\(.bundle)\nstandard=\(.standard)\nlts=\(.lts)"' <<< "$artifacts" >> "$GITHUB_OUTPUT"
       - name: Download the candidate bundle
+        if: steps.recorded.outputs.bundle == ''
         timeout-minutes: 20
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ steps.recorded.outputs.bundle == '' && steps.bundle.outputs.name || '' }}
-          artifact-ids: ${{ steps.recorded.outputs.bundle }}
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.decide.outputs.build-run || github.run_id }}
-          path: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.bundle.outputs.name }}
+        run: .github/scripts/hosted-download artifact "$BUNDLE" dist
+      # A resume downloads by the IDs candidate-artifacts bound to the recorded
+      # build attempt, because names can recur in another attempt of that run.
+      - name: Download the recorded candidate bundle
+        if: steps.recorded.outputs.bundle != ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.bundle.outputs.name }}
+          BUNDLE_ID: ${{ steps.recorded.outputs.bundle }}
+          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
+        run: .github/scripts/hosted-download --id "$BUNDLE_ID" artifact "$BUNDLE" dist "$BUILD_RUN"
       - &check-digest
         name: Confirm the qualified bundle digest
         timeout-minutes: 2
@@ -285,14 +294,30 @@ jobs:
             exit 1
           fi
       - name: Download candidate extension publication inputs
+        if: steps.recorded.outputs.bundle == ''
         timeout-minutes: 20
-        uses: actions/download-artifact@v8
-        with:
-          pattern: ${{ steps.recorded.outputs.extensions == '' && format('katl-extension-bundles-*-{0}', github.sha) || '' }}
-          artifact-ids: ${{ steps.recorded.outputs.extensions }}
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.decide.outputs.build-run || github.run_id }}
-          path: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLES: katl-extension-bundles-*-${{ github.sha }}
+        run: .github/scripts/hosted-download artifacts "$BUNDLES" artifacts
+      - name: Download recorded standard extension publication inputs
+        if: steps.recorded.outputs.bundle != ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS: katl-extension-bundles-standard-${{ needs.decide.outputs.commit }}
+          INPUTS_ID: ${{ steps.recorded.outputs.standard }}
+          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
+        run: .github/scripts/hosted-download --id "$INPUTS_ID" artifact "$INPUTS" "artifacts/$INPUTS" "$BUILD_RUN"
+      - name: Download recorded LTS extension publication inputs
+        if: steps.recorded.outputs.bundle != ''
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS: katl-extension-bundles-lts-${{ needs.decide.outputs.commit }}
+          INPUTS_ID: ${{ steps.recorded.outputs.lts }}
+          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
+        run: .github/scripts/hosted-download --id "$INPUTS_ID" artifact "$INPUTS" "artifacts/$INPUTS" "$BUILD_RUN"
       - &check-extensions
         name: Compare extension inputs with the bundle
         timeout-minutes: 5

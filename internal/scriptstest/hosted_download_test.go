@@ -1,6 +1,9 @@
 package scriptstest
 
 import (
+	"archive/zip"
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -154,7 +157,7 @@ func budgetSum(steps []budgetStep) int {
 	return sum
 }
 
-var hostedDownloadCall = regexp.MustCompile(`hosted-download (artifacts?|release) (\S+) (\S+)`)
+var hostedDownloadCall = regexp.MustCompile(`hosted-download (?:--id \S+ )?(artifacts?|release) (\S+) (\S+)`)
 
 // hostedDownload reports what a step asks hosted-download for, with the
 // step's environment substituted, so handoff tests can follow an artifact
@@ -353,6 +356,7 @@ func TestWorkflowBudgets(t *testing.T) {
         timeout-minutes: 37
 `, "job timeout 60 does not exceed setup 25 plus go test -timeout 36m"},
 		{"download step shorter than its attempts", strings.Replace(budgeted, "timeout-minutes: 20", "timeout-minutes: 15", 1), "has 15 minutes for downloads that may take 1185 seconds"},
+		{"ID download step shorter than its attempts", strings.NewReplacer("timeout-minutes: 20", "timeout-minutes: 15", "artifact inputs _build/import", "--id 9 artifact inputs _build/import 7").Replace(budgeted), "has 15 minutes for downloads that may take 1185 seconds"},
 		{"cache restore failing the job", budgeted + `      - uses: actions/cache/restore@v6
         timeout-minutes: 5
 `, "must continue on error"},
@@ -634,6 +638,190 @@ esac
 			}
 		}
 	})
+}
+
+// TestHostedDownloadByID covers --id, which binds a download to one artifact
+// of one run and checks that the artifact is the one the caller named.
+func TestHostedDownloadByID(t *testing.T) {
+	script := filepath.Join(repoRoot(t), ".github", "scripts", "hosted-download")
+	if _, err := exec.LookPath("unzip"); err != nil {
+		t.Fatal("unzip is required: run the tests in the development shell")
+	}
+
+	// The fake gh answers metadata requests with artifact.json and behaves per
+	// zip request as listed in its plan file: "ok" sends the whole archive,
+	// "partial" sends a fragment and fails, and "deaf" sends a fragment and
+	// hangs ignoring SIGTERM, so only SIGKILL ends it.
+	run := func(t *testing.T, metadata string, plan []string, args ...string) (string, string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		bin := mkdirAll(t, filepath.Join(dir, "bin"))
+		writeArtifact(t, dir, "plan", strings.Join(plan, "\n")+"\n")
+		writeArtifact(t, dir, "artifact.json", metadata)
+		writeZip(t, filepath.Join(dir, "artifact.zip"), map[string]string{"payload": "complete", "sub/new": "new"})
+		writeFakeExecutable(t, bin, "gh", `state=`+dir+`
+printf '%s\n' "$*" >> "$state/calls"
+case "$2" in
+    */zip)
+        n=$(grep -c '/zip$' "$state/calls")
+        case "$(sed -n "${n}p" "$state/plan")" in
+            ok) cat "$state/artifact.zip" ;;
+            partial) head -c 20 "$state/artifact.zip"; exit 1 ;;
+            deaf) trap '' TERM; head -c 20 "$state/artifact.zip"; sleep 60 ;;
+        esac ;;
+    *) cat "$state/artifact.json" ;;
+esac
+`)
+		cmd := exec.Command(script, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"PATH="+bin+":"+os.Getenv("PATH"),
+			"GITHUB_ACTIONS=true",
+			"GITHUB_REPOSITORY=katl-dev/katl",
+			"GITHUB_RUN_ID=42",
+			"KATL_DOWNLOAD_ATTEMPTS=2",
+			"KATL_DOWNLOAD_ATTEMPT_SECONDS=1",
+			"KATL_DOWNLOAD_KILL_AFTER_SECONDS=1",
+			"KATL_DOWNLOAD_BACKOFF_SECONDS=0",
+		)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		return dir, stderr.String(), err
+	}
+	const metadata = `{"id": 99, "name": "inputs-abc", "workflow_run": {"id": 7}}`
+	args := []string{"--id", "99", "artifact", "inputs-abc", "out", "7"}
+	calls := func(t *testing.T, dir string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "calls"))
+		if os.IsNotExist(err) {
+			return ""
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	delivered := func(t *testing.T, dir string) {
+		t.Helper()
+		for path, want := range map[string]string{"payload": "complete", "sub/new": "new"} {
+			if got := string(mustReadFile(t, filepath.Join(dir, "out", path))); got != want {
+				t.Errorf("%s = %q, want %q", path, got, want)
+			}
+		}
+		if siblings, _ := filepath.Glob(filepath.Join(dir, "out.*")); len(siblings) != 0 {
+			t.Errorf("staging directories left behind: %v", siblings)
+		}
+	}
+	undelivered := func(t *testing.T, dir string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
+			t.Errorf("failed download left a destination: %v", err)
+		}
+		if siblings, _ := filepath.Glob(filepath.Join(dir, "out.*")); len(siblings) != 0 {
+			t.Errorf("staging directories left behind: %v", siblings)
+		}
+	}
+
+	t.Run("delivers the artifact with that ID", func(t *testing.T) {
+		dir, stderr, err := run(t, metadata, []string{"ok"}, args...)
+		if err != nil {
+			t.Fatalf("download failed: %v\n%s", err, stderr)
+		}
+		delivered(t, dir)
+		if got := calls(t, dir); !strings.Contains(got, "api repos/katl-dev/katl/actions/artifacts/99/zip\n") {
+			t.Errorf("gh calls %q do not fetch artifact 99", got)
+		}
+	})
+
+	t.Run("retries a failed attempt", func(t *testing.T) {
+		dir, stderr, err := run(t, metadata, []string{"partial", "ok"}, args...)
+		if err != nil {
+			t.Fatalf("download failed: %v\n%s", err, stderr)
+		}
+		delivered(t, dir)
+		if !strings.Contains(stderr, "attempt 1/2 exited") {
+			t.Errorf("failed attempt not reported:\n%s", stderr)
+		}
+	})
+
+	t.Run("delivers nothing from killed attempts", func(t *testing.T) {
+		started := time.Now()
+		dir, stderr, err := run(t, metadata, []string{"deaf", "deaf"}, args...)
+		if err == nil {
+			t.Fatalf("download succeeded after its attempts were killed:\n%s", stderr)
+		}
+		if elapsed := time.Since(started); elapsed > 20*time.Second {
+			t.Errorf("two killed 1-second attempts took %s", elapsed)
+		}
+		if !strings.Contains(stderr, "hosted-download: artifact 99 (inputs-abc) from run 7: attempt 2/2 timed out") {
+			t.Errorf("failure does not name the artifact and the timeout:\n%s", stderr)
+		}
+		undelivered(t, dir)
+	})
+
+	t.Run("refuses an artifact the caller did not name", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, metadata, want string
+		}{
+			{"other name", `{"name": "inputs-def", "workflow_run": {"id": 7}}`, "the ID names inputs-def from run 7"},
+			{"other run", `{"name": "inputs-abc", "workflow_run": {"id": 8}}`, "the ID names inputs-abc from run 8"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir, stderr, err := run(t, tc.metadata, []string{"ok", "ok"}, args...)
+				if err == nil {
+					t.Fatalf("download accepted %s:\n%s", tc.metadata, stderr)
+				}
+				if !strings.Contains(stderr, "::error") || !strings.Contains(stderr, tc.want) {
+					t.Errorf("failure does not report %q in an error annotation:\n%s", tc.want, stderr)
+				}
+				if n := strings.Count(calls(t, dir), "/zip\n"); n != 1 {
+					t.Errorf("fetched the archive %d times; a wrong ID is not retried", n)
+				}
+				undelivered(t, dir)
+			})
+		}
+	})
+
+	t.Run("rejects an ID with another selector", func(t *testing.T) {
+		for _, tc := range [][]string{
+			{"--id", "99", "artifacts", "inputs-*", "out", "7"},
+			{"--id", "99", "release", "v1.0.0", "out"},
+			{"--id", "99", "artifact", "inputs-abc", "out"},
+			{"--id", "inputs-abc", "artifact", "inputs-abc", "out", "7"},
+			{"--id", "99", "artifact", "inputs-abc", "out", "7", "extra"},
+		} {
+			dir, stderr, err := run(t, metadata, []string{"ok"}, tc...)
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+				t.Errorf("%v: err %v; want usage error (exit 2)\n%s", tc, err, stderr)
+			}
+			if got := calls(t, dir); got != "" {
+				t.Errorf("%v: called gh %q", tc, got)
+			}
+		}
+	})
+}
+
+func writeZip(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	var archive bytes.Buffer
+	w := zip.NewWriter(&archive)
+	for name, content := range files {
+		f, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, archive.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func mkdirAll(t *testing.T, dir string) string {
