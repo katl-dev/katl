@@ -33,8 +33,8 @@ matching [agent definitions](../../.claude/agents/).
 | [Journey](roles/journey.md) | Mechanical, medium effort |
 | [Washup](roles/washup.md) | Mechanical |
 
-Commission one independent code review per change, and file follow-up issues
-for edge-case findings. Reserve high effort for risky boot, disk, update,
+Commission one independent code review per change, and record edge-case
+findings under the [issue intake rules](#issue-intake). Reserve high effort for risky boot, disk, update,
 security or trust changes and for reviews that gate a hard-to-reverse merge.
 
 Send fix rounds on one PR to the same implementer job or session while its
@@ -171,6 +171,31 @@ of which are forbidden.
 
 After the cut, only process changes that block the release land on its
 critical path. Route other process changes to the tooling stream.
+
+## Issue intake
+
+GitHub issues are the record of scope, so each one must be distinct, owned
+and closable. Every role that files or triages issues follows these rules.
+
+- Search the open issues before filing. When an existing issue covers the
+  finding, comment on it instead of opening a near-duplicate.
+  [#979](https://github.com/katl-dev/katl/issues/979) tracks a tool that
+  enforces this check.
+- File a follow-up as its own issue only when it has acceptance criteria and
+  a priority and lies outside the current PR's scope. Otherwise fix it in the
+  PR, or comment it onto the parent issue.
+- Give a small design one issue with a short plan, not a parent with
+  sub-issues.
+- State the closing condition of every design or parent issue in its body,
+  as a `Closes when:` line, and close the issue when the condition holds.
+- Group a category, such as recurring flakes, with a label rather than an
+  umbrella issue. File each member as its own issue.
+- Version milestones hold only the work a release needs. Plan every
+  `priority: p1` issue into the next or the following version milestone,
+  except theme work: an issue with a `theme:` label carries no milestone,
+  its theme team does it as soon as it can, and it ships in the next release
+  after it merges. `Planned:` milestones and Backlog hold p2 and below, so
+  lower a p1 that neither version will take.
 
 ## Reporting
 

@@ -21,7 +21,10 @@ a brief review before implementation, then a code review. Follow the
 [model and effort ladder](../README.md#model-and-effort) for both reviews.
 Review mechanical work directly. Include the single-ownership check from
 AGENTS.md in design and review briefs. Reconcile all reports against GitHub
-before acting on them.
+before acting on them. Route review, journey and delivery
+findings under the [issue intake rules](../README.md#issue-intake): fix
+in-scope findings in the PR, and comment the rest onto an existing issue
+before filing a new one.
 
 **PR description.** Write the PR description as the squash commit message,
 following AGENTS.md. Write it before enabling auto-merge and update it after

@@ -28,3 +28,18 @@ already in scope. Apply the [flake rule](release.md#flakes) to flakes.
 
 After the cut, send findings relevant to the cut release to its Release
 agent for a scope decision.
+
+## Reconciliation
+
+Apply the [issue intake rules](../README.md#issue-intake) to every issue you
+file or groom, and reconcile the open issues once per release:
+
+- close duplicates into the better-specified issue, carrying over any
+  acceptance criteria the kept issue lacks;
+- close parents whose sub-issues are all closed and design issues whose
+  `Closes when:` condition holds, after checking their own criteria;
+- replace umbrella issues with a label and one issue per member;
+- fold small follow-ups into their open parent or PR;
+- give every remaining issue a kind label, an area label and a priority.
+
+Comment once on each closed issue with the reason.
