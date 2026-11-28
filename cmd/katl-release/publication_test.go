@@ -32,6 +32,7 @@ type publicationFixture struct {
 	created  int
 	onWrite  func(releaseRequest) error
 	patch    func(context.Context) error
+	onRead   func(endpoint string)
 	writes   []releaseRequest
 	reads    []string
 }
@@ -135,7 +136,11 @@ func (f *publicationFixture) run(action string) error {
 	r := newTestReader(f.api)
 	r.read = func(ctx context.Context, endpoint string, paginate bool, accept string) ([]byte, error) {
 		f.reads = append(f.reads, endpoint)
-		return f.api.read(ctx, endpoint, paginate, accept)
+		body, err := f.api.read(ctx, endpoint, paginate, accept)
+		if f.onRead != nil {
+			f.onRead(endpoint)
+		}
+		return body, err
 	}
 	return runPublication(f.api.t.Context(), []string{action, strings.TrimPrefix(f.tag, "v"), testCommit, f.dir},
 		io.Discard, r, f.call)
@@ -160,7 +165,9 @@ func TestDraftRelease(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := publicationWorld(t, tc.tag, true)
 			if tc.state == "draft" {
-				f.list(map[string]any{"id": 26, "tag_name": tc.tag, "draft": true})
+				interrupted := map[string]any{"id": 26, "tag_name": tc.tag, "draft": true}
+				f.list(interrupted)
+				f.api.responses[repoPrefix+"releases/26"] = interrupted
 			}
 			if strings.HasPrefix(tc.state, "published") {
 				f.readback["draft"] = false
@@ -464,6 +471,97 @@ func TestPublishWithDifferentReleaseID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// After a timed-out PATCH, a replacement or second draft means the original
+// is no longer the sole candidate, so a retry could publish the wrong
+// release. The command stops and says how to reconcile.
+func TestPublishTimeoutWithOtherDraft(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		listed func(draft, other map[string]any) []any
+	}{
+		{name: "replacement draft", listed: func(_, other map[string]any) []any { return []any{other} }},
+		{name: "second draft", listed: func(draft, other map[string]any) []any { return []any{draft, other} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := publicationWorld(t, "v2026.12.1", true)
+				other := maps.Clone(f.readback)
+				other["id"] = 43
+				f.list(f.readback)
+				f.patch = func(ctx context.Context) error {
+					f.list(tc.listed(f.readback, other)...)
+					<-ctx.Done()
+					return ghExit("signal: killed")
+				}
+
+				hint := "rerun `scripts/katl-release publish 2026.12.1 " + testCommit + " " + f.dir + "` to reconcile"
+				requireReleaseError(t, f.run("publish"), hint)
+				if len(f.writes) != 1 {
+					t.Fatalf("writes = %v, want a single PATCH", f.writes)
+				}
+			})
+		})
+	}
+}
+
+// A rerun after publication removes leftover drafts of the same tag, but
+// only those that are still drafts of that tag when read by ID.
+func TestPublishRemovesLeftoverDrafts(t *testing.T) {
+	for _, tc := range []struct {
+		name, byID, wantErr string
+		wantDelete          bool
+	}{
+		{name: "leftover draft", byID: "draft", wantDelete: true},
+		{name: "published since listing", byID: "published"},
+		{name: "invalid ID", byID: "zero", wantErr: "GitHub returned release ID 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := publicationWorld(t, "v2026.12.1", true)
+			draft := f.readback
+			published := maps.Clone(draft)
+			published["id"], published["draft"] = 43, false
+			f.list(published, draft)
+			f.api.responses[repoPrefix+"releases/43"] = published
+			switch tc.byID {
+			case "published":
+				changed := maps.Clone(draft)
+				changed["draft"] = false
+				f.api.responses[repoPrefix+"releases/42"] = changed
+			case "zero":
+				f.api.responses[repoPrefix+"releases/42"] = map[string]any{"tag_name": f.tag, "draft": true}
+			}
+
+			requireReleaseError(t, f.run("publish"), tc.wantErr)
+			var want []releaseRequest
+			if tc.wantDelete {
+				want = []releaseRequest{{method: "DELETE", endpoint: repoPrefix + "releases/42", fields: map[string]string{}}}
+			}
+			if !slices.EqualFunc(f.writes, want, func(a, b releaseRequest) bool { return a.method == b.method && a.endpoint == b.endpoint }) {
+				t.Fatalf("writes = %v, want %v", f.writes, want)
+			}
+		})
+	}
+}
+
+// A listed draft that was published before draft could remove it is never
+// deleted. The next attempt lists it and completes as already published.
+func TestDraftKeepsReleasePublishedSinceListing(t *testing.T) {
+	f := publicationWorld(t, "v2026.12.1", false)
+	draft := maps.Clone(f.readback)
+	draft["draft"] = true
+	f.list(draft)
+	f.onRead = func(endpoint string) {
+		if endpoint == repoPrefix+"releases/42" {
+			f.list(f.readback)
+		}
+	}
+
+	requireReleaseError(t, f.run("draft"), "")
+	if len(f.writes) != 0 {
+		t.Fatalf("writes = %v, want none", f.writes)
 	}
 }
 
