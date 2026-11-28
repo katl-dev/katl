@@ -3883,7 +3883,7 @@ func parseUint32(value, name string) (uint32, error) {
 // checkBootMoveSource refuses an upgrade whose target writes boot-move
 // records that the node's current runtime, its fallback after the upgrade,
 // cannot read. A target at or after this katlctl's own release writes them;
-// a development katlctl, whose version is not a release, cannot tell and
+// a katlctl whose version is outside the release grammar cannot tell and
 // leaves the decision to the node.
 //
 // The check is client-side only: an older katlctl, or a request sent straight
