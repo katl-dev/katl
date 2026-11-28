@@ -68,7 +68,7 @@ the following fields.
 | Field | Meaning |
 | --- | --- |
 | `operationID`, `bootID` | The unique ID of the move and the kernel boot ID of the boot that began it. A subsequent boot can encounter the same move. |
-| `expectedSelectionRevision`, `desiredSelection` | The compare-and-set input and the exact `BootSelection` payload to publish. Its `revision` is one greater than the expected revision. Reconciliation can distinguish a move awaiting publication from one already published. |
+| `expectedSelectionRevision`, `desiredSelection` | The compare-and-set input and the exact `BootSelection` payload to publish. The expected revision is the published revision, or the content token while the selection is in its v1 form (see Boot move owner). The desired `revision` is one greater than the expected revision. Reconciliation can distinguish a move awaiting publication from one already published. |
 | `sourceGenerationID`, `destinationGenerationID` | The generation the operation moves from and the intended destination. An empty destination records an operation with no safe destination. |
 | `priorDefault`, `priorOneShot`, `desiredDefault`, `desiredOneShot` | Each object records the logical `generationID` and the raw systemd-boot EFI entry ID in `entry`. An empty prior entry means the variable was absent, including when firmware already consumed the one-shot before the move began. Preserve the logical prior one-shot generation in that case. An empty desired default entry uses the loader default. A cleared desired one-shot has both fields empty. |
 | `statusChanges` | An array of absolute changes with at most one per generation. Each carries `generationID`, `at`, `reason`, `commitState`, `bootState`, `healthState`, and `unavailableReason` (empty when clear). Projection uses the intent’s `operationID` as the status transition ID for each generation, so each change applies once. When the change first commits a generation, the projection uses `at` and `operationID` for its commit attribution. An empty array leaves status alone. |
@@ -146,9 +146,15 @@ lock, in this order:
 2. Durably write the intent. Before writing, the owner validates the intent
    with the v1 reader's rules and checks the status transitions and the
    bootability of every target that is not the running generation.
-3. Check the revision in `selection.json`: it must be the expected revision,
-   or the intent's desired selection already published. On a conflict the
-   move stops before it changes status, EFI or reboot eligibility.
+3. Check `selection.json`. The intent's own form decides the test, not the
+   current write form. The move is published when the file holds the desired
+   selection, as written or in its v1 form. It awaits publication when the
+   file still holds the expected selection: the expected revision for a
+   counter-form intent, or content whose token equals the expected token for
+   a token-form intent. On a conflict with a counter-form intent the move
+   stops before it changes status, EFI or reboot eligibility. A token-form
+   intent in conflict is superseded, and reconciliation retires it (see
+   below).
 4. Project `statusChanges`. A generation whose transitions already carry the
    intent's operation ID was projected by this move and is skipped.
 5. If EFI differs from the projection, or EFI cannot be read, clear
@@ -157,7 +163,8 @@ lock, in this order:
    mismatch stops the move with the intent in place.
 6. Spend reboot eligibility, if the move has any, by rewriting the same
    intent with `reboot.spent` and `desiredSelection.spentRecoveryTrialID` set.
-7. Publish `desiredSelection`, unless it is already published.
+7. Publish `desiredSelection` in the current write form, unless it is
+   already published in either form.
 8. Resolve the intent by removing it, unless the intent is a trial
    authority. Only after this step can the caller overwrite a slot or
    remove a loader entry.
@@ -167,25 +174,53 @@ on the boot that began the move, when the running generation is not the
 move's next target. A crash between the spend and the dispatch leaves zero
 reboots for that trial, and a retry never requests a second one.
 
-Admission refuses to write an intent when a recorded target other than the
-running generation, meaning the prior or desired default or one-shot, runs a
-release that cannot read boot-move records. `internal/generation` owns that
-rule: final releases and alpha, beta and rc candidates are judged by base,
-and one whose base is below 2026.11.6 is refused, so 2026.11.5 and
-2026.11.5-rc.1 are refused and 2026.11.6-rc.1 is not. Any `-dev.N` build or
-version outside the release grammar, such as `0.0.0-dev`, is a reader. A
-development stamp does not identify the code a build contains: the
-driver-qualification lane stamps from the calendar month, and the nightly
-candidate derives its stamp from the release tags reachable on the built
-branch. The rule therefore does not protect a development build made from
-code older than 2026.11.6, nor the published 2026.7.0-dev.0 to
-2026.7.0-dev.4 development releases, which predate the reader; development
-builds are unsupported outside testing. The refusal
-changes nothing and tells the operator to boot the named generation from the
-boot menu and upgrade or remove it. `katlctl node upgrade` applies the same
+The owner never refuses a move because of the releases that could read the
+selection next; it chooses the form it writes. Releases before 2026.11.6
+decode `selection.json` strictly and reject the `revision` and
+`spentRecoveryTrialID` fields, so the owner writes the v1 form, with both
+fields absent, while any generation other than the running one is both
+bootable and runs such a release. A generation is bootable when its loader
+entry is present in `/efi/loader/entries`, as written or renamed by boot
+counting. This recorded set covers the prior and desired default and
+one-shot, `previousKnownGoodGenerationID`, and anything the boot menu
+offers. It keys on the loader entry rather than on status, because slot
+invalidation projects `slotReplaced` before the move resolves but removes
+the entry only afterwards. The rule fails towards the v1 form: an unreadable
+generation record counts as an old release, and without a readable entries
+directory every record counts as bootable. The running generation is
+excluded, so the initial publication on an installation target always
+carries a revision.
+
+| Mode | `selection.json` | Revision the owner reads |
+| --- | --- | --- |
+| Reader: no other bootable generation runs an old release | The record as built | The published revision |
+| v1 form | The record without `revision` and `spentRecoveryTrialID` | The content token; no spent trial |
+
+The content token is the first eight bytes of the SHA-256 of the canonical
+JSON of the v1 form, with bit 63 set and bit 62 clear, so a token and the
+next revision after it stay distinguishable from a counter. Every publish
+changes `updatedAt`, so the token changes with each one. In the v1 form,
+at-most-one-reboot rests on the intent's durable `reboot.spent` and on
+`failedBootGenerationID` naming the running generation; the spent trial ID
+cannot survive a boot of the old release, which rewrites the file.
+
+`internal/generation` owns the reader rule: final releases and alpha, beta
+and rc candidates are judged by base, and one whose base is below 2026.11.6
+cannot read boot-move records, so 2026.11.5 and 2026.11.5-rc.1 cannot and
+2026.11.6-rc.1 can. Any `-dev.N` build or version outside the release
+grammar, such as `0.0.0-dev`, is a reader. A development stamp does not
+identify the code a build contains: the driver-qualification lane stamps
+from the calendar month, and the nightly candidate derives its stamp from
+the release tags reachable on the built branch. The rule therefore does not
+protect a development build made from code older than 2026.11.6, nor the
+published 2026.7.0-dev.0 to 2026.7.0-dev.4 development releases, which
+predate the reader; development builds are unsupported outside testing.
+`katlctl node upgrade` applies the same
 predicate before it starts, refusing a source below 2026.11.6 when the target is
-at or after its own release, but only the owner's refusal holds for an older
-`katlctl` or a request sent straight to the agent. An arm is also refused when
+at or after its own release, and prints the `katlctl node upgrade` command for
+2026.11.6. An older `katlctl`, or a request sent straight to the agent, is not
+stopped; the node then writes the v1 form, so a failed upgrade returns to the
+old release with management intact. An arm is also refused when
 the running generation is not the published default, because the fallback is
 always the published default and must complete the records a failed trial
 leaves. It succeeds only when the default has run a release with the owner,
@@ -208,7 +243,13 @@ the running generation with the activation check, which requires one of the
 four recorded targets with a matching root PARTUUID, then completes the
 intent from its first unfinished step. A conflicting selection revision, an
 unrelated running generation or a wrong root PARTUUID stops reconciliation
-without changes. With no intent, reconciliation imports a legacy trial as an
+without changes. Before that check, reconciliation retires a superseded
+token-form intent: neither published nor awaiting, it means a release without
+boot-move records booted and rewrote the selection, so that release decided
+the boot. The owner removes the intent, logs its operation ID and continues as
+if there were none. That release rewrites the content only once no trial of
+the candidate is pending, because its activation and its failure path both
+refuse a boot outside the pending target. With no intent, reconciliation imports a legacy trial as an
 in-memory trial authority (see Migration below). Generation 0 and manual selections
 have no legacy trial and import nothing.
 
@@ -223,7 +264,9 @@ health fails, reconciles unrestricted before its own decision, so the move
 completes in the same boot. Until then every move and managed reboot refuses
 with the reconcile error. When no intent remains, activation also observes the
 boot with the same rules the reader-only runtime applies, publishing only the
-booted fields, the active generation, and the booted one-shot. With an intent
+booted fields, the active generation, and the booted one-shot. Observation
+publishes through the same owner, in the same write form, and runs even when
+reconciliation failed. With an intent
 present it writes nothing to `selection.json`, and the move that resolves the
 intent publishes the booted fields instead.
 
@@ -410,7 +453,10 @@ pointer, pending health validation and a `pendingTransactionID`. It is
 imported as a trial authority. Its operation ID and trial ID are the
 `pendingTransactionID`. Its `bootID` is `legacy-import`, which is never a
 kernel boot ID, because the boot that armed the trial is unknown. The import
-observes EFI for the prior entries. An EFI read error refuses the import.
+observes EFI for the prior entries. An EFI read error refuses the import;
+nothing else does, and in particular the release of the trial's fallback
+never does. The import reads the selection through the owner's view, so in
+the v1 form it expects the content token and records no spent trial.
 
 A legacy import writes no intent and publishes nothing in this release. A
 rollback target may run the reader-only release, which refuses any intent it

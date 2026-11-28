@@ -71,9 +71,12 @@ The reboot ends with `NODE rebooted successfully; health OK`, and
 if its selected boot entry is missing for another reason, such as disk damage.
 The boot-menu recovery above still returns such a node to service by booting
 the newest configuration that has an entry; it does not repair the damage.
-## Upgrade only from 2026.11.6 or later
 
-A node must run KatlOS 2026.11.6 or later to upgrade to this release, because the previous release is the fallback if the new one fails and only 2026.11.6 and later can read the boot records this release writes. `katlctl node upgrade` refuses an earlier source with `upgrade to 2026.11.6 or later first`. Upgrade to 2026.11.6 or later, then retry. An older `katlctl`, or an upgrade submitted straight to the node, is not stopped by that check, but the node refuses the move itself and changes nothing.
+## Upgrade from 2026.11.5 or earlier through 2026.11.6
+
+A node on KatlOS 2026.11.5 or earlier upgrades in two steps. First run `katlctl node upgrade NODE --config cluster.yaml --version 2026.11.6`, then upgrade to this release. `katlctl node upgrade` refuses the direct upgrade and prints that command for the node, with the same `--config`, `--context` or `--endpoint` you used.
+
+An older `katlctl`, or an upgrade sent straight to the node, is not stopped. The node then writes its boot records in the format 2026.11.5 reads for as long as the old generation stays bootable, so a failed upgrade returns to it with management intact.
 
 An upgrade or next-boot apply that starts while the node runs a generation other than its default, for example after you chose one from the boot menu, is refused with `select the running generation first with 'katlctl node generations select <running> <node>'` unless the default generation has already run a release that owns boot state. Select the running generation, then retry.
 
@@ -86,4 +89,4 @@ An upgrade or next-boot apply that starts while the node runs a generation other
 
 ## Finishing an interrupted first trial
 
-If power is lost inside the move that fails or promotes the first trial after upgrading from an earlier release, the node keeps a boot-move record that only this release completes. If the node comes back on the old generation, boot the new generation from the boot menu to finish the move.
+If power is lost inside the move that fails or promotes the first trial after upgrading from an earlier release, the node keeps a boot-move record that only this release completes. If the node comes back on the old generation, boot the new generation from the boot menu to finish the move. If the old generation already changed its boot records, the new generation discards the outdated move record when it next boots, and the old generation's decision stands.
