@@ -45,6 +45,11 @@ const currentBootPath = "/run/katl/boot-health/current"
 
 type currentBoot struct {
 	GenerationID string `json:"generationID"`
+	// BootID binds a failure to the kernel boot that decided it.
+	BootID string `json:"bootID,omitempty"`
+	// FailedTrial names the trial this boot failed, which no later health
+	// result of the same boot may promote.
+	FailedTrial string `json:"failedTrial,omitempty"`
 }
 
 // CurrentBootGeneration returns the generation that activation recorded for
@@ -85,11 +90,11 @@ func writeCurrentBoot(root string, boot currentBoot) error {
 // active generation and bootedOneShot; firstActivation marks the first
 // activation of this boot, which replaces the active generation a previous
 // boot left. Later runs preserve this boot's live promotion.
-func observedBoot(selection BootSelectionRecord, spec GenerationSpec, generationID, commandLine string, firstActivation bool) (BootSelectionRecord, error) {
+func observedBoot(selection BootSelectionRecord, spec GenerationSpec, generationID, commandLine string, knownGood, firstActivation bool) (BootSelectionRecord, error) {
 	if err := validatePendingBootTarget(selection, generationID); err != nil {
 		return BootSelectionRecord{}, err
 	}
-	observed := inferBootedSelection(selection, spec, generationID, commandLine)
+	observed := inferBootedSelection(selection, spec, generationID, commandLine, knownGood)
 	if err := validateBootedSelection(observed, spec, generationID, commandLine); err != nil {
 		return BootSelectionRecord{}, err
 	}
@@ -194,8 +199,9 @@ func confirmedBoot(root string, selection BootSelectionRecord, generationID, com
 	}
 	publishedDefault := selection.DefaultGenerationID
 	temporary := selection.OneShot && generationID != selection.DefaultGenerationID
-	fallbackRecovery := isFallbackRecovery(selection, generationID)
-	selection = inferBootedSelection(selection, spec, generationID, commandLine)
+	recoveryBoot := isRecoveryBoot(selection, generationID, IsKnownGood(status))
+	fallbackRecovery := recoveryBoot || isFallbackRecovery(selection, generationID)
+	selection = inferBootedSelection(selection, spec, generationID, commandLine, IsKnownGood(status))
 	if err := validateBootedSelection(selection, spec, generationID, commandLine); err != nil {
 		return nil, err
 	}
@@ -236,8 +242,9 @@ func confirmedBoot(root string, selection BootSelectionRecord, generationID, com
 	selection.PendingHealthValidation = false
 	selection.PersistentDefaultPromotion = DefaultPromotionDone
 	selection.FailedBootGenerationID = ""
-	// Recovery ends only with a healthy boot of the published default.
-	selection.RecoveryRequired = selection.RecoveryRequired && generationID != publishedDefault
+	// Recovery ends with a healthy boot of the published default, or of a
+	// known-good generation booted from the menu, which becomes the default.
+	selection.RecoveryRequired = selection.RecoveryRequired && generationID != publishedDefault && !recoveryBoot
 	selection.DefaultBootEntry = nextDefaultBootEntry
 	selection.TargetBootEntry = ""
 	selection.TrialBootEntry = ""
@@ -263,7 +270,7 @@ func confirmedBoot(root string, selection BootSelectionRecord, generationID, com
 	}, nil
 }
 
-func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) BootSelectionRecord {
+func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string, knownGood bool) BootSelectionRecord {
 	cmdlineGeneration, err := SelectedGenerationFromCommandLine(commandLine)
 	if err != nil || cmdlineGeneration != generationID {
 		return selection
@@ -286,6 +293,7 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 		switch {
 		case generationID == selection.TargetBootGenerationID:
 		case isManualKnownGoodFallback(selection, generationID):
+		case isRecoveryBoot(selection, generationID, knownGood):
 		case atDefault && (selection.OneShot || selection.BootedOneShot):
 		case atDefault && generationID == strings.TrimSpace(selection.ActiveGenerationID) && generationID != bootedID:
 		case atDefault && failedID != "" && bootedID == failedID:
@@ -299,6 +307,13 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 	selection.BootedGenerationID = generationID
 	selection.BootedBootEntry = entry
 	return selection
+}
+
+// isRecoveryBoot reports a boot-menu boot of a known-good generation while
+// recovery is required, which is how an operator leaves that state.
+func isRecoveryBoot(selection BootSelectionRecord, generationID string, knownGood bool) bool {
+	return !selection.PendingHealthValidation && selection.RecoveryRequired && knownGood &&
+		generationID != "" && generationID != selection.DefaultGenerationID && selection.TargetBootGenerationID == ""
 }
 
 func isManualKnownGoodFallback(selection BootSelectionRecord, generationID string) bool {

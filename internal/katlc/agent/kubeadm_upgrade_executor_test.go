@@ -110,6 +110,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if got := efi.observed(); got.Default != "katl-gen1.conf" || got.OneShot != "" {
 		t.Fatalf("firmware boot variables = %+v, want gen1 as default without a one-shot", got)
 	}
+	armTrialAfterLivePromotion(t, root, mover, efi, "gen1")
 	if len(spec.Confexts) != 1 || spec.Confexts[0].Path != "/var/lib/katl/generations/gen1/confext" {
 		t.Fatalf("candidate confext refs = %+v", spec.Confexts)
 	}

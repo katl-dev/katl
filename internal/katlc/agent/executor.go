@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/boothealth"
+	"github.com/katl-dev/katl/internal/bootid"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
@@ -1466,11 +1467,8 @@ func removeOperationKubernetesIdentity(store operation.Store, operationID string
 }
 
 func currentBootID() string {
-	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
+	id, _ := bootid.Read("/")
+	return id
 }
 
 func executorPlan(record operation.OperationRecord) (toolPlan, error) {

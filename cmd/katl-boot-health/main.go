@@ -79,6 +79,11 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if record.ReportOnly {
+			// The deadline already failed this boot's trial; the failure stands.
+			printResult(stdout, record)
+			return fmt.Errorf("generation %s already failed its boot trial on this boot, so this health success changes nothing. The boot default is generation %s and generation %s is selected for the next boot. See 'katlctl node status <node>'", record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)
+		}
 		disarm(ctx)
 		if err := markConfigApplyBootActive(*root, selected, bootHealthClock()); err != nil {
 			return err
@@ -143,7 +148,7 @@ func resolvedWithoutReboot(record generation.BootHealthResult) error {
 	if record.RecoveryRequired {
 		return fmt.Errorf("generation %s failed boot health and no fallback could be used, so it stays the boot default and recovery is required. No automatic reboot. "+
 			"Repair the cause, then run 'katlctl node reboot <node>'; a healthy boot clears the recovery state. "+
-			"Otherwise boot another generation from the boot menu, or reinstall the node", record.GenerationID)
+			"Otherwise boot a known-good generation from the boot menu; its healthy boot makes it the default and clears the recovery state. If none boots, reinstall the node", record.GenerationID)
 	}
 	return fmt.Errorf("generation %s failed boot health and generation %s is the boot default. "+
 		"The trial's automatic reboot was already used, so no automatic reboot follows. "+

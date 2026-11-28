@@ -516,3 +516,31 @@ func TestValidateBootSelectionRejectsPaddedGenerationID(t *testing.T) {
 		t.Fatal("ReadBootSelection accepted a generation ID with leading space")
 	}
 }
+
+// Replacing the slot of a selected target leaves the running generation as the
+// only boot target, so its own boot files must be present.
+func TestInvalidateSlotNeedsRunningBootFiles(t *testing.T) {
+	root, now := managementFixture(t)
+	managedFixture(t, root, "other", "root-b", "2", now.Add(time.Hour))
+	m, efi := moverOn(t, root, "current")
+	if err := m.Select(context.Background(), SelectRequest{GenerationID: "other", OneShot: true}); err != nil {
+		t.Fatal(err)
+	}
+	uki := filepath.Join(root, "efi/EFI/katl/root-a.efi")
+	removeBootFixture(t, uki)
+	unchanged := keepsBootState(t, root, efi)
+
+	err := m.InvalidateSlot("upgrade-1", "22222222-2222-3333-4444-555555555555")
+	if err == nil || !strings.Contains(err.Error(), "running generation current") || !strings.Contains(err.Error(), "root-a.efi") {
+		t.Fatalf("replace without running UKI = %v, want refusal", err)
+	}
+	unchanged()
+
+	writeBootFixture(t, uki, []byte("restored UKI"))
+	if err := m.InvalidateSlot("upgrade-1", "22222222-2222-3333-4444-555555555555"); err != nil {
+		t.Fatalf("replace after restoring the UKI = %v", err)
+	}
+	if got := selectionOf(t, root); got.DefaultGenerationID != "current" || got.TargetBootGenerationID != "" {
+		t.Fatalf("selection after replacement = %+v", got)
+	}
+}

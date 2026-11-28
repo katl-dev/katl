@@ -91,8 +91,9 @@ next boot, and what to do next. Fix the cause, then run `katlctl node reboot`.
 If a failed trial has no usable fallback, Katl does not reboot and reports that
 recovery is required. Repair the cause and run `katlctl node reboot`; a healthy
 boot of the generation clears the state. Otherwise preserve the journal and use
-the console to boot another generation from the boot menu. If the fallback also
-failed, Katl does not reboot again. If no healthy generation remains, reinstall
+the console to boot a known-good generation from the boot menu; its healthy
+boot makes it the default and clears recovery. If the fallback also failed,
+Katl does not reboot again. If no healthy generation remains, reinstall
 the node without treating host rollback as a Kubernetes or data backup.
 
 ## Installer evidence

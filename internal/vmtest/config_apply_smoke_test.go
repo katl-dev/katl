@@ -793,7 +793,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		"extension-activation: context deadline exceeded",
 		"katl-system-extensions-activate.service: Failed with result 'exit-code'")
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
-	guest, client = runInterruptedBootMoveSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
+	guest, client = runInterruptedBootMoveSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration, stagedGeneration)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
 	return guest, nil
 }
@@ -809,17 +809,27 @@ const (
 // reboot eligibility.
 func plantedBootMoveIntent(t *testing.T, operationID, bootID string, current generation.BootSelectionRecord) []byte {
 	t.Helper()
+	return plantedBootMoveSelection(t, operationID, bootID, current, current.DefaultGenerationID, current.DefaultBootEntry)
+}
+
+// plantedBootMoveSelection returns a persisted intent that makes desiredID the
+// persistent default at the next selection revision, with the current default
+// as its prior default. It has no status changes, no one-shot and no reboot
+// eligibility.
+func plantedBootMoveSelection(t *testing.T, operationID, bootID string, current generation.BootSelectionRecord, desiredID, desiredBootEntry string) []byte {
+	t.Helper()
 	desired := current
 	desired.Revision = current.Revision + 1
-	entry := filepath.Base(current.DefaultBootEntry)
-	target := map[string]string{"generationID": current.DefaultGenerationID, "entry": entry}
+	desired.DefaultGenerationID, desired.DefaultBootEntry = desiredID, desiredBootEntry
+	prior := map[string]string{"generationID": current.DefaultGenerationID, "entry": filepath.Base(current.DefaultBootEntry)}
+	target := map[string]string{"generationID": desiredID, "entry": filepath.Base(desiredBootEntry)}
 	payload := map[string]any{
 		"operationID":               operationID,
 		"bootID":                    bootID,
 		"expectedSelectionRevision": current.Revision,
 		"sourceGenerationID":        current.DefaultGenerationID,
-		"destinationGenerationID":   current.DefaultGenerationID,
-		"priorDefault":              target,
+		"destinationGenerationID":   desiredID,
+		"priorDefault":              prior,
 		"priorOneShot":              map[string]string{"generationID": "", "entry": ""},
 		"desiredDefault":            target,
 		"desiredOneShot":            map[string]string{"generationID": "", "entry": ""},
@@ -883,17 +893,24 @@ func assertDeadmanTimerInactive(t *testing.T, ctx context.Context, guest *GuestC
 // runInterruptedBootMoveSmoke plants boot-move intents that this runtime must
 // complete, each followed by a reboot: an interrupted persistent selection on a
 // settled node, and a next-boot trial that firmware never booted.
-func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallback string) (*GuestControl, *AgentClient) {
+func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallback, desired string) (*GuestControl, *AgentClient) {
 	t.Helper()
 
-	// An interrupted persistent selection of the fallback generation.
+	// An interrupted persistent selection of another known-good generation.
+	// Firmware still boots the prior default, which is the running generation,
+	// so activation must defer the EFI write to boot health.
 	current := bootSelectionFromGuest(t, ctx, guest)
 	if current.DefaultGenerationID != fallback || current.TrialGenerationID != "" || current.TargetBootGenerationID != "" {
 		t.Fatalf("settled selection = %+v, want default %s without a one-shot", current, fallback)
 	}
+	desiredSpec, desiredStatus := generationRecordsFromGuest(t, ctx, guest, desired)
+	if !generation.IsKnownGood(desiredStatus) || desiredSpec.Boot.LoaderEntryPath == "" || desired == fallback {
+		t.Fatalf("generation %s status = %#v, want a known-good generation other than %s", desired, desiredStatus, fallback)
+	}
 	assertGuestMissing(t, ctx, guest, bootMoveIntentPath)
+	priorEntry := bootctlDefaultEntry(t, ctx, guest)
 	previousBootID := guestBootID(t, ctx, client)
-	writeGuestFile(t, ctx, guest, bootMoveIntentPath, plantedBootMoveIntent(t, "vmtest-interrupted-select", previousBootID, current), 0o600)
+	writeGuestFile(t, ctx, guest, bootMoveIntentPath, plantedBootMoveSelection(t, "vmtest-interrupted-select", previousBootID, current, desired, desiredSpec.Boot.LoaderEntryPath), 0o600)
 	if err := requestGuestReboot(ctx, guest); err != nil {
 		t.Fatalf("reboot with an interrupted selection: %v", err)
 	}
@@ -902,22 +919,38 @@ func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if err := guest.WaitBootComplete(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Activation cannot write EFI variables from its sandbox, so it either
-	// defers the move to boot health or finds EFI already matching.
-	if reconciled := activationReconciled(t, ctx, guest); reconciled != "vmtest-interrupted-select" && !strings.HasPrefix(reconciled, "deferred: ") {
-		t.Fatalf("activation reconciled = %q, want the planted operation or a deferral to boot health", reconciled)
+	if got := currentGenerationFromGuest(t, ctx, guest); got != fallback {
+		t.Fatalf("booted generation = %s, want the prior default %s", got, fallback)
+	}
+	if reconciled := activationReconciled(t, ctx, guest); !strings.HasPrefix(reconciled, "deferred:") {
+		t.Fatalf("activation reconciled = %q, want the EFI write deferred to boot health", reconciled)
 	}
 	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "boot-health-result-after-select", "systemctl", "show", "--property=Result", "--value", "katl-boot-health.service")); got != "success" {
 		t.Fatalf("katl-boot-health.service result = %q, want success", got)
 	}
 	assertGuestMissing(t, ctx, guest, bootMoveIntentPath)
 	resolved := bootSelectionFromGuest(t, ctx, guest)
-	if resolved.Revision != current.Revision+1 || resolved.DefaultGenerationID != fallback || resolved.DefaultBootEntry != current.DefaultBootEntry {
-		t.Fatalf("selection after the interrupted move = %+v, want default %s at revision %d", resolved, fallback, current.Revision+1)
+	if resolved.Revision != current.Revision+1 || resolved.DefaultGenerationID != desired || resolved.DefaultBootEntry != desiredSpec.Boot.LoaderEntryPath {
+		t.Fatalf("selection after the interrupted move = %+v, want default %s at revision %d", resolved, desired, current.Revision+1)
 	}
-	if got, want := bootctlDefaultEntry(t, ctx, guest), filepath.Base(current.DefaultBootEntry); got != want {
-		t.Fatalf("EFI default entry = %q, want fallback entry %q", got, want)
+	if got, want := bootctlDefaultEntry(t, ctx, guest), filepath.Base(desiredSpec.Boot.LoaderEntryPath); got == priorEntry || got != want {
+		t.Fatalf("EFI default entry = %q, want %q changed from the prior default %q", got, want, priorEntry)
 	}
+
+	// The next trial arms from the published default, so run it.
+	previousBootID = guestBootID(t, ctx, client)
+	if err := requestGuestReboot(ctx, guest); err != nil {
+		t.Fatalf("reboot into the selected default: %v", err)
+	}
+	_ = client.Close()
+	guest, client = reconnectGuestAfterBoot(t, ctx, node, previousBootID)
+	if err := guest.WaitBootComplete(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := currentGenerationFromGuest(t, ctx, guest); got != desired {
+		t.Fatalf("booted generation = %s, want the selected default %s", got, desired)
+	}
+	fallback = desired
 
 	// A next-boot trial that firmware does not boot.
 	const trial = "2026.06.06-vmtest-boot-move"

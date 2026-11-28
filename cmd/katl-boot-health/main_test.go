@@ -610,3 +610,32 @@ func TestRunSuccessStopsTrialDeadline(t *testing.T) {
 		})
 	}
 }
+
+// A success that arrives after the deadline failed this boot's trial is
+// reported as a failure and leaves the deadline running.
+func TestRunLateSuccessChangesNothing(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen1", now.Add(-time.Hour))
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=gen1")
+	oldOwner := newBootOwner
+	newBootOwner = func(string, string) (bootOwner, error) {
+		return fixedOwner{generation.BootHealthResult{
+			GenerationID: "gen1", Result: generation.BootHealthSuccess, ReportOnly: true, DefaultGeneration: "gen0", NextBootGeneration: "gen0",
+		}}, nil
+	}
+	t.Cleanup(func() { newBootOwner = oldOwner })
+	oldWait := waitForManagementNetwork
+	waitForManagementNetwork = func(context.Context) error { return nil }
+	t.Cleanup(func() { waitForManagementNetwork = oldWait })
+	disarmed := stubDisarm(t)
+
+	var stdout bytes.Buffer
+	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
+	if err == nil || !strings.Contains(err.Error(), "already failed its boot trial on this boot") {
+		t.Fatalf("run() error = %v, want the standing failure", err)
+	}
+	if *disarmed {
+		t.Fatal("a late success stopped the boot trial deadline")
+	}
+}

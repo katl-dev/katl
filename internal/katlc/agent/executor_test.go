@@ -258,6 +258,7 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 		t.Fatalf("mutation state = scopes %v ran %v", record.MutationScopes, record.MutatingToolRan)
 	}
 	assertBootstrapGenerationLive(t, server.Root, accepted.OperationId+"-candidate", accepted.OperationId)
+	armTrialAfterLivePromotion(t, server.Root, server.BootMover, efi, accepted.OperationId+"-candidate")
 	if got := readFirstArtifact(t, server.Store, record); strings.Contains(got, "abc.def") || !strings.Contains(got, "Bearer [REDACTED]") {
 		t.Fatalf("artifact was not redacted: %q", got)
 	}

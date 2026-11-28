@@ -2376,6 +2376,7 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if nextBase.CurrentRecord.GenerationID != "generation-live" || nextFile.Content == nil || !strings.Contains(*nextFile.Content, "net.ipv4.ip_forward = 1") {
 		t.Fatalf("next config apply base = generation %q manifest %#v", nextBase.CurrentRecord.GenerationID, nextBase.CurrentManifest.Node.HostConfiguration)
 	}
+	armTrialAfterLivePromotion(t, server.Root, server.BootMover, server.efi, "generation-live")
 }
 
 func TestConfigApplyBaseLoadsRetainedEndpointAdvertiser(t *testing.T) {

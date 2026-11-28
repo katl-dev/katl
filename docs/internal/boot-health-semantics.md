@@ -379,7 +379,9 @@ and the node's boot-state owner refuses to write a move whose recorded target
 runs a runtime that cannot read it. A trial armed while the running generation
 is not the published default is refused unless the default generation has run a
 release with the owner, which it records as a marker file under
-`/var/lib/katl/boot/owners/` at activation. The fallback is always the
+`/var/lib/katl/boot/owners/` when the owner publishes that default. The default
+gets a marker when it is the running generation, or boots the same runtime
+artifact as the running generation, as a live promotion does. The fallback is always the
 published default, and a fallback that has not run the owner would not complete
 the records a failed trial leaves.
 
@@ -482,7 +484,8 @@ Katl does not automatically reboot in these cases:
 
 `recoveryRequired` is cleared only by a later healthy boot of the published
 default, such as after the operator repairs the cause and runs
-`katlctl node reboot <node>`. Until then node operations such as apply and
+`katlctl node reboot <node>`, or of a known-good generation chosen from the
+boot menu, which becomes the default. Until then node operations such as apply and
 upgrade are refused with that step. The operator can instead boot another
 generation from the boot menu or reinstall the node. Katl does not use
 `FailureAction=reboot`, an unbounded service restart, or a hardware watchdog for

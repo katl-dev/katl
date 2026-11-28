@@ -81,7 +81,7 @@ An upgrade or next-boot apply that starts while the node runs a generation other
 
 - A failed first boot no longer marks the node recovery-required. The generation stays pending and unknown, no reboot follows, and apply stays refused until a boot of it is healthy. Fix the cause and run `katlctl node reboot`.
 - Only a boot trial reboots the node after a boot health failure. A failed boot of the default, a boot-menu generation, or a manual selection reports the failure and changes nothing. `katl-boot-recovery.service` names the running generation, the default, the next boot, and the next action in its journal.
-- A failed trial with no usable fallback stays on the failed generation, reports that recovery is required, and does not reboot. A healthy boot of that generation clears the state.
+- A failed trial with no usable fallback stays on the failed generation, reports that recovery is required, and does not reboot. A healthy boot of that generation, or of a known-good generation chosen from the boot menu, clears the state; the generation that booted becomes the default.
 - `katl-boot-deadman.timer` is active only during a boot trial.
 
 ## Finishing an interrupted first trial

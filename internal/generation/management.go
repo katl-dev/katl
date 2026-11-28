@@ -147,8 +147,8 @@ func manualBootEligibility(result bootability, status GenerationStatus) error {
 // selectedBoot builds a manual selection. Both modes arm the one-shot; a
 // persistent selection also becomes the default.
 func selectedBoot(root string, selection BootSelectionRecord, request SelectRequest) (*bootMoveRequest, error) {
-	if selection.PendingHealthValidation || selection.RecoveryRequired {
-		return nil, fmt.Errorf("finish the pending boot or recover boot health before selecting a generation")
+	if err := unsettledBoot(selection, "selecting a generation"); err != nil {
+		return nil, err
 	}
 	spec, status, err := ReadGeneration(root, request.GenerationID)
 	if errors.Is(err, os.ErrNotExist) {
@@ -258,6 +258,11 @@ func invalidatedSlot(root string, selection BootSelectionRecord, authority *boot
 		}
 		if !IsKnownGood(state) {
 			return nil, nil, fmt.Errorf("running generation %s is not a safe boot default", running)
+		}
+		// The running generation becomes the only boot target, so its own boot
+		// files must be present; its root is the running root.
+		if err := checkBootFiles(root, spec).problem(); err != nil {
+			return nil, nil, fmt.Errorf("cannot replace selected slot: running generation %s %w. Restore its boot artifacts before retrying", running, err)
 		}
 		next.DefaultGenerationID = running
 		next.DefaultBootEntry = spec.Boot.LoaderEntryPath

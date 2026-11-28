@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootid"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
@@ -88,11 +89,7 @@ type TrialClock interface {
 type SystemTrialClock struct{}
 
 func (SystemTrialClock) BootID() (string, error) {
-	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err != nil {
-		return "", fmt.Errorf("read boot id: %w", err)
-	}
-	return strings.TrimSpace(string(data)), nil
+	return bootid.Read("/")
 }
 
 func (SystemTrialClock) Now() time.Time { return time.Now().UTC() }

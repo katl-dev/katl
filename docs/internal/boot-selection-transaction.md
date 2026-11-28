@@ -181,8 +181,11 @@ at or after its own release, but only the owner's refusal holds for an older
 the running generation is not the published default, because the fallback is
 always the published default and must complete the records a failed trial
 leaves. It succeeds only when the default has run a release with the owner,
-which activation records as a marker file at
-`/var/lib/katl/boot/owners/<generation ID>`.
+which the owner records as a marker file at
+`/var/lib/katl/boot/owners/<generation ID>` when it publishes that default. The
+default has a marker when it is the running generation, or boots the same runtime
+artifact (`Root.RuntimeArtifactSHA256`) as the running generation, as a live
+promotion does.
 
 The projection depends on the boot. On the boot that began the move, it is
 the desired default and the desired one-shot. Once that boot has ended, the
@@ -323,9 +326,11 @@ also publishes the running generation as the booted and active generation.
 
 When recovery is required the owner publishes the running generation, with
 `recoveryRequired`, an empty destination, and no reboot. A later healthy boot
-of the published default clears `recoveryRequired` in the `ConfirmBoot` move,
-and every other mutation stays refused until then, with that step in the
-message. An indeterminate check keeps the trial pending. Boot health that fails
+of the published default clears `recoveryRequired` in the `ConfirmBoot` move. So
+does a healthy boot of a known-good generation chosen from the boot menu, not a
+selected target: it is accepted, becomes the default, and clears
+`recoveryRequired`. Every other mutation stays refused until then, with that step
+in the message. An indeterminate check keeps the trial pending. Boot health that fails
 with no bound trial, including the first boot after install, is report-only and
 sets no `recoveryRequired`.
 

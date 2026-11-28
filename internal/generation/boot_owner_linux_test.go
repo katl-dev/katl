@@ -464,3 +464,70 @@ func testActivateDefersEFIWrites(t *testing.T, interrupt func(*BootMover) error)
 		t.Fatalf("selection %#v, EFI %#v; want the completed move projected", got, w.efi.entries)
 	}
 }
+
+// While recovery is required, booting a known-good generation from the boot
+// menu is accepted, and its healthy boot makes it the default.
+func TestRecoveryBootFromMenu(t *testing.T) {
+	w := newMoveWorld(t)
+	armTrial(t, w, "apply-7", "gen2")
+	activate(t, w, "b-2", "gen2")
+	if err := os.Remove(rootedPathUnchecked(w.root, "/efi/EFI/Linux/katl-gen1.efi")); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := w.mover(nil).FailTrial(trialDeadlineReason); err != nil || !result.RecoveryRequired {
+		t.Fatalf("FailTrial() = %#v, %v; want recovery required", result, err)
+	}
+
+	activate(t, w, "b-3", "gen3")
+	if _, err := w.mover(nil).ConfirmBoot("boot health passed"); err != nil {
+		t.Fatalf("ConfirmBoot() of a menu boot error = %v", err)
+	}
+	got := w.selection()
+	if got.RecoveryRequired || got.DefaultGenerationID != "gen3" || got.BootedGenerationID != "gen3" {
+		t.Fatalf("selection after a menu boot of gen3 = %#v, want gen3 default without recovery", got)
+	}
+	if w.efi.entries.Default != "katl-gen3.conf" {
+		t.Fatalf("EFI default = %q, want gen3", w.efi.entries.Default)
+	}
+}
+
+// A health success that lands after the deadline failed the trial on the same
+// boot reports and changes nothing; the failure stands.
+func TestConfirmBootAfterSameBootFailure(t *testing.T) {
+	w := newMoveWorld(t)
+	armTrial(t, w, "apply-7", "gen2")
+	activate(t, w, "b-2", "gen2")
+	if result, err := w.mover(nil).FailTrial(trialDeadlineReason); err != nil || !result.RebootRequested {
+		t.Fatalf("FailTrial() = %#v, %v; want the trial's reboot", result, err)
+	}
+	// A repeat activation on the same boot must not forget the failure.
+	if _, _, err := w.mover(nil).Activate("gen2"); err != nil {
+		t.Fatalf("repeat Activate() error = %v", err)
+	}
+	before, efi := bootStateFiles(t, w.root), w.efi.entries
+
+	result, err := w.mover(nil).ConfirmBoot("boot health passed")
+	if err != nil {
+		t.Fatalf("ConfirmBoot() error = %v", err)
+	}
+	if result.Promoted || !result.ReportOnly {
+		t.Fatalf("ConfirmBoot() = %#v, want a report-only result", result)
+	}
+	assertBootStateUnchanged(t, w, before, efi)
+}
+
+// The config-apply smoke sequence: a live apply promotes a generation on the
+// running runtime, then a next-boot apply arms a trial without a reboot in
+// between. The live-promoted default is the trial's fallback.
+func TestArmTrialAfterLivePromotion(t *testing.T) {
+	w := newMoveWorld(t)
+	if err := w.mover(nil).PromoteLive(LivePromotionRequest{GenerationID: "gen3", OperationID: "apply-6", Reason: "validated live"}); err != nil {
+		t.Fatal(err)
+	}
+
+	armTrial(t, w, "apply-7", "gen2")
+
+	if got := w.selection(); got.DefaultGenerationID != "gen3" || got.PreviousKnownGoodGenerationID != "gen3" || got.TrialGenerationID != "gen2" {
+		t.Fatalf("selection = %#v, want a trial of gen2 falling back to the live-promoted gen3", got)
+	}
+}

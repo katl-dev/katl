@@ -66,8 +66,16 @@ and rollback rather than introducing a separate mutable policy store.
 
 Manual one-shot selection carries durable intent through health validation without
 promoting the booted generation to the persistent default. The intent survives
-health replay until the default boots again. EFI updates follow intent publication;
-failed updates compensate firmware before restoring the previous intent.
+health replay until the default boots again. Every boot-target write goes through
+one owner, `generation.BootMover`, which records a durable intent at
+`/var/lib/katl/boot/move-intent.json` before it changes the selection,
+generation status, or EFI variables. A later call completes an interrupted move;
+nothing restores or compensates. Activation runs the owner in restricted mode:
+it defers EFI writes, full bootability checks, and a trial's reboot to
+`katl-boot-health.service` and `katl-boot-recovery.service`, and starts
+`katl-boot-deadman.timer` only for a bound trial. Only
+`katl-boot-recovery.service` and `katl-boot-deadman.service`, both
+`SuccessAction=reboot`, may spend a trial's one reboot.
 
 Before an OS transfer overwrites the inactive slot, generation management removes
 its loader entries and records their unavailable status. Replacing a staged target

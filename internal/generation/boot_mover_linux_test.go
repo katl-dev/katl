@@ -737,7 +737,17 @@ func TestBootMoveAdmission(t *testing.T) {
 		armAndBootCandidate(w)
 		request := armRequest(w)
 		request.OperationID, request.ExpectedRevision = "apply-8", 5
-		assertMoveRefused(t, w, request, "a boot trial of generation gen2 is pending; run 'katlctl node reboot <node>'")
+		// On the candidate's boot a reboot would end the trial.
+		assertMoveRefused(t, w, request, "generation gen2 is in its boot trial and boot health has not decided it; wait for 'katlctl node status <node>'")
+	})
+	t.Run("move during armed trial", func(t *testing.T) {
+		w := newMoveWorld(t)
+		if _, err := w.mover(nil).move(armRequest(w)); err != nil {
+			t.Fatal(err)
+		}
+		request := armRequest(w)
+		request.OperationID, request.ExpectedRevision = "apply-8", 5
+		assertMoveRefused(t, w, request, "a boot trial of generation gen2 is pending; run 'katlctl node reboot <node>' to try it")
 	})
 	t.Run("fail on issuing boot", func(t *testing.T) {
 		w := newMoveWorld(t)
