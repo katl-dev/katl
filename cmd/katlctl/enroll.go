@@ -29,9 +29,11 @@ type contextSaveOptions struct {
 	replacementNode []string
 	selectedNodes   []string
 	endpoints       map[string]inventory.HostPort
-	observeStatus   func(context.Context, string, inventory.HostPort) (*agentapi.NodeStatus, error)
-	timeout         time.Duration
-	output          string
+	// endpointSource is where endpoints came from.
+	endpointSource managementAddress
+	observeStatus  func(context.Context, string, inventory.HostPort) (*agentapi.NodeStatus, error)
+	timeout        time.Duration
+	output         string
 }
 
 type contextSaveNodeReport struct {
@@ -247,13 +249,16 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, rerun string) 
 	if err != nil {
 		return workstation.Config{}, contextSaveReport{}, err
 	}
-	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, func(err error) error {
-		return fmt.Errorf("%w; check the address and node reachability, then rerun %s",
-			managementReadError("the node answers with the configured management credentials", err), rerun)
+	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, func(check managementCheck, err error) error {
+		check.claim, check.rerun = "the node answers with the configured management credentials", rerun
+		return managementReadError(check, err)
 	})
 }
 
-func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials, confirmationError func(error) error) (workstation.Config, contextSaveReport, error) {
+// prepareContextWithCredentials observes every selected node. confirmationError
+// explains a failed observation; the check it receives names the node's
+// address and where that address came from.
+func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials, confirmationError func(managementCheck, error) error) (workstation.Config, contextSaveReport, error) {
 	// Observe the configured endpoints without compiling host payloads or
 	// acquiring artifacts. Their target release is not known until this probe.
 	inv, err := readManagementInventory(opts.configInput)
@@ -332,10 +337,11 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		case overridden && !configured.IsZero() && !configured.Equal(endpoint):
 			hint = "; " + movedHint(node.Name, configured, opts.configInput)
 		}
-		if managementVerificationTimedOut(err) {
-			err = fmt.Errorf("timed out after %s: %w; try to increase --timeout", opts.timeout, err)
+		check := managementCheck{address: addressSaved, endpoint: endpoint, timeout: opts.timeout}
+		if overridden && opts.endpointSource == addressSupplied {
+			check.address = addressSupplied
 		}
-		return fmt.Errorf("verify node %s management endpoint %s: %w%s", node.Name, endpoint, confirmationError(err), hint)
+		return fmt.Errorf("verify node %s management endpoint %s: %w%s", node.Name, endpoint, confirmationError(check, err), hint)
 	}
 
 	observeStatus := opts.observeStatus
@@ -443,8 +449,12 @@ func contextEndpointStatus(ctx context.Context, endpoint inventory.HostPort) (*a
 
 // addressHintApplies reports a failure for which a stale-address hint is worth
 // offering; it does not establish that the node is unreachable, which
-// transport.ClassifyManagementEvidence owns.
+// transport.ClassifyManagementEvidence owns. A node that presented another
+// authority's certificate answered at its address, so no address hint helps.
 func addressHintApplies(err error) bool {
+	if transport.ClassifyManagementEvidence(err, nil, nil) == transport.ManagementAuthorityMismatch {
+		return false
+	}
 	return managementVerificationTimedOut(err) || grpcstatus.Code(err) == codes.Unavailable
 }
 
@@ -572,11 +582,11 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 		if path := strings.TrimSpace(opts.contextPath); path != "" {
 			rerun += " --context-file " + shellQuote(path)
 		}
-		if managementVerificationTimedOut(err) {
-			err = fmt.Errorf("%w; try to increase --timeout", err)
+		check := managementCheck{
+			claim:   "the node answers at the proposed address with the saved management credentials",
+			address: addressSupplied, endpoint: endpoint, rerun: rerun, timeout: opts.timeout,
 		}
-		return fmt.Errorf("verify proposed address %s: %w; check the address and node reachability, then rerun %s", endpoint,
-			managementReadError("the node answers at the proposed address with the saved management credentials", err), rerun)
+		return fmt.Errorf("verify proposed address %s: %w", endpoint, managementReadError(check, err))
 	}
 	if err := verifyPlannedStatus(target, status); err != nil {
 		return fmt.Errorf("verify proposed address %s: %w", endpoint, err)

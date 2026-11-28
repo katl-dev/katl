@@ -467,7 +467,7 @@ func TestEnableMTLSPreflightChangesNothing(t *testing.T) {
 		fault        func(*trialNode)
 		want, refuse []string
 	}{
-		"unreachable":       {fault: func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() }, want: []string{"cp-2 at", "could not confirm the node uses trusted-network management: the node did not answer; retry once 'katlctl node status' shows it up", "check the management address and node reachability"}, refuse: []string{"may still trust"}},
+		"unreachable":       {fault: func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() }, want: []string{"cp-2 at", "could not confirm the node uses trusted-network management: the node did not answer", "retry once 'katlctl node status' shows it up"}, refuse: []string{"may still trust", "reachability"}},
 		"older node":        {fault: func(n *trialNode) { n.legacy = true }, want: []string{"cp-2: the installed KatlOS release cannot move management trust", "upgrade the node with `katlctl node upgrade`, then rerun"}},
 		"missing node time": {fault: func(n *trialNode) { n.omitNodeTime = true }, want: []string{"management status did not report a valid node time", "upgrade the node with `katlctl node upgrade`, then rerun"}},
 		"clock behind":      {fault: func(n *trialNode) { n.clockOffset = -6 * time.Minute }, want: []string{"cp-2's clock is 6m0s behind", "NTP"}},
@@ -623,7 +623,7 @@ func TestEnableMTLSRefusesUnclassifiedTransport(t *testing.T) {
 	}
 
 	_, _, err = world.enable()
-	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust its previous management authority") || !strings.Contains(err.Error(), "check the management address and node reachability") {
+	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust its previous management authority") || !strings.Contains(err.Error(), "check the address and node reachability") {
 		t.Fatalf("enable-mtls = %v, want transport classification guidance", err)
 	}
 	if strings.Contains(err.Error(), "different management authority") || strings.Contains(err.Error(), "node name") {
@@ -1223,14 +1223,16 @@ func TestContextVerificationHandshakeFailure(t *testing.T) {
 				node := world.nodes[0]
 				var handshakeError string
 				// An HTTP answer is not evidence of another authority, so
-				// only an untrusted certificate names one.
-				trustClause := "the node may still trust"
-				unsafeText := []string{"managementAuthentication: trusted-network", "restore the installed authority"}
+				// only an untrusted certificate names one and its remedy.
+				// That node answered at its address, so it gets no address
+				// advice or rerun.
+				trustClause, next := "the node may still trust", "restore the installed authority"
+				unsafeText := []string{"managementAuthentication: trusted-network", "reachability", "rerun"}
 				switch failure {
 				case "HTTP response":
 					handshakeError = "first record does not look like a TLS handshake"
-					unsafeText = append(unsafeText, trustClause)
-					trustClause = ""
+					unsafeText = []string{"managementAuthentication: trusted-network", trustClause, next}
+					trustClause, next = "", "check the address and node reachability, then rerun katlctl context"
 					dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 						return node.dialWithOptions(ctx, endpoint, grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 							client, server := net.Pipe()
@@ -1269,7 +1271,7 @@ func TestContextVerificationHandshakeFailure(t *testing.T) {
 					if err == nil {
 						t.Fatalf("%s accepted the endpoint", args[1])
 					}
-					for _, want := range []string{handshakeError, "could not confirm", trustClause, "rerun katlctl context " + args[1]} {
+					for _, want := range []string{handshakeError, "could not confirm", trustClause, next} {
 						if !strings.Contains(err.Error(), want) {
 							t.Errorf("%s error = %v, missing %q", args[1], err, want)
 						}

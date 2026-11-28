@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func foreignNodeCredentials(t *testing.T, name string) managementidentity.NodeCr
 // connection observed: a node that took no connection did not answer, and a
 // trust clause appears only for typed evidence of another authority.
 func TestContextVerificationExplainsEvidence(t *testing.T) {
-	const notAnswered = "the node did not answer; retry once 'katlctl node status' shows it up"
+	const notAnswered = "the node did not answer"
 	tests := map[string]struct {
 		mutualTLS bool
 		timeout   bool
@@ -182,29 +183,8 @@ func TestContextVerificationExplainsEvidence(t *testing.T) {
 	}
 }
 
-// cluster apply refreshes its view of the nodes through the same context check.
-func TestClusterApplyExplainsStoppedNode(t *testing.T) {
-	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
-		node := world.nodes[0]
-		node.mu.Lock()
-		node.server.Stop()
-		node.mu.Unlock()
-
-		err := run(t.Context(), []string{"cluster", "apply", "--config", world.configPath}, io.Discard, io.Discard)
-
-		if err == nil || !strings.Contains(err.Error(), "the node did not answer; retry once 'katlctl node status' shows it up") {
-			t.Fatalf("cluster apply error = %v, want it to say the node did not answer", err)
-		}
-		for _, refuse := range []string{"may still trust", "management authority"} {
-			if strings.Contains(err.Error(), refuse) {
-				t.Errorf("cluster apply error = %v, contains %q", err, refuse)
-			}
-		}
-	})
-}
-
 func TestManagementFailureText(t *testing.T) {
-	const check = "the node answers"
+	check := managementCheck{claim: "the node answers"}
 	failures := map[string]error{
 		"nil":          nil,
 		"status":       grpcstatus.Error(codes.Unavailable, "connection error"),
@@ -246,7 +226,7 @@ func TestManagementFailureText(t *testing.T) {
 
 	t.Run("read of an unreachable node", func(t *testing.T) {
 		got := managementReadError(check, unreachable).Error()
-		want := "could not confirm the node answers: the node did not answer; retry once 'katlctl node status' shows it up: " + unreachable.Error()
+		want := "could not confirm the node answers: the node did not answer: " + unreachable.Error()
 		if got != want {
 			t.Errorf("error = %q, want %q", got, want)
 		}
@@ -274,4 +254,119 @@ func TestManagementFailureText(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A failed check advises from its evidence and from where its address came
+// from. A node status check uses the saved address, so it can only help when
+// the failing check used that address too; a node that answered with another
+// authority's certificate needs the authority remedy, not address advice.
+func TestManagementFailureAdvice(t *testing.T) {
+	const (
+		statusAdvice  = "'katlctl node status' shows it up"
+		addressAdvice = "is the node's management address"
+		remedy        = "katlctl management identity recover"
+	)
+	stopped := func(_ *testing.T, n *trialNode) {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		n.server.Stop()
+	}
+	refused := func(_ *testing.T, n *trialNode) {
+		dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+			return n.dialWithOptions(ctx, endpoint, grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+			}))
+		}
+	}
+	foreign := func(t *testing.T, n *trialNode) {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		n.staged = foreignNodeCredentials(t, n.name)
+		n.rebindLocked()
+	}
+	save := func(w enableMTLSWorld) []string {
+		return []string{"context", "save", "--config", w.configPath, "--timeout", "1s"}
+	}
+	rebind := func(enableMTLSWorld) []string {
+		return []string{"context", "rebind", "--node", "cp-1", "--endpoint", "192.0.2.11:9999", "--timeout", "1s"}
+	}
+	apply := func(w enableMTLSWorld) []string {
+		return []string{"cluster", "apply", "--config", w.configPath}
+	}
+	applyAt := func(w enableMTLSWorld) []string {
+		return []string{"cluster", "apply", "--config", w.configPath, "--node", "cp-1", "--endpoint", "192.0.2.11"}
+	}
+	enable := func(w enableMTLSWorld) []string {
+		return []string{"management", "enable-mtls", "--config", w.configPath, "--timeout", "3s"}
+	}
+	notBooting := []string{"may still be booting", "increase --timeout"}
+	noAddressAdvice := []string{"reachability", "check the address", "check that", "node status"}
+
+	tests := map[string]struct {
+		mutualTLS bool
+		// trial leaves the node on an mTLS trial this workstation cannot
+		// reach, so a rerun finds a node that presents another authority.
+		trial   bool
+		fault   func(*testing.T, *trialNode)
+		command func(enableMTLSWorld) []string
+		want    []string
+		refuse  []string
+	}{
+		"saved address, node down":        {fault: stopped, command: save, want: []string{statusAdvice}, refuse: []string{"check that"}},
+		"saved address, port closed":      {fault: refused, command: save, want: []string{statusAdvice}, refuse: append([]string{"check that"}, notBooting...)},
+		"apply at saved address, down":    {fault: stopped, command: apply, want: []string{statusAdvice}, refuse: []string{"check that"}},
+		"supplied address, node down":     {fault: stopped, command: rebind, want: []string{addressAdvice}, refuse: []string{"node status"}},
+		"supplied address, port closed":   {fault: refused, command: rebind, want: []string{addressAdvice}, refuse: append([]string{"node status"}, notBooting...)},
+		"apply at supplied address, down": {fault: stopped, command: applyAt, want: []string{addressAdvice}, refuse: []string{"node status"}},
+		"apply at supplied address, closed": {
+			fault: refused, command: applyAt, want: []string{addressAdvice}, refuse: append([]string{"node status"}, notBooting...),
+		},
+		"context save, other authority":     {mutualTLS: true, fault: foreign, command: save, want: []string{remedy}, refuse: noAddressAdvice},
+		"context rebind, other authority":   {mutualTLS: true, fault: foreign, command: rebind, want: []string{remedy}, refuse: noAddressAdvice},
+		"cluster apply, other authority":    {mutualTLS: true, fault: foreign, command: apply, want: []string{remedy}, refuse: noAddressAdvice},
+		"apply at address, other authority": {mutualTLS: true, fault: foreign, command: applyAt, want: []string{remedy}, refuse: noAddressAdvice},
+		"enable-mtls preflight, other authority": {
+			trial: true, fault: func(*testing.T, *trialNode) {}, command: enable, want: []string{"no node was changed", remedy}, refuse: noAddressAdvice,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+				node := world.nodes[0]
+				if test.mutualTLS {
+					if _, stderr, err := world.enable(); err != nil {
+						t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+					}
+				}
+				if test.trial {
+					node.unreachableTrial = true
+					if _, _, err := world.enable(); err == nil {
+						t.Fatal("enable-mtls reached a trial it should not reach")
+					}
+					node.rebinds.Wait()
+				}
+				if err := run(t.Context(), []string{"context", "save", "--config", world.configPath}, io.Discard, io.Discard); err != nil && !test.trial {
+					t.Fatal(err)
+				}
+				dialKatlcAgent = node.dial
+				test.fault(t, node)
+
+				err := run(t.Context(), test.command(world), io.Discard, io.Discard)
+
+				if err == nil {
+					t.Fatal("command succeeded against a failing node")
+				}
+				for _, want := range test.want {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error lacks %q: %v", want, err)
+					}
+				}
+				for _, refuse := range test.refuse {
+					if strings.Contains(err.Error(), refuse) {
+						t.Errorf("error contains %q: %v", refuse, err)
+					}
+				}
+			})
+		})
+	}
 }
