@@ -108,22 +108,7 @@ func TestRuntimeBuildExcludesVMTestSupportByDefault(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin: %v", err)
 	}
-	writeFakeExecutable(t, bin, "go", `
-if [[ "${1:-}" == run && "${3:-}" == export-kernel-inputs ]]; then
-  exit 0
-fi
-output=""
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == "-o" ]]; then
-    output="$2"
-    break
-  fi
-  shift
-done
-[[ -n "$output" ]] || exit 2
-mkdir -p "$(dirname "$output")"
-printf 'fake binary\n' > "$output"
-`)
+	stubMkosiGoBuilds(t, bin)
 
 	production := filepath.Join(t.TempDir(), "production")
 	runRuntimeBuild(t, repo, bin, production, "0")

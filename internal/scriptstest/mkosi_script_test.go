@@ -58,7 +58,7 @@ fi
 [[ "$1" == run ]]
 touch "$KATL_FAKE_BUILDER_CALLED"
 `)
-	stubMkosiGoBuilds(t, bin, unrelated, included, guest)
+	stubMkosiGoBuilds(t, bin, included, guest)
 	seedRuntimeCacheOutputs(t, buildDir)
 	env := append(
 		os.Environ(),
@@ -263,8 +263,11 @@ func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
 	}
 }
 
-// Cache tests need deterministic binary bytes to hash. Compile packages whose
-// sources they change and leave go run (including kernel preparation) intact.
+// stubMkosiGoBuilds replaces incidental Go compilation in scripts/mkosi and
+// its build hooks. Cache tests need deterministic binary bytes to hash, so
+// packages whose sources they change are compiled for real. The hook's kernel
+// input export needs a real builder root and is skipped; every other go run,
+// including scripts/mkosi kernel preparation, stays intact.
 func stubMkosiGoBuilds(t *testing.T, bin string, realPackages ...string) {
 	t.Helper()
 	goPath := workstationtest.Tool(t, "go")
@@ -272,6 +275,9 @@ func stubMkosiGoBuilds(t *testing.T, bin string, realPackages ...string) {
 		t.Fatal(err)
 	}
 	writeFakeExecutable(t, bin, "go", `
+if [[ "$1" == run && "${3:-}" == export-kernel-inputs ]]; then
+  exit 0
+fi
 package="${@: -1}"
 if [[ "$1" != build || " `+strings.Join(realPackages, " ")+` " == *" $package "* ]]; then
   exec "${0%/*}/real-go" "$@"
@@ -281,6 +287,7 @@ if [[ "${KATL_FAKE_GO_BUILD_FAIL:-0}" == 1 ]]; then
 fi
 while [[ $# -gt 1 ]]; do
   if [[ "$1" == -o ]]; then
+    mkdir -p "$(dirname "$2")"
     printf '%s\n' "$package" > "$2"
     exit 0
   fi
@@ -476,6 +483,7 @@ func TestMkosiWorktreeBuildsShareCacheSafely(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	stubMkosiGoBuilds(t, bin)
 	writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
   [[ "$2" != inspect ]] || echo fake-image
   exit 0
@@ -552,6 +560,7 @@ func TestMkosiBuildRequiresEveryArtifact(t *testing.T) {
 			if err := os.MkdirAll(bin, 0o755); err != nil {
 				t.Fatal(err)
 			}
+			stubMkosiGoBuilds(t, bin)
 			// The builder reports success without restoring the artifact.
 			writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
   [[ "$2" != inspect ]] || echo fake-image
