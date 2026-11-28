@@ -134,9 +134,8 @@ jobs:
     permissions:
       actions: read
       attestations: write
-      contents: write
+      contents: read
       id-token: write
-      packages: write
 
   qualify:
     name: Record qualification

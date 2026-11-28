@@ -18,12 +18,16 @@ The `release/<digit>...` namespace is reserved for release branches, so use
 
 ## Check the prerequisites
 
-1. No workflow starts on a tag push.
+1. Release tags come only from the Release action, and no workflow at a commit
+   made since the removal of the tag trigger starts on a tag push. Extending
+   the tag creation ruleset to every release tag is tracked in
+   [#1021](https://github.com/katl-dev/katl/issues/1021).
 2. The `Release` workflow's publish job uses the `katl-release` App token to
-   create final tags, and the cut workflow uses it to create release branches.
-   Applying `final release tags` before the publish job uses the App makes
-   every final publication fail. Applying `release branch creation` before the
-   cut workflow uses the App makes release branches impossible to create.
+   create final tags, and the **Cut release** workflow uses it to create
+   release branches. Applying `final release tags` before the publish job uses
+   the App makes every final publication fail. Applying
+   `release branch creation` before the **Cut release** workflow creates
+   branches with the App makes release branches impossible to create.
 
 In the repository's environment settings, check both environments:
 

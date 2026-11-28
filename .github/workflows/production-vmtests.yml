@@ -32,9 +32,6 @@ on:
         description: Artifact containing the bundle to qualify
         type: string
         required: true
-      run-id:
-        type: number
-        default: 0
       previous-tag:
         type: string
         required: true

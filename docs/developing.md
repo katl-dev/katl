@@ -433,26 +433,27 @@ distinction between product contracts and build evidence.
 
 ## GitHub release artifacts
 
-Follow [Release KatlOS](development/releases.md) to prepare a version, download
-and verify a candidate, and monitor automated qualification and publication.
+Follow [Release KatlOS](development/releases.md) to release a version through
+the **Release** workflow and verify what it published.
 See the [katl-release reference](../cmd/katl-release/README.md) for the
 commands used in that procedure.
 
-`.github/workflows/release-artifacts.yml` builds Katl artifacts for pushed `v*`
-KatlOS tags. It can also be dispatched manually with an explicit version for
-build verification. Manual runs
-retain one GitHub Actions artifact; tag runs additionally publish those exact
-files as assets on the matching GitHub Release.
+`.github/workflows/release-artifacts.yml` builds and qualifies Katl artifacts
+and publishes nothing. It runs nightly on `main` at a development version, a
+manual dispatch builds an explicit version for build verification, and the
+**Release** workflow (`release.yml`) calls it to build a candidate or final
+version. Release tags come only from the Release action, and neither workflow
+starts on a tag push at a commit made since the removal of the tag trigger.
 
-Tag runs publish only after **Release validation** passes baseline tests, the
+Release publishes only after **Release validation** passes baseline tests, the
 regression suite for both flavours, and lifecycle tests against the final
 production bundle. Publication uses those qualified artifacts without rebuilding.
 See the [release procedure](development/releases.md) for candidate inspection,
 qualification coverage, and failure handling. Final bundles remain available as
 Actions artifacts for 30 days.
 
-Manual builds qualify the source and packaging but produce separate bytes from
-a later tag run. Rebuilding or rerunning producer jobs invalidates the recorded
+Nightly and manual builds qualify the source and packaging but produce separate bytes from
+a later Release build. Rebuilding or rerunning producer jobs invalidates the recorded
 artifact qualification and requires repeating the affected journeys.
 
 Pushes to `main` run only the fast checks and the Nix build. Release-artifact

@@ -931,7 +931,7 @@ jq -c --arg fields "$fields" 'with_entries(select(.key as $k | $fields | split("
 }
 
 // Version-less series branches get fast checks on push and build no release
-// artifacts, which are produced for tags and manual dispatch only.
+// artifacts, which only the nightly schedule, a dispatch and Release calls produce.
 func TestReleaseBranchTriggers(t *testing.T) {
 	push := func(file string) (branches, tags, ignored []string) {
 		t.Helper()
@@ -972,12 +972,9 @@ func TestReleaseBranchTriggers(t *testing.T) {
 	}
 
 	ci, _, _ := push("ci.yml")
-	artifactBranches, artifactTags, artifactIgnored := push("release-artifacts.yml")
-	if len(artifactBranches) != 0 || len(artifactIgnored) != 0 {
-		t.Errorf("release artifacts branches = %v, branches-ignore = %v, want neither: only tags and dispatch carry a version", artifactBranches, artifactIgnored)
-	}
-	if !slices.Equal(artifactTags, []string{"v*"}) {
-		t.Errorf("release artifacts tags = %v, want [v*]", artifactTags)
+	branches, tags, ignored := push("release-artifacts.yml")
+	if artifacts, _ := readWorkflow(t, "release-artifacts.yml"); len(branches)+len(tags)+len(ignored) != 0 || tagStarts(t, artifacts.On) {
+		t.Error("release artifacts starts on a push; only the schedule, a dispatch and Release calls carry a version")
 	}
 	for _, tc := range []struct {
 		branch string
@@ -992,9 +989,6 @@ func TestReleaseBranchTriggers(t *testing.T) {
 	} {
 		if got := triggers(ci, tc.branch); got != tc.ci {
 			t.Errorf("push to %s triggers CI = %v, want %v", tc.branch, got, tc.ci)
-		}
-		if triggers(artifactBranches, tc.branch) {
-			t.Errorf("push to %s triggers release artifacts", tc.branch)
 		}
 	}
 }

@@ -44,8 +44,6 @@ any restored cache and runs `katl-release cut-branch VERSION REVISION` with a
 full commit SHA. It uses the same checks, creates the branch if needed, and
 reads it back. Use `cut` to start the workflow from a checkout.
 
-## Prepare and retrieve a candidate
-
 ### `journeys`
 
 ```sh
@@ -59,22 +57,11 @@ names at the release branch's cut commit
 outstanding journey PRs in the release and open gap fixes, and exits nonzero
 if work remains or GitHub cannot complete the check.
 
-### `prepare`
+## Retrieve a bundle
 
-```sh
-scripts/katl-release prepare --ref "$QUALIFIED_SHA" 2026.12.0-rc.1
-```
-
-Set `QUALIFIED_SHA` to the full commit SHA you intend to release. `--ref`
-also accepts a published source ref and defaults to `main`. Pass the
-embedded version without a `v` prefix, using `YYYY.M.PATCH` or one of the
-`-dev.N`, `-alpha.N`, `-beta.N`, or `-rc.N` suffixes.
-
-Preparation is read-only. It resolves the source on GitHub, refuses an
-existing tag, and prints the tag and source SHA, the release guidance path,
-and the Git or Jujutsu commands to create and push the tag after source
-review. If the tag already exists, inspect its Actions run or choose a new
-version.
+Releases before the **Release** workflow were built by tag pushes of
+`release-artifacts.yml`, which no longer starts on a tag. `inspect` and
+`download` also read those runs.
 
 ### `inspect`
 
@@ -181,8 +168,8 @@ both flavours with the default Kubernetes payload. Then `vm_flavours` is `[]`
 and `evidence` is the merge-queue run URL. If the VM evidence is missing,
 incomplete, or unreadable, `decision` is `run`, `vm_flavours` is
 `["standard","lts"]`, `evidence` is an empty string, and stderr says why no
-VM evidence was taken. Production VM qualification remains part of the tag
-workflow.
+VM evidence was taken. No workflow calls the command yet; every Release build
+repeats the VM regression lanes.
 
 ### `record`
 
@@ -272,12 +259,10 @@ release, run the credential check with the release branch as `--ref`.
 gh workflow run release-credential.yml --ref release/2026.12.1
 ```
 
-Approve the `release` deployment and confirm that the run succeeds. The check
-verifies that the App slug gives the bot identity that `release-artifacts.yml`
-skips on tag pushes. The run summary reports that the App minted a token scoped to
-this repository with Contents write permission and that the token read
-repository contents. Final publication is the first step that exercises the
-App's final-tag ruleset bypass.
+Approve the `release` deployment and confirm that the run succeeds. The run
+summary reports that the App minted a token scoped to this repository with
+Contents write permission and that the token read repository contents. Final
+publication is the first step that exercises the App's final-tag ruleset bypass.
 
 ## Publish a qualified bundle
 

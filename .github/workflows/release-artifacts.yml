@@ -5,25 +5,19 @@ on:
   # above the pinned upgrade baseline. It restores shared build caches and publishes nothing.
   schedule:
     - cron: '17 3 * * *'
-  push:
-    tags:
-      - "v*"
+  # A dispatch builds and qualifies a version of the dispatched ref, such as a
+  # base-upgrade branch, and publishes nothing.
   workflow_dispatch:
     inputs:
       version:
-        description: CalVer embedded in artifacts (for example 2026.7.0-beta.1); ignored when requalifying
+        description: CalVer embedded in artifacts (for example 2026.7.0-beta.1)
         type: string
         required: true
-      qualify_run:
-        description: Requalify a final bundle from this run without rebuilding; zero builds a new candidate
-        type: number
-        default: 0
   # The release workflow calls this one to build and qualify a version it
-  # derived, and publishes the result itself; the called path publishes
-  # nothing. The publication jobs below stay skipped, but GitHub checks every
-  # job's permissions against the caller's grant before any job starts, so the
-  # calling job grants actions: read, attestations: write, contents: write,
-  # id-token: write and packages: write. The called path builds github.sha:
+  # derived, and publishes the result itself; this workflow publishes nothing.
+  # GitHub checks every job's permissions against the caller's grant before any
+  # job starts, so the calling job grants actions: read, attestations: write,
+  # contents: read and id-token: write. The called path builds github.sha:
   # commit must name it, and the caller tags that commit. It uploads its
   # artifacts under the katl- prefix into the caller's run, so the caller makes
   # one call per run and uploads no artifact of its own under that prefix.
@@ -52,69 +46,16 @@ permissions:
   contents: read
   actions: read
 
-# Tag pushes queue per ref so publication is serialised and never
-# cancelled. Dispatches publish nothing, so each gets its own group. The
-# nightly candidate has a group of its own, so it never queues behind or ahead
-# of a tag or a dispatch. A called run's github context is its caller's, so it
+# Nightly candidates share one group, so two nights never overlap, and each
+# dispatch gets its own. A called run's github context is its caller's, so it
 # takes a group of its own per run, suffixed so it never equals the caller's.
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.commit && github.run_id || github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}${{ inputs.commit && '-call' || '' }}
+  group: ${{ github.workflow }}-${{ inputs.commit && github.run_id || github.event_name == 'schedule' && 'nightly' || github.run_id }}${{ inputs.commit && '-call' || '' }}
   cancel-in-progress: false
 
 jobs:
-  existing-bundle:
-    name: Resolve Existing Bundle
-    if: inputs.qualify_run > 0
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      artifact: ${{ steps.bundle.outputs.artifact }}
-      previous-tag: ${{ steps.bundle.outputs.previous-tag }}
-    steps:
-      - uses: actions/checkout@v7
-        timeout-minutes: 5
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        timeout-minutes: 2
-      - id: bundle
-        timeout-minutes: 5
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.qualify_run }}
-        run: |
-          source="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
-          [[ "$(jq -r .path <<< "$source")" == .github/workflows/release-artifacts.yml ]]
-          commit="$(jq -r .head_sha <<< "$source")"
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
-          bundles="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" | jq -s '[.[].artifacts[] | select(.name | test("^katl-[0-9]{4}[.][0-9]+[.][0-9]+(-[a-z0-9.-]+)?-x86_64-[0-9a-f]{12}$"))]')"
-          jq -e 'length == 1 and .[0].expired == false' <<< "$bundles"
-          artifact="$(jq -r '.[0].name' <<< "$bundles")"
-          [[ "$artifact" == *-"${commit:0:12}" ]]
-          tag="$(scripts/katl-release-artifacts upgrade-baseline "$commit")"
-          {
-            echo "artifact=$artifact"
-            echo "previous-tag=$tag"
-          } >> "$GITHUB_OUTPUT"
-
-  requalify:
-    name: Requalify production VM (${{ matrix.flavour }})
-    needs: existing-bundle
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-    uses: ./.github/workflows/production-vmtests.yml
-    with:
-      flavour: ${{ matrix.flavour }}
-      artifact-name: ${{ needs.existing-bundle.outputs.artifact }}
-      run-id: ${{ fromJSON(inputs.qualify_run || '0') }}
-      previous-tag: ${{ needs.existing-bundle.outputs.previous-tag }}
-
   unit:
     name: Release unit tests
-    if: inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -132,14 +73,9 @@ jobs:
         timeout-minutes: 10
         run: nix develop --option builders '' .#ci -c scripts/check-fast
 
-  # Release candidates and final releases repeat the regression lanes only when
-  # CI has not already passed them at this commit (scripts/katl-release
-  # regression). Production build and qualification always run, because the
-  # bytes embed the release version.
   vmtests:
     name: VM regression
     needs: identity
-    if: inputs.qualify_run == 0 && needs.identity.outputs.regression != 'skip'
     strategy:
       fail-fast: false
       matrix:
@@ -150,15 +86,12 @@ jobs:
 
   identity:
     name: Resolve Release Identity
-    # The Release workflow already built, qualified and published tags made by the release App.
-    if: inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
       version: ${{ steps.release.outputs.version }}
       previous-tag: ${{ steps.previous.outputs.tag }}
-      regression: ${{ steps.regression.outputs.decision }}
       retention-days: ${{ github.event_name == 'schedule' && 7 || 30 }}
 
     steps:
@@ -199,28 +132,12 @@ jobs:
           if [[ "$event" == schedule ]]; then
             MANUAL_VERSION="$(scripts/katl-release-artifacts dev-version "$PREVIOUS_TAG")"
           fi
-          version="$(scripts/katl-release-artifacts version \
-            "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
-            "$MANUAL_VERSION")"
+          version="$(scripts/katl-release-artifacts version "$event" "$MANUAL_VERSION")"
           artifact_name="$(scripts/katl-release bundle-name "$version" "$GITHUB_SHA")"
           {
             echo "version=$version"
             echo "artifact-name=$artifact_name"
           } >> "$GITHUB_OUTPUT"
-      # Only tag pushes may skip the regression lanes; scheduled, dispatched and
-      # called runs always repeat them, because an empty decision runs the lanes.
-      - name: Decide VM regression
-        timeout-minutes: 2
-        if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
-        id: regression
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          regression="$(scripts/katl-release regression "$VERSION" "$GITHUB_SHA")"
-          decision="$(jq -er '.decision | select(. == "skip" or . == "run")' <<< "$regression")"
-          echo "decision=$decision" >> "$GITHUB_OUTPUT"
-          echo "VM regression: $decision" >> "$GITHUB_STEP_SUMMARY"
 
   build-standard:
     name: Build standard
@@ -269,7 +186,7 @@ jobs:
         timeout-minutes: 21
       - name: Attest staged release artifacts
         timeout-minutes: 2
-        if: github.event_name == 'push' && github.ref_type == 'tag' || inputs.commit
+        if: inputs.commit
         uses: actions/attest@v4
         with:
           subject-path: dist/*
@@ -344,7 +261,7 @@ jobs:
 
   release-validation:
     name: Release validation
-    if: always() && inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
+    if: always()
     needs:
       - identity
       - bundle
@@ -362,7 +279,6 @@ jobs:
         timeout-minutes: 2
         env:
           UNIT: ${{ needs.unit.result }}
-          REGRESSION_DECISION: ${{ needs.identity.outputs.regression }}
           BUNDLE: ${{ needs.bundle.result }}
           REGRESSION: ${{ needs.vmtests.result }}
           PRODUCTION_STANDARD: ${{ needs.qualification-standard.result }}
@@ -371,126 +287,7 @@ jobs:
         run: |
           test "$UNIT" = success
           test "$BUNDLE" = success
-          # The lanes may be skipped only when the identity job established that CI passed them.
-          if [[ "$REGRESSION_DECISION" == skip ]]; then
-            test "$REGRESSION" = skipped
-          else
-            test "$REGRESSION" = success
-          fi
+          test "$REGRESSION" = success
           test "$PRODUCTION_STANDARD" = success
           test "$PRODUCTION_LTS" = success
           test "$QUALIFIED" = success
-
-  publish-extensions:
-    name: Publish Kernel Extensions
-    if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
-    needs: [build-standard, build-lts, release-validation]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      actions: read
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v7
-        timeout-minutes: 2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        timeout-minutes: 2
-      - name: Download extension publication inputs
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUNDLES: katl-extension-bundles-*-${{ github.sha }}
-        run: .github/scripts/hosted-download artifacts "$BUNDLES" artifacts
-      - name: Authenticate publication
-        timeout-minutes: 2
-        env:
-          GHCR_TOKEN: ${{ github.token }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-      - name: Publish the verified OCI bytes without rebuilding
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          for flavour in standard lts; do
-            directory="artifacts/katl-extension-bundles-${flavour}-${GITHUB_SHA}"
-            go run ./cmd/katl-mkosi-artifacts publish-release-extensions \
-              "$directory/release-extensions.json" "$directory/extension-bundles"
-          done
-
-  publish-tag:
-    name: Publish GitHub Release Assets
-    if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
-    needs:
-      - identity
-      - bundle
-      - publish-extensions
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    permissions:
-      actions: read
-      attestations: read
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v7
-        timeout-minutes: 2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        timeout-minutes: 2
-      - name: Download verified artifacts
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUNDLE: ${{ needs.identity.outputs.artifact-name }}
-        run: .github/scripts/hosted-download artifact "$BUNDLE" dist
-
-      - name: Verify release checksums and provenance
-        timeout-minutes: 3
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/katl-release verify "$GITHUB_REF_NAME" "$GITHUB_SHA" dist
-
-      - name: Publish tag release
-        timeout-minutes: 7
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KATL_DOWNLOAD_ATTEMPT_SECONDS: 60
-          KATL_VERSION: ${{ needs.identity.outputs.version }}
-        run: |
-          prerelease=()
-          if [[ "$KATL_VERSION" == *-* ]]; then
-            prerelease+=(--prerelease)
-          fi
-          if gh release view --repo "$GITHUB_REPOSITORY" \
-            "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            # A re-run rebuilds the tag, and a rebuild is not byte-identical, so
-            # replacing the assets of a published release would silently change
-            # what operators already downloaded. Only a release whose checksums
-            # match, or one an earlier failed upload left without any, is
-            # completed in place.
-            published_sums=$(gh release view --repo "$GITHUB_REPOSITORY" \
-              "$GITHUB_REF_NAME" --json assets \
-              --jq '[.assets[].name] | index("SHA256SUMS") != null')
-            if [[ "$published_sums" == true ]]; then
-              sums_dir=$(mktemp -d)
-              .github/scripts/hosted-download release "$GITHUB_REF_NAME" "$sums_dir" SHA256SUMS
-              if ! cmp -s "$sums_dir/SHA256SUMS" dist/SHA256SUMS; then
-                echo "::error::release $GITHUB_REF_NAME is already published with different contents; cut a new tag instead of re-running this one"
-                exit 1
-              fi
-            fi
-            gh release upload --repo "$GITHUB_REPOSITORY" \
-              --clobber "$GITHUB_REF_NAME" dist/*
-          else
-            gh release create --repo "$GITHUB_REPOSITORY" \
-              "$GITHUB_REF_NAME" \
-              --verify-tag \
-              --title "KatlOS $KATL_VERSION" \
-              --notes-file dist/RELEASE_NOTES.md \
-              "${prerelease[@]}" \
-              dist/*
-          fi

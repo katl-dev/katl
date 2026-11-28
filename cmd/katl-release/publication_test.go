@@ -626,3 +626,34 @@ func TestVerifyReleaseSource(t *testing.T) {
 		})
 	}
 }
+
+// Draft creates a release only after it has read the release list. A
+// transient read error is retried and a persistent or permanent one stops the
+// draft, because a release list that could not be read is not one without
+// the tag.
+func TestDraftRequiresReleaseList(t *testing.T) {
+	badGateway := &apiError{status: 502, text: "gh: Bad Gateway (HTTP 502)"}
+	for _, tc := range []struct {
+		name     string
+		failures []error
+		wantErr  string
+	}{
+		{name: "transient", failures: []error{badGateway}},
+		{name: "persistent", failures: slices.Repeat([]error{badGateway}, readAttempts*publicationAttempts), wantErr: "HTTP 502"},
+		{name: "permanent", failures: []error{&apiError{status: 403, text: "gh: Resource not accessible by integration (HTTP 403)"}}, wantErr: "HTTP 403"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := publicationWorld(t, "v2026.12.1", true)
+			f.api.failures = map[string][]error{releaseListEndpoint: tc.failures}
+
+			err := f.run("draft")
+
+			requireReleaseError(t, err, tc.wantErr)
+			if created := slices.ContainsFunc(f.writes, func(req releaseRequest) bool {
+				return req.method == "POST" && req.endpoint == repoPrefix+"releases"
+			}); created != (tc.wantErr == "") {
+				t.Errorf("draft created a release = %v after release list failures %v", created, tc.failures)
+			}
+		})
+	}
+}

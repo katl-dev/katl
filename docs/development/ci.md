@@ -287,12 +287,13 @@ setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 
 ## Release promotion
 
-**Katl Release Artifacts** runs on tags, manual dispatch, and nightly on main.
-The nightly candidate is a dispatch-equivalent run at the development version
-above the pinned upgrade baseline, with its own concurrency group so it never
-queues behind or cancels a tag run or a dispatch. It publishes nothing and
-retains its bundle, assembled artifacts, and extension publication inputs for
-7 days. Other release runs retain those artifacts for 30 days. A failed night
+**Katl Release Artifacts** runs on manual dispatch, nightly on main, and when
+the **Release** workflow calls it; it publishes nothing. The nightly candidate
+is a dispatch-equivalent run at the development version above the pinned
+upgrade baseline, with its own concurrency group so it never queues behind or
+cancels a dispatch or a called run. It retains its bundle, assembled
+artifacts, and extension publication inputs for 7 days. Other release runs
+retain those artifacts for 30 days. A failed night
 appears as a failed scheduled run.
 Merged revisions are qualified by the merge queue without a second release-artifact build.
 Release builds use the same notes renderer as CI. A candidate and its final
@@ -302,7 +303,6 @@ Each flavour is built by the reusable `production-build.yml` workflow (inputs `f
 when that build ends. Releases run regression for both flavours and qualify each
 flavour's assembled production bytes,
 including installation, reboot, upgrade from the pinned baseline, and rollback
-without a test agent. Requalifying an existing bundle reads the baseline pin
-from the commit that produced the bundle. Release validation checks that the
+without a test agent. Release validation checks that the
 publication bundle contains the same qualified bytes. See
 [Release KatlOS](releases.md) for the promotion contract and failure handling.
