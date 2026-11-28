@@ -22,10 +22,9 @@ flavour_suffix=""
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 if [[ -n "${KATL_MKOSI_CACHE_DIR:-}" ]]; then
     cache_dir="$KATL_MKOSI_CACHE_DIR$flavour_suffix"
-elif [[ -n "${KATL_MKOSI_BUILD_DIR:-}" ]]; then
-    cache_dir="$build_dir/cache$flavour_suffix"
 else
-    cache_dir="$shared_repo_root/_build/mkosi/cache$flavour_suffix"
+    # Older wrappers recursively chmod the legacy cache directory after a build.
+    cache_dir="${KATL_MKOSI_BUILD_DIR:-$shared_repo_root/_build/mkosi}/image-cache$flavour_suffix"
 fi
 if [[ -n "${KATL_MKOSI_PACKAGE_CACHE_DIR:-}" ]]; then
     package_cache_dir="$KATL_MKOSI_PACKAGE_CACHE_DIR"
@@ -891,7 +890,6 @@ set +e
     mkdir -p \
         /work/_build/go-mod \
         /work/_build/go-cache \
-        /work/_build/mkosi/cache \
         /work/_build/mkosi/package-cache \
         /work/_build/mkosi/builddir \
         /work/_build/mkosi/workspace \
@@ -1141,7 +1139,8 @@ set +e
         fi
     fi
     if [[ -d _build/mkosi ]]; then
-        find /mkosi-cache /mkosi-package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+        # mkosi copies the cached tree with its directory modes intact.
+        find /mkosi-package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
         # A previous build may own artifacts in a different user namespace.
         # Only normalize outputs written by this invocation.
         # scripts/build-kubernetes-sysext builds into a private output
