@@ -63,6 +63,8 @@ Commands:
   ci-cost [--since DATE] [--workflow NAME] [--limit N] [--json]
                     report runner-minutes, runner wait, merge-group wall time
                     and failing jobs across completed workflow runs
+  parents [--days N]
+                    report parent issue reconciliation and the issue burndown
   cache [--apply] [--json]
                     report Actions cache usage against .github/cache-policy.json;
                     --apply deletes the entries outside policy
@@ -162,6 +164,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if command == "review" {
 		return reviewCommand(ctx, args, stdout)
+	}
+	if command == "parents" {
+		return parentsCommand(ctx, flags, args, stdout)
 	}
 	if command == "cache" {
 		return cacheCommand(ctx, flags, args, stdout, stderr)
