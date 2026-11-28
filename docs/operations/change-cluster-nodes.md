@@ -199,7 +199,7 @@ its [networkd host configuration](../reference/cluster-config.md#networkd-files)
 | `management.address` | This field changes where `katlctl` connects and, on a control plane, where its Kubernetes API proxy listens for `katlctl`. When `kubernetes.address` is set, nodes never use the management address to reach each other; without it, the management address is also the node's Kubernetes address. After the node answers at the new address, update `cluster.yaml` and, if you use a saved context, [rebind it](access.md#use-a-context) with `katlctl context rebind`. On a control plane, `cluster apply` then moves the proxy listener by restarting the proxy; if your kubeconfig used the proxy at the old address, run `katlctl cluster kubeconfig ./kubeconfig --config ./cluster.yaml --force` to select a reachable endpoint again. |
 | `kubernetes.address` | If you explicitly specify the same Kubernetes IP the node already uses, `cluster apply` reports the node unchanged. To change the IP, [wipe the node](#wipe-one-node), reinstall it with the new address, and join it with `katlctl node join`. |
 | A worker's IP address | Change its network configuration and `management.address` together, then [re-address the worker](#re-address-a-worker). |
-| A control plane's IP address | Not supported. Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address. |
+| A control plane's IP address | Not supported. Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address. `cluster apply --endpoint` refuses the move after the node answers as itself at the address given; at an address where it does not answer, apply asks you to check the address instead. |
 
 When `spec.controlPlaneEndpoint` is unset, Katl derives the Kubernetes API
 endpoint from the first control plane's `management.address` and port 6443, so
@@ -213,9 +213,13 @@ before bootstrap.
 Use this procedure to move a joined worker to a new IP address. The worker keeps
 its name, machine, enrollment, and Kubernetes membership. Katl applies the
 change at the next boot and never reloads the network while connected, so the
-management connection is not cut partway through an operation. Katl refuses the
-change for a control plane, and for a worker whose `nodes[].kubernetes.address`
-fixes kubelet's node IP. For those nodes, [wipe the node](#wipe-one-node),
+management connection is not cut partway through an operation. `cluster apply`
+first checks that the node answers as itself at the address passed with
+`--endpoint`; only then does it compare that address's host with
+`management.address`, so a mistyped address is never treated as a move and a
+different port on the same host is not one. After the node answers, Katl
+refuses the move for a control plane, and for a worker whose
+`nodes[].kubernetes.address` fixes kubelet's node IP. For those nodes, [wipe the node](#wipe-one-node),
 reinstall it with the new addresses, and join it.
 
 In this example `worker-1` moves from `192.0.2.31` to `192.0.2.41`.
@@ -309,6 +313,7 @@ If the reboot does not finish at the new address, use the following table:
 | The address `answered as a different KatlOS installation` | Another host uses the new address. Choose a free address and repeat from step 1. |
 | The node answers at neither address | Boot health checks only that the required links come online and are routable, so a wrong but routable address can pass and become the default. Use the [local console](access.md#use-the-local-console) to inspect the network, or [select the previous generation](../concepts/generations.md#staged-trial-and-committed) from the boot menu. Then correct `cluster.yaml`. |
 | Apply warns that a node `is configured at management.address` another address than the saved context reaches it at | The configuration names a new address, but the saved context still reaches the node at its previous one. To complete a planned move, stage it and reboot with `--endpoint` at the previous address (steps 2 and 3). If the node already answers at the new address, run `katlctl context rebind` (step 4). The warning does not appear after you rebind without editing `cluster.yaml`. If it appears because `cluster.yaml` still names an address the node has since left, update `management.address` and run `katlctl context save --config ./cluster.yaml`. |
+| Apply with `--endpoint` says the node `did not answer at` the address, or that the endpoint `answered as node` another node or as `a different KatlOS installation` | The address passed with `--endpoint` does not reach this node, so apply decided nothing about a move and changed no node. Check the address and rerun. If the error says the saved context and `cluster.yaml` both place the node at its configured address, omit `--endpoint`. |
 | A rerun of step 2 or 3 cannot reach the worker at the address passed with `--endpoint` | The worker may already answer at its new `management.address`, for example after an interrupted reboot wait. The error names that address. Continue with step 4. |
 
 ## Refused transitions

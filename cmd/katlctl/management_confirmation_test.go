@@ -587,3 +587,86 @@ func TestContextSaveAdviceAtConfigAddress(t *testing.T) {
 		})
 	}
 }
+
+// A certificate from another authority leaves the move undecided: cluster
+// apply --endpoint for a control plane gives the authority advice and no move
+// refusal, whether or not the endpoint is the saved one.
+func TestClusterApplyEndpointAuthorityMismatch(t *testing.T) {
+	tests := map[string]struct {
+		endpoint string
+		// configured replaces cp-1's management.address after the context
+		// is saved.
+		configured string
+		// foreign serves the endpoint from a listener with another
+		// authority; otherwise cp-1 itself is restaged with one.
+		foreign bool
+		want    []string
+	}{
+		"unverified endpoint": {
+			endpoint: "192.0.2.99",
+			foreign:  true,
+			want: []string{
+				"the endpoint at 192.0.2.99:9443 presented a certificate the configured authority did not sign",
+				"check that 192.0.2.99:9443 is the node's management address; if it is, ",
+			},
+		},
+		// Every --endpoint is unverified until #1112 binds one equal to the
+		// saved endpoint, so this keeps the address check.
+		"saved endpoint, edited address": {
+			endpoint:   "192.0.2.11",
+			configured: "192.0.2.51",
+			want: []string{
+				"the endpoint at 192.0.2.11:9443 presented a certificate the configured authority did not sign",
+				"katlctl management identity recover",
+			},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			testEnableMTLSWithVirtualTime(t, []string{"cp-1", "worker-1"}, func(t *testing.T, world enableMTLSWorld) {
+				if _, stderr, err := world.enable(); err != nil {
+					t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+				}
+				if err := run(t.Context(), []string{"context", "save", "--config", world.configPath}, io.Discard, io.Discard); err != nil {
+					t.Fatal(err)
+				}
+				if test.configured != "" {
+					config, err := os.ReadFile(world.configPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(world.configPath, []byte(strings.Replace(string(config), "address: 192.0.2.11\n", "address: "+test.configured+"\n", 1)), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				listeners := map[string]*trialNode{"192.0.2.11:9443": world.nodes[0], "192.0.2.12:9443": world.nodes[1]}
+				if test.foreign {
+					listeners[test.endpoint+":9443"] = foreignListener(t, "cp-1")
+				} else {
+					cp := world.nodes[0]
+					cp.mu.Lock()
+					cp.staged = foreignNodeCredentials(t, cp.name)
+					cp.rebindLocked()
+					cp.mu.Unlock()
+				}
+				routeManagement(listeners)
+
+				err := run(t.Context(), []string{"cluster", "apply", "--config", world.configPath, "--node", "cp-1", "--endpoint", test.endpoint}, io.Discard, io.Discard)
+
+				if err == nil {
+					t.Fatal("apply accepted an endpoint with another authority")
+				}
+				for _, want := range test.want {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error lacks %q: %v", want, err)
+					}
+				}
+				for _, refuse := range []string{"refusing to move", "node wipe", "restore management.address"} {
+					if strings.Contains(err.Error(), refuse) {
+						t.Errorf("error contains %q: %v", refuse, err)
+					}
+				}
+			})
+		})
+	}
+}
