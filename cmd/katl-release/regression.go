@@ -1,214 +1,340 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
+	"time"
 
-	"github.com/katl-dev/katl/internal/releaseversion"
+	"github.com/katl-dev/katl/internal/flavour"
+	"github.com/katl-dev/katl/internal/releasestate"
+	"github.com/katl-dev/katl/internal/runstatus"
 )
 
 const (
-	ciWorkflow      = "ci.yml"
-	releaseWorkflow = "release-artifacts.yml"
-)
-const ciWorkflowPath = ".github/workflows/ci.yml"
+	ciWorkflowPath = ".github/workflows/ci.yml"
+	mainQueue      = "gh-readonly-queue/main/"
+	fastChecksJob  = "Fast checks"
 
-var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
-// regression decides whether a release run repeats the VM regression lanes.
-// Only the rc and final versions can skip them, and only when CI has already
-// run the VM regression to success on the exact commit. Every other outcome, an
-// unreadable API included, runs them. A final version also requires a
-// successful rc release run at the same commit and fails without one. Only
-// tag pushes call it; other triggers always run the lanes.
-func regression(args []string, stdout, stderr io.Writer, call command) error {
-	if len(args) != 2 {
-		return errors.New("usage: scripts/katl-release regression VERSION COMMIT")
-	}
-	version, commit := args[0], args[1]
-	if !fullSHA.MatchString(commit) {
-		return errors.New("COMMIT must be the full source commit SHA")
-	}
-	parsed, err := validateVersion(version)
-	if err != nil {
-		return fmt.Errorf("invalid release version: %w", err)
-	}
-
-	final := parsed.IsFinal()
-	if final {
-		rc, err := candidateRun(version, commit, call)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(stderr, "Release candidate %s succeeded at %s: %s\n", rc.Tag, commit, rc.URL)
-	}
-	if !final && parsed.Stage != releaseversion.Candidate {
-		fmt.Fprintf(stderr, "%s is not a release candidate or final version; running the regression lanes.\n", version)
-		fmt.Fprintln(stdout, "run")
-		return nil
-	}
-
-	queued, err := mergedCIRun(commit, call)
-	if err != nil {
-		fmt.Fprintf(stderr, "Cannot establish that CI passed at %s (%v); running the regression lanes.\n", commit, err)
-		fmt.Fprintln(stdout, "run")
-		return nil
-	}
-	if queued == nil {
-		fmt.Fprintf(stderr, "No successful merge-queue CI run produced %s; running the regression lanes.\n", commit)
-		fmt.Fprintln(stdout, "run")
-		return nil
-	}
-	fmt.Fprintf(stderr, "CI passed at %s in %s; skipping the regression lanes.\n", commit, queued.URL)
-	fmt.Fprintln(stdout, "skip")
-	return nil
-}
-
-// candidateRun finds the successful rc tag run of the final version at the
-// commit. A final release rebuilds the bytes but must follow a candidate that
-// was built, qualified and published from the same source.
-func candidateRun(version, commit string, call command) (workflowRun, error) {
-	runs, err := workflowRuns(releaseWorkflow, commit, "push", call)
-	if err != nil {
-		return workflowRun{}, fmt.Errorf("cannot look up the release candidate of %s: %w", version, err)
-	}
-	for _, run := range runs {
-		tag, err := releaseversion.ParseTag(run.Tag)
-		if err == nil && tag.Stage == releaseversion.Candidate && tag.Base().String() == version && run.Path == workflow {
-			return run, nil
-		}
-	}
-	return workflowRun{}, fmt.Errorf("no successful release candidate run of v%[1]s-rc.N exists at %[2]s; tag a candidate at this commit, wait for the candidate run to succeed, then re-run this workflow run, or tag a new -rc.N at this commit", version, commit)
-}
-
-// mergedCIRun returns the successful merge-queue CI run that built the commit
-// as it landed on main, or nil. A merge-queue run plans no VM suite for a
-// change that selects none, such as documentation, and still succeeds, so the
-// run counts only when its jobs show both flavours ran the VM regression to
-// success on the default Kubernetes payload. Pushes and pull requests plan
-// less, and a pull request tested a different merge commit, so neither is
-// accepted.
-func mergedCIRun(commit string, call command) (*workflowRun, error) {
-	runs, err := workflowRuns(ciWorkflow, commit, "merge_group", call)
-	if err != nil {
-		return nil, err
-	}
-	var found *workflowRun
-	for _, run := range runs {
-		if run.Path == ciWorkflowPath && strings.HasPrefix(run.Tag, "gh-readonly-queue/main/") {
-			found = &run
-			break
-		}
-	}
-	if found == nil {
-		return nil, nil
-	}
-	if err := requireVMRegression(*found, call); err != nil {
-		return nil, err
-	}
-	// A group that never merged leaves a successful run for a commit that is not on main.
-	var comparison struct{ Status string }
-	if err := api(call, "compare/main..."+commit, &comparison); err != nil {
-		return nil, err
-	}
-	if comparison.Status != "identical" && comparison.Status != "behind" {
-		return nil, fmt.Errorf("%s is not reachable from main", commit)
-	}
-	return found, nil
-}
-
-const (
-	// Job names of the reusable hosted-vmtests.yml as listed under the CI run:
-	// the caller job "VM (<flavour>)", then "/", then the called job's name.
+	// The reusable workflow's job name is prefixed with its caller's job name.
 	vmJobPrefix        = "VM (%s) / "
 	vmScenarioPrefix   = "VM / "
 	kubernetesCandStep = "Resolve Kubernetes candidate"
 	kubernetesCandJob  = "images"
 )
 
-var vmFlavours = []string{"standard", "lts"}
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-type runJobs struct {
-	Total int `json:"total_count"`
-	Jobs  []struct {
-		Name       string `json:"name"`
-		Conclusion string `json:"conclusion"`
-		Steps      []struct {
-			Name       string `json:"name"`
-			Conclusion string `json:"conclusion"`
-		} `json:"steps"`
-	} `json:"jobs"`
+type regressionDecision struct {
+	Decision   string   `json:"decision"`
+	VMFlavours []string `json:"vm_flavours"`
+	Evidence   string   `json:"evidence"`
+
+	// fastChecks is the run whose Fast checks job supplied the evidence.
+	fastChecks string
+	// reason says why a run decision found no VM evidence.
+	reason string
 }
 
-// requireVMRegression fails unless every VM job of both flavours in the latest
-// attempt of the run succeeded, at least one scenario ran per flavour, and no
-// presubmit Kubernetes candidate replaced the default payload that the release
-// lanes build. A skipped, missing or unlisted job is not evidence.
-func requireVMRegression(run workflowRun, call command) error {
-	var jobs runJobs
-	endpoint := fmt.Sprintf("actions/runs/%d/jobs?filter=latest&per_page=100", run.ID)
-	if err := api(call, endpoint, &jobs); err != nil {
+func regression(ctx context.Context, args []string, stdout, stderr io.Writer, r *reader) error {
+	if len(args) != 2 {
+		return errors.New("usage: scripts/katl-release regression VERSION COMMIT")
+	}
+	version, err := validateVersion(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid release version: %w", err)
+	}
+	commit := args[1]
+	if !fullSHA.MatchString(commit) {
+		return errors.New("COMMIT must be the full source commit SHA")
+	}
+
+	decision, err := r.decideRegression(ctx, releasestate.Branch(version.Base()), commit)
+	if err != nil {
 		return err
 	}
-	if jobs.Total > len(jobs.Jobs) {
-		return fmt.Errorf("CI run %d lists %d jobs, more than one page", run.ID, jobs.Total)
+	fmt.Fprintf(stderr, "Fast checks passed in %s\n", decision.fastChecks)
+	if decision.Decision == "run" {
+		fmt.Fprintf(stderr, "Running VM regression: %s\n", decision.reason)
 	}
-	for _, flavour := range vmFlavours {
-		prefix := fmt.Sprintf(vmJobPrefix, flavour)
-		scenarios, images := 0, 0
-		for _, job := range jobs.Jobs {
-			if !strings.HasPrefix(job.Name, prefix) {
+	return json.NewEncoder(stdout).Encode(decision)
+}
+
+// decideRegression requires Fast checks independently of whether CI can also
+// supply the VM evidence. A branch run can supply Fast checks when the queue
+// run is absent, incomplete, or unreadable.
+func (r *reader) decideRegression(ctx context.Context, branch, commit string) (regressionDecision, error) {
+	// Bound both the backoff and the gh requests it runs.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	queued, queueErr := r.mergedCIRuns(ctx, commit)
+	queue := r.readCIJobs(ctx, queued, len(queued) == 1)
+	fast := queue.fastPassed
+	if fast == nil {
+		runs, branchErr := r.ciRuns(ctx, commit, "branch="+url.QueryEscape(branch), func(run workflowRun) bool {
+			return run.Tag == branch && (run.Event == "push" || run.Event == "workflow_dispatch")
+		})
+		release := r.readCIJobs(ctx, runs, false)
+		fast = release.fastPassed
+		if fast == nil {
+			// A read failure comes first: the evidence it hid could pass.
+			for _, err := range []error{queueErr, queue.err, branchErr, release.err} {
+				if err != nil {
+					return regressionDecision{}, unreadableEvidence(commit, branch, err)
+				}
+			}
+			for _, failed := range []*workflowRun{queue.fastFailed, release.fastFailed} {
+				if failed != nil {
+					return regressionDecision{}, fmt.Errorf("CI failed Fast checks at %s (%s); fix it or re-run CI, then dispatch Release again", commit, failed.URL)
+				}
+			}
+			return regressionDecision{}, fmt.Errorf("CI has not passed Fast checks at %s on %s; wait for CI, or dispatch CI on %s, then dispatch Release again", commit, branch, branch)
+		}
+	}
+
+	if queue.vmEvidence != "" {
+		return regressionDecision{Decision: "skip", VMFlavours: []string{}, Evidence: queue.vmEvidence, fastChecks: fast.URL}, nil
+	}
+	var reason string
+	switch {
+	case queueErr != nil:
+		reason = fmt.Sprintf("could not read the merge-queue CI runs: %v", queueErr)
+	case len(queued) == 0:
+		reason = "no merge-queue CI run tested this commit as it landed on main"
+	case len(queued) > 1:
+		reason = fmt.Sprintf("%d merge-queue CI runs tested this commit, so none is taken as its VM evidence", len(queued))
+	default:
+		reason = queue.vmProblem
+	}
+	return regressionDecision{Decision: "run", VMFlavours: flavour.Supported(), fastChecks: fast.URL, reason: reason}, nil
+}
+
+// unreadableEvidence tells a read that may succeed when repeated apart from
+// one that will fail the same way again.
+func unreadableEvidence(commit, branch string, err error) error {
+	if transient(err) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("could not read CI evidence at %s; dispatch Release again: %w", commit, err)
+	}
+	return fmt.Errorf("CI evidence at %s cannot be read, and reading it again will fail the same way: %w; dispatch CI on %s, then dispatch Release again, or report a katl-release defect if this persists", commit, err, branch)
+}
+
+// mergedCIRuns finds the merge-queue CI runs for commits that landed on main.
+// An ejected merge group can leave a green run for a commit that never landed.
+func (r *reader) mergedCIRuns(ctx context.Context, commit string) ([]workflowRun, error) {
+	runs, err := r.ciRuns(ctx, commit, "event=merge_group", func(run workflowRun) bool {
+		return run.Event == "merge_group" && strings.HasPrefix(run.Tag, mainQueue) && run.Tag != mainQueue
+	})
+	if err != nil || len(runs) == 0 {
+		return nil, err
+	}
+	status, err := r.compare(ctx, "main", commit)
+	if notFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case "identical", "behind":
+		return runs, nil
+	case "ahead", "diverged":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unexpected comparison status %q for main and %s", status, commit)
+	}
+}
+
+// ciRuns includes all conclusions so a failed Fast checks job can be
+// distinguished from missing or pending CI. Recheck the identity GitHub
+// returned before reading any of its jobs. A listing that is not found is
+// unreadable, not empty.
+func (r *reader) ciRuns(ctx context.Context, commit, query string, matches func(workflowRun) bool) ([]workflowRun, error) {
+	type runsPage struct {
+		Runs []workflowRun `json:"workflow_runs"`
+	}
+	endpoint := r.repo("actions/workflows/" + path.Base(ciWorkflowPath) + "/runs?head_sha=" + commit + "&" + query + "&per_page=100")
+	var runs []workflowRun
+	incomplete := false
+	err := pages(ctx, r, endpoint, func(page runsPage) {
+		incomplete = incomplete || page.Runs == nil
+		for _, run := range page.Runs {
+			if run.Commit == commit && run.Path == ciWorkflowPath && matches(run) {
+				runs = append(runs, run)
+			}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if incomplete {
+		return nil, fmt.Errorf("incomplete CI run list from %s", endpoint)
+	}
+	return runs, nil
+}
+
+type ciEvidence struct {
+	// fastPassed is a completed run whose Fast checks job succeeded,
+	// whatever the run's own conclusion.
+	fastPassed *workflowRun
+	fastFailed *workflowRun
+	vmEvidence string
+	// vmProblem says why checked runs supplied no VM evidence.
+	vmProblem string
+	err       error
+}
+
+func (r *reader) readCIJobs(ctx context.Context, runs []workflowRun, checkVM bool) ciEvidence {
+	var evidence ciEvidence
+	for _, run := range runs {
+		if run.Status != "completed" {
+			evidence.vmProblem = fmt.Sprintf("merge-queue CI run %s has not completed", run.URL)
+			continue
+		}
+		jobs, err := r.ciJobs(ctx, runstatus.Attempt{Run: run.ID, Number: run.Attempt})
+		if err == nil {
+			var fast string
+			fast, err = fastChecksConclusion(jobs)
+			switch fast {
+			case "failure", "timed_out":
+				if evidence.fastFailed == nil {
+					evidence.fastFailed = &run
+				}
+				evidence.vmProblem = fmt.Sprintf("merge-queue CI run %s failed Fast checks", run.URL)
+				continue
+			case "success":
+				evidence.fastPassed = &run
+			}
+		}
+		if err != nil {
+			if evidence.err == nil {
+				evidence.err = err
+			}
+			evidence.vmProblem = fmt.Sprintf("could not read the jobs of merge-queue CI run %s: %v", run.URL, err)
+			continue
+		}
+		if checkVM {
+			if run.Conclusion != "success" {
+				evidence.vmProblem = fmt.Sprintf("merge-queue CI run %s concluded %q", run.URL, run.Conclusion)
+			} else if err := requireVMRegression(jobs, vmJobPrefix); err != nil {
+				evidence.vmProblem = fmt.Sprintf("merge-queue CI run %s supplied no complete VM regression: %v", run.URL, err)
+			} else {
+				evidence.vmEvidence = run.URL
+			}
+		}
+		if evidence.fastPassed != nil {
+			break
+		}
+	}
+	return evidence
+}
+
+type ciJob struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Steps      []struct {
+		Name       string `json:"name"`
+		Conclusion string `json:"conclusion"`
+	} `json:"steps"`
+}
+
+// ciJobs binds the job list to the attempt in the workflow run listing.
+// Looking up "latest" separately could read a re-run that started in between.
+func (r *reader) ciJobs(ctx context.Context, attempt runstatus.Attempt) ([]ciJob, error) {
+	if attempt.Run < 1 || attempt.Number < 1 {
+		return nil, fmt.Errorf("CI run did not identify its attempt: %s", attempt)
+	}
+	type jobsPage struct {
+		Total int     `json:"total_count"`
+		Jobs  []ciJob `json:"jobs"`
+	}
+	var jobs []ciJob
+	total, incomplete := -1, false
+	err := pages(ctx, r, runstatus.AttemptEndpoint(r.repository, attempt)+"/jobs?per_page=100", func(page jobsPage) {
+		incomplete = incomplete || page.Jobs == nil || (total >= 0 && page.Total != total)
+		total = page.Total
+		jobs = append(jobs, page.Jobs...)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// A completed attempt's job list does not change between pages.
+	if incomplete || total != len(jobs) {
+		return nil, fmt.Errorf("incomplete CI job list for run attempt %s", attempt)
+	}
+	return jobs, nil
+}
+
+func fastChecksConclusion(jobs []ciJob) (string, error) {
+	var found *ciJob
+	for _, job := range jobs {
+		if job.Name != fastChecksJob {
+			continue
+		}
+		if found != nil {
+			return "", errors.New("CI listed multiple Fast checks jobs in one attempt")
+		}
+		found = &job
+	}
+	if found == nil || (found.Status != "" && found.Status != "completed") {
+		return "", nil
+	}
+	return found.Conclusion, nil
+}
+
+// requireVMRegression checks the complete job list of one attempt. Both
+// flavours must have a successful images job using the default Kubernetes
+// payload and at least one successful scenario.
+func requireVMRegression(jobs []ciJob, jobPrefix string) error {
+	for _, kernelFlavour := range flavour.Supported() {
+		prefix := fmt.Sprintf(jobPrefix, kernelFlavour)
+		seen := make(map[string]bool)
+		scenarios := 0
+		for _, job := range jobs {
+			if job.Name == "" {
+				return errors.New("CI listed a job without a name")
+			}
+			called, ok := strings.CutPrefix(job.Name, prefix)
+			if !ok {
 				continue
 			}
-			if job.Conclusion != "success" {
-				return fmt.Errorf("CI job %q concluded %q", job.Name, job.Conclusion)
+			if seen[called] {
+				return fmt.Errorf("CI listed multiple jobs named %q", job.Name)
 			}
-			called := strings.TrimPrefix(job.Name, prefix)
-			if strings.HasPrefix(called, vmScenarioPrefix) {
+			seen[called] = true
+			if job.Conclusion != "success" || (job.Status != "" && job.Status != "completed") {
+				return fmt.Errorf("CI job %q concluded %q with status %q", job.Name, job.Conclusion, job.Status)
+			}
+			if strings.HasPrefix(called, vmScenarioPrefix) && called != vmScenarioPrefix {
 				scenarios++
 			}
 			if called != kubernetesCandJob {
 				continue
 			}
-			images++
-			skipped := false
+			skipped := 0
 			for _, step := range job.Steps {
-				if step.Name == kubernetesCandStep {
-					skipped = step.Conclusion == "skipped"
-					break
+				if step.Name != kubernetesCandStep {
+					continue
 				}
+				if step.Conclusion != "skipped" {
+					return fmt.Errorf("CI job %q ran %q", job.Name, kubernetesCandStep)
+				}
+				skipped++
 			}
-			if !skipped {
-				return fmt.Errorf("CI job %q tested a Kubernetes candidate, not the default payload", job.Name)
+			if skipped != 1 {
+				return fmt.Errorf("CI job %q did not record exactly one skipped %q step", job.Name, kubernetesCandStep)
 			}
 		}
-		if scenarios == 0 || images == 0 {
-			return fmt.Errorf("CI run %d did not run the %s VM images and scenarios", run.ID, flavour)
+		if scenarios == 0 || !seen[kubernetesCandJob] {
+			return fmt.Errorf("CI did not run the %s VM images and scenarios", kernelFlavour)
 		}
 	}
 	return nil
-}
-
-// workflowRuns lists the successful runs of a workflow for one event at the
-// commit. The head_sha filter is the commit itself, so a run of another
-// revision is never returned; the checks below re-assert what is trusted.
-func workflowRuns(file, commit, event string, call command) ([]workflowRun, error) {
-	var response struct {
-		Runs []workflowRun `json:"workflow_runs"`
-	}
-	endpoint := fmt.Sprintf("actions/workflows/%s/runs?head_sha=%s&event=%s&status=success&per_page=100", url.PathEscape(file), commit, event)
-	if err := api(call, endpoint, &response); err != nil {
-		return nil, err
-	}
-	var runs []workflowRun
-	for _, run := range response.Runs {
-		if run.Commit == commit && run.Event == event && run.Status == "completed" && run.Conclusion == "success" {
-			runs = append(runs, run)
-		}
-	}
-	return runs, nil
 }

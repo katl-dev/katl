@@ -623,8 +623,9 @@ func TestReleaseRegressionFollowsDecision(t *testing.T) {
 			continue
 		}
 		decided = true
-		if step.Env["GH_TOKEN"] != "${{ github.token }}" || !strings.Contains(step.Run, `"$GITHUB_SHA"`) || !strings.Contains(step.Run, "decision=") {
-			t.Errorf("decision step must read the workflow token and judge the tagged commit: %+v", step)
+		if step.Env["GH_TOKEN"] != "${{ github.token }}" || !strings.Contains(step.Run, `"$GITHUB_SHA"`) ||
+			!strings.Contains(step.Run, `decision="$(jq -er '.decision`) || !strings.Contains(step.Run, `echo "decision=$decision" >> "$GITHUB_OUTPUT"`) {
+			t.Errorf("decision step must judge the tagged commit and export the JSON decision: %+v", step)
 		}
 		for trigger, ctx := range releaseTriggers {
 			if got, want := conditionHolds(t, step.If, ctx), strings.HasPrefix(trigger, "tag"); got != want {

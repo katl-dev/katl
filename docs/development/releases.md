@@ -66,25 +66,17 @@ A manual dispatch with `version` builds and qualifies a candidate without
 publishing. A tag still qualifies its own built bytes before promotion.
 Only a tag push can publish; a dispatch never reaches the publication jobs.
 
-The release workflow repeats the VM regression suite for a release candidate
-or final version only when CI has not already passed it at the tagged commit.
-`scripts/katl-release regression VERSION COMMIT` decides, and prints `skip`
-only when a successful `CI` run of the merge queue produced the exact commit on
-`main` and ran every VM job of both flavours to success on the default
-Kubernetes payload. A merge-queue run for a change that selects no VM suite,
-such as documentation, or that tested a presubmit Kubernetes candidate, does
-not qualify.
-Pushes, pull requests, other versions, and any lookup that fails run the suite.
-Release validation accepts skipped regression lanes only on that decision.
-Only tag pushes may skip; scheduled and dispatched runs always repeat the
-suite. Production build and qualification always run, because the bytes embed the
-version. A final version also requires a successful release run of one of its
-`-rc.N` tags at the same commit; without one the run
-fails before building, so
-tag a candidate first and tag the final version once it publishes.
-Do not re-run the whole workflow run of a published `-rc.N` tag: it fails at
-the upload guard and makes that candidate ineligible for promotion. Tag a new
-`-rc.N` at the same commit instead.
+For a tag push, `scripts/katl-release regression VERSION COMMIT` requires
+successful **Fast checks** at the tagged commit. It returns a JSON decision
+that skips the VM regression lanes only with complete merge-queue VM evidence
+for that commit on `main`. See the
+[regression command](../../cmd/katl-release/README.md#regression) for the
+evidence rules and recovery instructions.
+
+Scheduled and dispatched runs always repeat the suite. Production build and
+qualification run for every version because the bytes embed the version.
+Tag the final version at the candidate's commit after the candidate publishes.
+If you need to build the candidate again, tag a new `-rc.N` at that commit.
 
 ## Publish a security advisory
 
