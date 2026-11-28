@@ -50,7 +50,7 @@ func readKernelRecipe(repo, name string) (kernelRecipe, error) {
 	if !regexp.MustCompile("^[a-z][a-z0-9-]*$").MatchString(name) {
 		return recipe, fmt.Errorf("invalid kernel extension name %q", name)
 	}
-	data, err := os.ReadFile(filepath.Join(repo, "extensions", name, "recipe.json"))
+	data, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(extensionrelease.RecipePath(name))))
 	if err != nil {
 		return recipe, err
 	}
@@ -60,7 +60,7 @@ func readKernelRecipe(repo, name string) (kernelRecipe, error) {
 	if recipe.Version == "" {
 		return recipe, fmt.Errorf("kernel extension recipe version is required")
 	}
-	if err := extensionrelease.ValidateRepository(recipe.Repository); err != nil {
+	if recipe.Repository, err = extensionrelease.RecipeRepository(data); err != nil {
 		return recipe, err
 	}
 	if len(recipe.Sources) == 0 {
