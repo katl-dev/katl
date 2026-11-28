@@ -331,6 +331,82 @@ func TestLegacyFormMoveFaults(t *testing.T) {
 	}
 }
 
+// crashFailedTrial leaves a legacy trial's failure interrupted after it
+// projected the candidate's status.
+func crashFailedTrial(t *testing.T) *moveWorld {
+	t.Helper()
+	w := newLegacyTrialWorld(t)
+	var seen []bootMoveStep
+	if _, err := w.mover(crashAt(2, &seen)).failTrial(trialDeadlineReason); !errors.Is(err, errCrash) || seen[1] != stepStatusWritten {
+		t.Fatalf("failTrial() = %v after %v, want a crash after the status write", err, seen)
+	}
+	return w
+}
+
+// rewriteAsLegacy publishes the selection as a release without boot-move
+// records would after booting gen1: without a revision and with new content.
+func rewriteAsLegacy(t *testing.T, w *moveWorld) {
+	t.Helper()
+	selection := lowerSelection(w.selection())
+	selection.BootedGenerationID, selection.BootedBootEntry = "gen1", "loader/entries/katl-gen1.conf"
+	selection.UpdatedAt = selection.UpdatedAt.Add(time.Hour)
+	writeBootHealthSelection(t, w.root, selection)
+}
+
+func TestSupersededIntent(t *testing.T) {
+	t.Run("replaced selection", func(t *testing.T) {
+		w := crashFailedTrial(t)
+		rewriteAsLegacy(t, w)
+		w.reboot("b-3", "gen3")
+
+		if err := w.mover(nil).Read(func(BootSelectionRecord) error { return nil }); err != nil {
+			t.Fatalf("Read() error = %v", err)
+		}
+
+		assertNoIntent(t, w.root)
+	})
+	t.Run("identical selection", func(t *testing.T) {
+		w := crashFailedTrial(t)
+		w.reboot("b-3", "gen2")
+
+		if _, err := w.mover(nil).reconcile(); err != nil {
+			t.Fatalf("reconcile() error = %v", err)
+		}
+
+		assertNoIntent(t, w.root)
+		if got := assertReadableBy11_5(t, w.root); got.DefaultGenerationID != "gen1" || got.FailedBootGenerationID != "gen2" {
+			t.Fatalf("selection = %+v, want the failure completed", got)
+		}
+	})
+}
+
+// A release without boot-move records resolved the trial after the failure
+// projected the candidate's status, then the candidate boots again.
+func TestSupersededResolvedTrial(t *testing.T) {
+	w := crashFailedTrial(t)
+	selection := lowerSelection(w.selection())
+	selection.BootedGenerationID, selection.BootedBootEntry = "gen1", "loader/entries/katl-gen1.conf"
+	selection.TrialGenerationID, selection.TrialBootEntry = "", ""
+	selection.PendingTransactionID, selection.PendingHealthValidation = "", false
+	selection.PersistentDefaultPromotion = DefaultPromotionDone
+	selection.FailedBootGenerationID = "gen2"
+	selection.UpdatedAt = selection.UpdatedAt.Add(time.Hour)
+	writeBootHealthSelection(t, w.root, selection)
+	w.reboot("b-3", "gen2")
+
+	health, err := w.mover(nil).FailTrial(trialDeadlineReason)
+	if err != nil {
+		t.Fatalf("FailTrial() error = %v", err)
+	}
+	if health.RebootRequested {
+		t.Fatalf("FailTrial() = %+v, want no reboot for a resolved trial", health)
+	}
+	assertNoIntent(t, w.root)
+	if got := assertReadableBy11_5(t, w.root); got.DefaultGenerationID != "gen1" || got.PendingHealthValidation {
+		t.Fatalf("selection = %+v", got)
+	}
+}
+
 // The v1 form lasts while the 2026.11.5 entry exists: InvalidateSlot's own
 // publish is still v1, and the publish after its entry is gone carries a
 // revision again.

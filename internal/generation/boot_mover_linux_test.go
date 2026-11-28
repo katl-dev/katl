@@ -1325,6 +1325,13 @@ func TestBootMoveReadRefusals(t *testing.T) {
 		w := newMoveWorld(t)
 		request := invalidateRequest(w)
 		writeBootFixture(t, filepath.Join(w.root, "var/lib/katl/generations/gen3/status.json"), []byte("{"))
+		// An unreadable record counts as a legacy reader, so the owner sees
+		// the content token.
+		owned, err := readOwnerSelection(w.root, "gen1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.ExpectedRevision = owned.Revision
 		assertMoveRefused(t, w, request, "cannot read generation gen3",
 			"Boot state is unchanged", "Restore access to the generation record and retry")
 	})

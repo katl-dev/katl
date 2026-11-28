@@ -3,6 +3,8 @@ package generation
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -212,7 +214,11 @@ func (m *BootMover) moveWithLocked(build func(BootSelectionRecord, *bootMoveInte
 	if err != nil {
 		return bootMoveResult{}, err
 	}
-	selection, err := ReadBootSelection(m.root)
+	running, err := m.runningGenerationID()
+	if err != nil {
+		return bootMoveResult{}, err
+	}
+	selection, err := readOwnerSelection(m.root, running)
 	if err != nil {
 		return bootMoveResult{}, err
 	}
@@ -310,7 +316,7 @@ func (m *BootMover) failTrialLocked(running, reason string) (trialFailure, error
 	if err != nil {
 		return trialFailure{}, err
 	}
-	selection, err := ReadBootSelection(m.root)
+	selection, err := readOwnerSelection(m.root, running)
 	if err != nil {
 		return trialFailure{}, moveSelectionReadError(running, err)
 	}
@@ -441,6 +447,11 @@ func (m *BootMover) reconcileLocked(mode reconcileMode) (bootMoveResult, *bootMo
 	intent, err := readBootMoveIntent(m.root)
 	if err != nil {
 		return bootMoveResult{}, nil, fmt.Errorf("boot state is unchanged for generation %s: %w", running, err)
+	}
+	if intent != nil {
+		if intent, err = m.retireSuperseded(intent, running); err != nil {
+			return bootMoveResult{}, nil, err
+		}
 	}
 	var authority *bootMoveIntent
 	var activated Record
@@ -720,7 +731,10 @@ func (m *BootMover) importLegacyTrial(running string) (*bootMoveIntent, error) {
 	if legacy.efiErr != nil {
 		return nil, efiObservationError("importing legacy trial "+legacy.selection.PendingTransactionID, legacy.trialGenerationID, legacy.efiErr)
 	}
-	selection := legacy.selection
+	selection, err := readOwnerSelection(m.root, running)
+	if err != nil {
+		return nil, moveSelectionReadError(running, err)
+	}
 	trialID := selection.PendingTransactionID
 	// The next revision only satisfies the intent's validation; nothing
 	// publishes it, and a resolving move expects the legacy revision.
@@ -744,7 +758,7 @@ func (m *BootMover) importLegacyTrial(running string) (*bootMoveIntent, error) {
 func (m *BootMover) unconfirmedTrial(authority *bootMoveIntent, running, runningEntry string) (bootMoveIntent, error) {
 	candidate := *authority.DestinationGenerationID
 	trialID := *authority.Reboot.TrialID
-	selection, err := ReadBootSelection(m.root)
+	selection, err := readOwnerSelection(m.root, running)
 	if err != nil {
 		return bootMoveIntent{}, fmt.Errorf("resolve trial %s: %w", trialID, moveSelectionReadError(candidate, err))
 	}
@@ -1180,6 +1194,36 @@ func lowerSelection(s BootSelectionRecord) BootSelectionRecord {
 	return s
 }
 
+// selectionToken derives a revision from a selection's v1 content, for the
+// form that carries none. Bit 63 marks a token and bit 62 stays clear, so the
+// next revision of a token is still a token.
+func selectionToken(s BootSelectionRecord) uint64 {
+	data, err := MarshalCanonicalJSON(lowerSelection(s))
+	if err != nil {
+		// A BootSelectionRecord always marshals.
+		panic(fmt.Sprintf("marshal boot selection: %v", err))
+	}
+	sum := sha256.Sum256(data)
+	return binary.BigEndian.Uint64(sum[:8])&^(1<<62) | 1<<63
+}
+
+func isSelectionToken(revision uint64) bool {
+	return revision&(1<<63) != 0
+}
+
+// readOwnerSelection is the owner's view of the published selection. While
+// legacyReaders holds, the selection is in its v1 form, so its revision is
+// the content token and it records no spent trial.
+func readOwnerSelection(root, running string) (BootSelectionRecord, error) {
+	selection, err := ReadBootSelection(root)
+	if err != nil || !legacyReaders(root, running) {
+		return selection, err
+	}
+	lowered := lowerSelection(selection)
+	lowered.Revision = selectionToken(lowered)
+	return lowered, nil
+}
+
 // publishSelection writes the selection in the form every generation that
 // could boot next decodes.
 func publishSelection(root, running string, s BootSelectionRecord) error {
@@ -1190,12 +1234,43 @@ func publishSelection(root, running string, s BootSelectionRecord) error {
 }
 
 // progress reports whether the published selection already holds the
-// intent's desired selection, in either form, or still holds the revision it
-// expects.
+// intent's desired selection, or still holds the selection it expects. The
+// intent's own form decides the test: a token-form intent expects content.
 func (intent bootMoveIntent) progress(published BootSelectionRecord) (done, awaiting bool) {
 	desired := intent.DesiredSelection
 	done = published == desired || published == lowerSelection(desired)
-	return done, published.Revision == *intent.ExpectedSelectionRevision
+	expected := *intent.ExpectedSelectionRevision
+	if isSelectionToken(expected) {
+		return done, selectionToken(published) == expected
+	}
+	return done, published.Revision == expected
+}
+
+// retireSuperseded removes a token-form intent whose expected selection a
+// runtime without the owner replaced: that runtime booted and decided the
+// boot, so the move no longer applies. It returns the intent that remains.
+//
+// A superseded intent is reached only after that runtime resolved the trial
+// or left it alone. KatlOS 2026.11.5 cannot rewrite a selection whose trial
+// is pending for another generation: its activation and its failure path both
+// refuse a boot outside the pending target, so it changes the content only
+// once no trial of the candidate is pending.
+func (m *BootMover) retireSuperseded(intent *bootMoveIntent, running string) (*bootMoveIntent, error) {
+	if !isSelectionToken(*intent.ExpectedSelectionRevision) {
+		return intent, nil
+	}
+	published, err := ReadBootSelection(m.root)
+	if err != nil {
+		return nil, moveSelectionReadError(running, err)
+	}
+	if done, awaiting := intent.progress(published); done || awaiting {
+		return intent, nil
+	}
+	if err := removeBootMoveIntent(m.root); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "retired boot move %s: an earlier release replaced the selection it expected\n", intent.OperationID)
+	return nil, nil
 }
 
 // problem describes the first recorded target the failure rule rejected.
@@ -1208,7 +1283,7 @@ func (resolution failedTrialResolution) problem() string {
 }
 
 func (m *BootMover) healthResult(running, result string) (BootHealthResult, error) {
-	selection, err := ReadBootSelection(m.root)
+	selection, err := readOwnerSelection(m.root, running)
 	if err != nil {
 		return BootHealthResult{}, moveSelectionReadError(running, err)
 	}
@@ -1302,7 +1377,7 @@ func (m *BootMover) observe(running string, firstActivation bool) (Record, error
 	if err != nil {
 		return Record{}, err
 	}
-	selection, err := ReadBootSelection(m.root)
+	selection, err := readOwnerSelection(m.root, running)
 	if errors.Is(err, os.ErrNotExist) {
 		return record, nil
 	}
@@ -1427,7 +1502,7 @@ func (m *BootMover) ConfirmBoot(reason string) (BootHealthResult, error) {
 		if err != nil {
 			return err
 		}
-		selection, err := ReadBootSelection(m.root)
+		selection, err := readOwnerSelection(m.root, running)
 		if err != nil {
 			return moveSelectionReadError(running, err)
 		}
@@ -1663,7 +1738,11 @@ func (m *BootMover) Prune(policy Retention, now time.Time) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		selection, err := ReadBootSelection(m.root)
+		running, err := m.runningGenerationID()
+		if err != nil {
+			return err
+		}
+		selection, err := readOwnerSelection(m.root, running)
 		if err != nil {
 			return err
 		}
@@ -1688,7 +1767,7 @@ func (m *BootMover) Prune(policy Retention, now time.Time) ([]string, error) {
 			if _, err := m.moveLocked(*removedPointers(selection, item.Spec.GenerationID), selection, nil, reconciled); err != nil {
 				return err
 			}
-			if selection, err = ReadBootSelection(m.root); err != nil {
+			if selection, err = readOwnerSelection(m.root, running); err != nil {
 				return err
 			}
 			if err := remove(m.root, item.Spec); err != nil {
@@ -1718,7 +1797,11 @@ func (m *BootMover) readWithAuthority(read func(BootSelectionRecord, *bootMoveIn
 		if err != nil {
 			return err
 		}
-		selection, err := ReadBootSelection(m.root)
+		running, err := m.runningGenerationID()
+		if err != nil {
+			return err
+		}
+		selection, err := readOwnerSelection(m.root, running)
 		if err != nil {
 			return err
 		}
