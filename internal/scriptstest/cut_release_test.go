@@ -69,7 +69,7 @@ func TestCutReleaseWorkflow(t *testing.T) {
 				t.Fatal("more than one credential step")
 			}
 			credential = i
-			requireCredential(t, step)
+			requireCredential(t, step, "release-cut")
 		}
 		if strings.HasPrefix(step.Uses, "actions/create-github-app-token@") {
 			t.Error("cut must mint the App token only through the shared credential action")
@@ -96,7 +96,7 @@ func TestCutReleaseWorkflow(t *testing.T) {
 
 func TestCutReleaseRestoresNoCache(t *testing.T) {
 	// A poisoned cache entry would run attacker-built code beside the
-	// release App token, so the token job builds katl-release from source
+	// cut App token, so the token job builds katl-release from source
 	// and reaches only actions known not to restore a cache.
 	workflow, _ := readWorkflow(t, "cut-release.yml")
 	reached := map[string]bool{}

@@ -143,9 +143,11 @@ func TestReleaseRulesetBranchCreation(t *testing.T) {
 }
 
 func TestReleaseRulesetCreationBypass(t *testing.T) {
-	want := []rulesetBypass{{ID: 5958368, Type: "Integration", Mode: "always"}}
-	for _, file := range []string{finalTagRuleset, branchCreationRuleset} {
+	// Final tags come from the katl-release App and release branches from
+	// the katl-release-cut App.
+	for file, app := range map[string]int{finalTagRuleset: 5958368, branchCreationRuleset: 5964009} {
 		t.Run(file, func(t *testing.T) {
+			want := []rulesetBypass{{ID: app, Type: "Integration", Mode: "always"}}
 			ruleset := readReleaseRuleset(t, file)
 			if len(ruleset.Rules) != 1 || ruleset.Rules[0].Type != "creation" || len(ruleset.Rules[0].Parameters) != 0 {
 				t.Errorf("rules = %+v, want a single creation rule without parameters", ruleset.Rules)

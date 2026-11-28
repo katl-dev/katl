@@ -22,12 +22,14 @@ The `release/<digit>...` namespace is reserved for release branches, so use
    made since the removal of the tag trigger starts on a tag push. Extending
    the tag creation ruleset to every release tag is tracked in
    [#1021](https://github.com/katl-dev/katl/issues/1021).
-2. The `Release` workflow's publish job uses the `katl-release` App token to
-   create final tags, and the **Cut release** workflow uses it to create
-   release branches. Applying `final release tags` before the publish job uses
-   the App makes every final publication fail. Applying
-   `release branch creation` before the **Cut release** workflow creates
-   branches with the App makes release branches impossible to create.
+2. The `final release tags` ruleset names the `katl-release` App, which the
+   `Release` workflow's publish job uses to create final tags. The
+   `release branch creation` ruleset names the `katl-release-cut` App, which
+   the **Cut release** workflow uses to create release branches. Applying
+   `final release tags` before the publish job uses the `katl-release` App
+   makes every final publication fail. Apply `release branch creation` only
+   after the **Cut release** workflow uses the `katl-release-cut` App;
+   otherwise release branches are impossible to create.
 
 In the repository's environment settings, check both environments:
 
@@ -35,10 +37,21 @@ In the repository's environment settings, check both environments:
   administrator bypass. Narrow its deployment branch policy to `release/[0-9]*`
   before applying the rulesets.
 - `release-cut` admits only `main` and disables administrator bypass.
-- Both environments store the App's private key as `KATL_RELEASE_APP_PRIVATE_KEY`.
+- `release` stores the `katl-release` App's ID as the variable
+  `KATL_RELEASE_APP_ID` and its private key as the secret
+  `KATL_RELEASE_APP_PRIVATE_KEY`.
+- `release-cut` stores the `katl-release-cut` App's ID as the variable
+  `KATL_RELEASE_CUT_APP_ID` and its private key as the secret
+  `KATL_RELEASE_CUT_APP_PRIVATE_KEY`.
 
-Before applying either file, check that its bypass actor's ID equals the
-repository variable `KATL_RELEASE_APP_ID`.
+Every job that reads an App ID runs in that App's environment, so the
+environment's variable takes precedence over a repository variable of the same
+name.
+
+Before applying either file, check its bypass actor's ID. For
+`final-release-tags.json` it must equal `KATL_RELEASE_APP_ID` in the `release`
+environment, and for `release-branch-creation.json` it must equal
+`KATL_RELEASE_CUT_APP_ID` in the `release-cut` environment.
 
 ## Apply or revert the rulesets
 
@@ -63,8 +76,8 @@ two creation ruleset IDs.
 Read each applied ruleset with `gh api repos/katl-dev/katl/rulesets/<id>` and
 compare its definition fields with the corresponding file.
 
-Use a version that will never be released, such as `0.0.0`. With a repository
-credential other than the App's, push a final-style tag such as `v0.0.0`
+Use a version that will never be released, such as `0.0.0`. With a credential
+that is neither release App's, push a final-style tag such as `v0.0.0`
 and expect GitHub to reject it. Attempt to create
 `release/0.0.0` and expect GitHub to reject it.
 
