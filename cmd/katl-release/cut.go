@@ -76,6 +76,12 @@ func checkCut(ctx context.Context, r *reader, version releaseversion.Version, co
 		return false, fmt.Errorf("%s is not reachable from main. Choose a commit from main", commit)
 	}
 
+	// A repeat cut at the branch's commit stays complete after tagging.
+	already, err := cutBranchExists(ctx, r, version, commit)
+	if already || err != nil {
+		return already, err
+	}
+
 	tags, err := r.refs(ctx, "tags/"+version.Tag())
 	if err != nil {
 		return false, err
@@ -86,7 +92,7 @@ func checkCut(ctx context.Context, r *reader, version releaseversion.Version, co
 			return false, fmt.Errorf("tag %s already exists for %s. Choose the next version", tag, version)
 		}
 	}
-	return cutBranchExists(ctx, r, version, commit)
+	return false, nil
 }
 
 func cutBranchExists(ctx context.Context, r *reader, version releaseversion.Version, commit string) (bool, error) {
@@ -121,7 +127,8 @@ func dispatchCut(ctx context.Context, r *reader, call command, version releaseve
 	target := workflowDispatch{name: "Cut release", file: cutWorkflow, ref: "main",
 		title: fmt.Sprintf("Cut release %s at %s", version, commit)}
 	inputs := []string{"-f", "version=" + version.String(), "-f", "revision=" + commit}
-	selected, err := dispatchWorkflow(ctx, r, call, target, inputs, "Check the Cut release runs in GitHub Actions before dispatching again.")
+	const recovery = "Check the Cut release runs in GitHub Actions before dispatching again."
+	selected, err := dispatchWorkflow(ctx, r, call, target, inputs, recovery, recovery)
 	if err != nil {
 		return err
 	}

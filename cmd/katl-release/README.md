@@ -19,9 +19,9 @@ scripts/katl-release cut 2026.12.1 main
 
 Supply a complete final version such as `2026.12.1` and a revision reachable
 from `main`. The command resolves the revision on GitHub, prints the commit,
-and checks for tags and an existing release branch. If the branch already
-points to the selected commit and the version has no release tags, the command
-exits successfully.
+and checks for an existing release branch and tags. If the branch already
+points to the selected commit, the command exits successfully, even after the
+version has been tagged.
 
 For a new cut, the command dispatches **Cut release** on `main`, prints the
 run URL, follows the job, and verifies the branch head before printing the

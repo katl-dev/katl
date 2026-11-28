@@ -55,9 +55,9 @@ func release(ctx context.Context, args []string, stdout, stderr io.Writer, r *re
 		inputs = []string{"-f", "retry=" + d.Reason}
 	}
 	run, err := dispatchWorkflow(ctx, r, call, target, inputs,
-		fmt.Sprintf("Run scripts/katl-release status %s before dispatching again.", version))
+		fmt.Sprintf("Run scripts/katl-release status %s before dispatching again.", version), waitHint(version))
 	if err != nil {
-		return resumeWait(version, err)
+		return err
 	}
 	return followRelease(ctx, r, version, run, stdout, stderr)
 }
@@ -98,7 +98,9 @@ func releaseDispatch(version releaseversion.Version, head string) workflowDispat
 	return workflowDispatch{name: "Release", file: releasestate.ReleaseWorkflow, ref: releasestate.Branch(version), head: head}
 }
 
-func dispatchWorkflow(ctx context.Context, r *reader, call command, target workflowDispatch, inputs []string, recovery string) (restRun, error) {
+// dispatchWorkflow adds recovery to a failed dispatch request, and resume to a
+// failure to identify the run that an accepted dispatch started.
+func dispatchWorkflow(ctx context.Context, r *reader, call command, target workflowDispatch, inputs []string, recovery, resume string) (restRun, error) {
 	before, err := r.newestDispatch(ctx, target)
 	if notFound(err) {
 		return restRun{}, fmt.Errorf("cannot find the %s workflow. Check that %s is on the repository's default branch: %w", target.name, target.file, err)
@@ -115,7 +117,11 @@ func dispatchWorkflow(ctx context.Context, r *reader, call command, target workf
 		return restRun{}, fmt.Errorf("%w\nGitHub may have accepted the dispatch. %s",
 			ghFailure("gh workflow run "+file, err, stderrOf(err)), recovery)
 	}
-	return dispatchedRun(ctx, r, target, before.ID, string(output))
+	run, err := dispatchedRun(ctx, r, target, before.ID, string(output))
+	if err != nil {
+		return restRun{}, fmt.Errorf("%w\n%s", err, resume)
+	}
+	return run, nil
 }
 
 func (r *reader) dispatchedRuns(ctx context.Context, target workflowDispatch) ([]restRun, error) {
@@ -183,7 +189,11 @@ func dispatchedRun(ctx context.Context, r *reader, target workflowDispatch, afte
 }
 
 func resumeWait(version releaseversion.Version, err error) error {
-	return fmt.Errorf("%w\nRun scripts/katl-release wait %s.", err, version)
+	return fmt.Errorf("%w\n%s", err, waitHint(version))
+}
+
+func waitHint(version releaseversion.Version) string {
+	return fmt.Sprintf("Run scripts/katl-release wait %s.", version)
 }
 
 func findDispatch(ctx context.Context, r *reader, target workflowDispatch, after int64) (restRun, error) {

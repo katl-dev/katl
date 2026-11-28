@@ -293,6 +293,22 @@ func TestReleaseDispatchFailure(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("dispatch attempts = %d; want 1", attempts)
 	}
+	// No run is known yet, so wait would follow an earlier one.
+	if strings.Contains(err.Error(), "katl-release wait") {
+		t.Fatalf("error = %v; want no wait hint before a run is identified", err)
+	}
+}
+
+func TestReleasePreDispatchFailure(t *testing.T) {
+	f := readerWorld(t)
+	f.pages[followTags] = []any{[]any{}}
+	f.failures[followQuery] = []error{&apiError{status: 403, text: "GitHub denied the run list"}}
+
+	err := release(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f), noGitHubWrite(t))
+	assertErrorContains(t, err, "GitHub denied the run list")
+	if strings.Contains(err.Error(), "katl-release wait") {
+		t.Fatalf("error = %v; want no wait hint before dispatching", err)
+	}
 }
 
 func TestReleaseDispatchLookupFailure(t *testing.T) {

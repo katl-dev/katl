@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -52,6 +56,8 @@ func TestCutCheck(t *testing.T) {
 	}{
 		{name: "unused final version", version: cutVersion},
 		{name: "already cut", version: cutVersion, head: cutCommit},
+		{name: "already cut and tagged", version: cutVersion, head: cutCommit, tag: "v2026.12.1-rc.1"},
+		{name: "another commit and tagged", version: cutVersion, head: movedMain, tag: "v2026.12.1-rc.1", want: []string{"Choose the next version"}},
 		{name: "another commit", version: cutVersion, head: movedMain, want: []string{cutCommit, movedMain, "Choose the next version"}},
 		{name: "candidate tag", version: cutVersion, tag: "v2026.12.1-rc.1", want: []string{"v2026.12.1-rc.1", "Choose the next version"}},
 		{name: "final tag", version: cutVersion, tag: "v2026.12.1", want: []string{"v2026.12.1", "Choose the next version"}},
@@ -110,6 +116,7 @@ func TestCutBranchWrite(t *testing.T) {
 		{name: "create", after: cutCommit},
 		{name: "already cut", before: cutCommit},
 		{name: "wrong readback", after: movedMain, want: []string{cutCommit, movedMain}},
+		{name: "absent readback", want: []string{"did not return refs/heads/release/2026.12.1"}},
 		{name: "raced to same commit", after: cutCommit, writeError: errors.New("already exists")},
 		{name: "raced to other commit", after: movedMain, writeError: errors.New("already exists"), want: []string{cutCommit, movedMain}},
 		{name: "creation rejected", writeError: errors.New("ref creation denied"), want: []string{"ref creation denied"}},
@@ -239,5 +246,37 @@ func TestCutRunOutcome(t *testing.T) {
 				t.Errorf("cut output = %q", out.String())
 			}
 		})
+	}
+}
+
+func TestCutRunTitle(t *testing.T) {
+	// The cut follows only a run whose title the workflow renders from the
+	// same inputs, so a changed run-name would leave every cut unfollowed.
+	data, err := os.ReadFile(filepath.Join("..", "..", cutWorkflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		RunName string `yaml:"run-name"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	title := strings.NewReplacer("${{ inputs.version }}", cutVersion, "${{ inputs.revision }}", cutCommit).Replace(workflow.RunName)
+	if title == "" || strings.Contains(title, "${{") {
+		t.Fatalf("run-name %q renders as %q", workflow.RunName, title)
+	}
+
+	f := cutWorld(t)
+	run := cutRunAt(9, "success")
+	run["display_title"] = title
+	f.responses[cutRun] = run
+	listJobs(f, 9, 1, listedJob(1, "Create release branch", "completed", "success"))
+	err = cut(t.Context(), []string{"cut", cutVersion, cutCommit}, io.Discard, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
+		f.cutBranch(cutCommit)
+		return []byte(cutRunURL), nil
+	})
+	if err != nil {
+		t.Fatalf("cut did not follow the run titled %q: %v", title, err)
 	}
 }
