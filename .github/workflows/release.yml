@@ -28,7 +28,6 @@ jobs:
       contents: read
       actions: read
       statuses: read
-      packages: read
       attestations: read
       deployments: read
     outputs:
