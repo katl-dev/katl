@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/cachepolicy"
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 // testCachePolicy keeps two generations of go-, one of rpm-, and every blob-
@@ -398,10 +398,7 @@ func TestDecodeCaches(t *testing.T) {
 // function that reads the log.
 func fakeGHCases(t *testing.T, arms string) func() []string {
 	t.Helper()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := workstationtest.Tool(t, "sh")
 	dir := t.TempDir()
 	log := filepath.Join(dir, "log")
 	script := `log=` + log + `
