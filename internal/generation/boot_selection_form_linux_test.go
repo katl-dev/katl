@@ -457,3 +457,33 @@ func TestReaderFormKeepsRevision(t *testing.T) {
 		t.Fatalf("revision = %d, want 5", got.Revision)
 	}
 }
+
+// A move built in the v1 form keeps that form when the last 2026.11.5 entry
+// goes before it publishes, so the next move still completes.
+func TestLegacyFormEndsMidMove(t *testing.T) {
+	w := newMoveWorld(t)
+	stampRelease(t, w.root, "outside", "2026.11.5")
+	writeBootHealthSelection(t, w.root, lowerSelection(w.selection()))
+	spec, _, err := ReadGeneration(w.root, "outside")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endLegacyForm := func(step bootMoveStep) error {
+		if step == stepIntentWritten {
+			removeFile(t, rootedPathUnchecked(w.root, "/efi/"+spec.Boot.LoaderEntryPath))
+		}
+		return nil
+	}
+	if err := w.mover(endLegacyForm).Select(context.Background(), SelectRequest{GenerationID: "gen3"}); err != nil {
+		t.Fatalf("Select(gen3) error = %v", err)
+	}
+
+	if err := w.mover(nil).Select(context.Background(), SelectRequest{GenerationID: "gen1"}); err != nil {
+		t.Fatalf("Select(gen1) after the v1 form ended: %v", err)
+	}
+
+	if got := w.selection(); got.DefaultGenerationID != "gen1" || isSelectionToken(got.Revision) {
+		t.Fatalf("selection = %+v, want gen1 the default with a counter revision", got)
+	}
+	assertNoIntent(t, w.root)
+}

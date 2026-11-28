@@ -1225,9 +1225,11 @@ func readOwnerSelection(root, running string) (BootSelectionRecord, error) {
 }
 
 // publishSelection writes the selection in the form every generation that
-// could boot next decodes.
+// could boot next decodes. A token revision was derived from the v1 form, so
+// a selection built on one stays in that form even when legacyReaders no
+// longer holds: written as a counter, the token would block every later move.
 func publishSelection(root, running string, s BootSelectionRecord) error {
-	if legacyReaders(root, running) {
+	if isSelectionToken(s.Revision) || legacyReaders(root, running) {
 		s = lowerSelection(s)
 	}
 	return WriteBootSelection(root, s)
@@ -1767,10 +1769,12 @@ func (m *BootMover) Prune(policy Retention, now time.Time) ([]string, error) {
 			if _, err := m.moveLocked(*removedPointers(selection, item.Spec.GenerationID), selection, nil, reconciled); err != nil {
 				return err
 			}
-			if selection, err = readOwnerSelection(m.root, running); err != nil {
+			if err := remove(m.root, item.Spec); err != nil {
 				return err
 			}
-			if err := remove(m.root, item.Spec); err != nil {
+			// The removal can end the v1 form, so the next move reads the
+			// selection as it now stands.
+			if selection, err = readOwnerSelection(m.root, running); err != nil {
 				return err
 			}
 			removed = append(removed, item.Spec.GenerationID)
