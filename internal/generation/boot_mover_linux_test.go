@@ -1329,3 +1329,54 @@ func TestBootMoveReadRefusals(t *testing.T) {
 			"Boot state is unchanged", "Restore access to the generation record and retry")
 	})
 }
+
+// A persistent selection interrupted before its EFI write leaves firmware on
+// the prior default. Boot health completes the move, then publishes the
+// running generation as a healthy boot of any known-good generation does,
+// with that generation's own loader entry.
+func TestConfirmBootAfterInterruptedSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, selected string
+		revision       uint64
+	}{
+		// The completed move publishes revision 5, then health returns the
+		// default to the running gen1.
+		{name: "another generation", selected: "gen3", revision: 6},
+		{name: "running default", selected: "gen1", revision: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newMoveWorld(t)
+			current := w.selection()
+			desired := current
+			desired.Revision = current.Revision + 1
+			desired.DefaultGenerationID, desired.DefaultBootEntry = tc.selected, "loader/entries/katl-"+tc.selected+".conf"
+			intent := bootMoveIntent{
+				OperationID: "select-interrupted", BootID: w.bootID, ExpectedSelectionRevision: new(current.Revision),
+				SourceGenerationID: "gen1", DestinationGenerationID: new(tc.selected),
+				PriorDefault:     &bootMoveTarget{new("gen1"), new("katl-gen1.conf")},
+				PriorOneShot:     &bootMoveTarget{new(""), new("")},
+				DesiredDefault:   &bootMoveTarget{new(tc.selected), new("katl-" + tc.selected + ".conf")},
+				DesiredOneShot:   &bootMoveTarget{new(""), new("")},
+				DesiredSelection: desired, StatusChanges: []bootStatusChange{},
+				Reboot: bootMoveReboot{TrialID: new(""), Eligible: new(false), Spent: new(false)},
+			}
+			if err := writeBootMoveIntent(w.root, intent); err != nil {
+				t.Fatal(err)
+			}
+			w.reboot("b-2", "gen1")
+
+			if _, err := w.mover(nil).ConfirmBoot("boot health passed"); err != nil {
+				t.Fatalf("ConfirmBoot() error = %v", err)
+			}
+
+			selection := w.selection()
+			if selection.Revision != tc.revision || selection.DefaultGenerationID != "gen1" || selection.DefaultBootEntry != "loader/entries/katl-gen1.conf" ||
+				selection.BootedGenerationID != "gen1" || w.efi.entries.Default != "katl-gen1.conf" {
+				t.Fatalf("selection = %+v, EFI = %+v, want gen1 published with its own entry at revision %d", selection, w.efi.entries, tc.revision)
+			}
+			if intent, err := readBootMoveIntent(w.root); err != nil || intent != nil {
+				t.Fatalf("intent after boot health = %+v, %v, want resolved", intent, err)
+			}
+		})
+	}
+}

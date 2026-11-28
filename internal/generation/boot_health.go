@@ -210,14 +210,10 @@ func confirmedBoot(root string, selection BootSelectionRecord, generationID, com
 	}
 	previousID := strings.TrimSpace(selection.DefaultGenerationID)
 	previousBootEntry := strings.TrimSpace(selection.DefaultBootEntry)
-	nextDefaultBootEntry := strings.TrimSpace(selection.DefaultBootEntry)
-	if strings.TrimSpace(selection.TargetBootEntry) != "" {
-		nextDefaultBootEntry = strings.TrimSpace(selection.TargetBootEntry)
-	} else if strings.TrimSpace(selection.TrialBootEntry) != "" {
-		nextDefaultBootEntry = strings.TrimSpace(selection.TrialBootEntry)
-	} else if fallbackRecovery {
-		nextDefaultBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
-	}
+	// The default and its entry name one generation: a temporary boot keeps
+	// the published pair, and any other healthy boot publishes the running
+	// generation with its own loader entry.
+	nextDefaultBootEntry := strings.TrimSpace(spec.Boot.LoaderEntryPath)
 	if temporary {
 		nextDefaultBootEntry = previousBootEntry
 	}
