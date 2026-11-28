@@ -372,11 +372,11 @@ verified when the trial is armed and again when a failure selects it. Slot
 replacement also checks the running generation's loader entry and UKI before
 redirecting EFI and allowing the overwrite.
 
-A host upgrade runs only from a node whose runtime can read boot-move records,
-which is 2026.11.6 or later, because that node is the fallback if the trial
-fails. `katlctl node upgrade` refuses an older source before staging anything,
-and the node's boot-state owner refuses to write a move whose recorded target
-runs a runtime that cannot read it. A trial armed while the running generation
+A host upgrade runs from any supported release, including one that cannot read
+boot-move records; the boot-state owner writes the selection in a form every
+bootable generation's release decodes, by the rule in
+[Boot selection transaction](boot-selection-transaction.md#boot-move-owner).
+A trial armed while the running generation
 is not the published default is refused unless the default generation has run a
 release with the owner, which it records as a marker file under
 `/var/lib/katl/boot/owners/` when the owner publishes that default. The default

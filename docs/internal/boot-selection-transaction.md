@@ -189,8 +189,10 @@ the entry only afterwards. The rule fails towards the v1 form: an unreadable
 generation record counts as an old release, and without a readable entries
 directory every record counts as bootable. A directory with neither
 `spec.json` nor `metadata.json`, as a candidate has while it is staged or
-after an interrupted apply, is skipped: every staging path on a node writes
-the record before the loader entry, so no release boots such a directory. The running generation is
+after an interrupted apply, is skipped: a directory without a record has no
+loader entry, so no release boots it. The prepared host-upgrade handoff
+writes its candidate's loader entry before the directory exists, then renames
+the directory in as a complete tree (#1084). The running generation is
 excluded, so the initial publication on an installation target always
 carries a revision.
 

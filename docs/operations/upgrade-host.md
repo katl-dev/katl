@@ -30,11 +30,11 @@ node at a time.
   assets and CLI until you have accepted the target and no longer need its
   one-step rollback path.
 - Run the upgrade during the intended reboot window.
-- Upgrade from KatlOS 2026.11.6 or later. The node's current release is the
-  fallback if the new one fails, and an earlier release cannot read the boot
-  records the new release writes. `katlctl node upgrade` refuses an earlier
-  source with `upgrade to 2026.11.6 or later first`; upgrade to 2026.11.6 or
-  later, then retry.
+- Any supported release, including 2026.11.5, upgrades directly to the new
+  release. On a node upgrading from 2026.11.5, a power loss during the new
+  release's trial boot, before its health check finishes, falls back to
+  2026.11.5 without network, so the node is reachable only at its console.
+  To recover, boot the new release from the boot menu at the console.
 - Run the upgrade from the node's default generation. If the node is
   running another generation, for example after you chose it from the boot menu,
   the upgrade is refused until you make it the default with

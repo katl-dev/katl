@@ -1193,8 +1193,10 @@ func legacyReaders(root, running string) bool {
 
 // recordless reports whether a generation directory holds neither spec.json
 // nor metadata.json, as a candidate does while it is staged and after an
-// interrupted apply. Every staging path on a node writes the record before
-// the loader entry, so no release boots such a directory. The installer
+// interrupted apply. A directory without a record has no loader entry, so no
+// release boots it. The prepared host-upgrade handoff writes its candidate's
+// entry before the directory exists, then renames the directory in as a
+// complete tree (#1084). The installer
 // writes its target's entry first, but publishes no selection until that
 // record exists.
 func recordless(root, id string) bool {
