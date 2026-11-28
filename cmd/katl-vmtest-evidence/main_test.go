@@ -39,6 +39,14 @@ func TestRedactEvidenceJSONFields(t *testing.T) {
 	}
 }
 
+func TestRedactEvidenceKubeconfig(t *testing.T) {
+	input := "users:\n- name: admin\n  user:\n    client-key-data: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t\n"
+	want := "users:\n- name: admin\n  user:\n    client-key-data: [REDACTED]\n"
+	if got := redactEvidence(input); got != want {
+		t.Fatalf("YAML = %q, want %q", got, want)
+	}
+}
+
 func TestCollectEvidence(t *testing.T) {
 	root := t.TempDir()
 	const key = "-----BEGIN PRIVATE KEY-----\nsynthetic-private-data\n-----END PRIVATE KEY-----"

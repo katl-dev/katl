@@ -115,7 +115,7 @@ jobs:
         timeout-minutes: 5
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
-        if: always() && steps.diagnostics.outcome == 'success'
+        if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         timeout-minutes: 10
         with:
           name: production-vmtest-${{ inputs.flavour }}-${{ github.run_id }}

@@ -243,7 +243,7 @@ jobs:
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
-        if: always() && steps.diagnostics.outcome == 'success'
+        if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-producer-evidence-${{ github.run_id }}
           path: ${{ steps.diagnostics.outputs.upload-dir }}
@@ -357,7 +357,7 @@ jobs:
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
-        if: always() && steps.diagnostics.outcome == 'success'
+        if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         timeout-minutes: 10
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-${{ matrix.name }}-evidence-${{ github.run_id }}

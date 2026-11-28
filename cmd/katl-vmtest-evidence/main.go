@@ -6,19 +6,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/redact"
 )
 
-// The manifest and identity schemas and the management API use these names
-// for string fields. Match the JSON string grammar to preserve escaped quotes.
-var privateKeyField = regexp.MustCompile(`("(?:privateKey|serverPrivateKey|clientPrivateKey|server_private_key|client-key-data)"\s*:\s*)"(?:[^"\\]|\\.)*"`)
-
 func redactEvidence(text string) string {
 	text = redact.PrivateKeys(text)
-	return privateKeyField.ReplaceAllString(text, `${1}"`+redact.PrivateKeyMarker+`"`)
+	text = redact.PrivateKeyFields(text)
+	return redact.KubeconfigData(text)
 }
 
 func main() {

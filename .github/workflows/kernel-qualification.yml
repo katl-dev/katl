@@ -143,7 +143,7 @@ jobs:
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         id: upload-diagnostics
-        if: always() && steps.diagnostics.outcome == 'success'
+        if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         with:
           name: kernel-driver-${{ inputs.flavour }}-${{ github.run_id }}
           path: ${{ steps.diagnostics.outputs.upload-dir }}
