@@ -248,6 +248,27 @@ connections are retried with backoff, so one failed request does not abort a
 long report; an error that persists, or any other error, ends the command and
 names the request.
 
+### `parents`
+
+Run `katl-queue parents` from the checkout with GitHub read access. The report
+lists open parents whose sub-issues are all closed, parents with no sub-issue
+created, closed, or reopened in the last seven days, and open parents and
+design issues missing a `Closes when:` line. A design issue can identify itself
+with a `Design:` or `Design review:` line, or a Markdown heading named
+**Design** or **Proposal**.
+
+The report also lists open parents and design issues whose named
+`Closes when:` references have all resolved. Issues satisfy a reference when
+closed, and PRs satisfy one when merged. Use `#123`, `owner/repo#123`, or a
+GitHub issue or PR link. Check any additional conditions in the issue body
+before closing it.
+
+The burndown covers 14 UTC dates including today. Use `--days N` to change the
+window. Open counts reflect the end of each day and the report time for
+today. Reopens add to the open count, and each closure counts on the date it
+occurred. Milestone totals use each issue's milestone at the time of the
+report. The daily CI health job includes both reports in its summary.
+
 ### `cache`
 
 Run `katl-queue cache` from the checkout root to compare the repository's

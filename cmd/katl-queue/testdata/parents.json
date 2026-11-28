@@ -1,0 +1,49 @@
+{
+  "issues": {"data": {"repository": {"issues": {"nodes": [
+    {"number": 1, "title": "All children closed", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "subIssuesSummary": {"total": 1, "completed": 1}},
+    {"number": 2, "title": "One child still open", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "Closes when: deployment is verified.", "subIssuesSummary": {"total": 2, "completed": 1}},
+    {"number": 3, "title": "Exactly a week without progress", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "subIssuesSummary": {"total": 1, "completed": 0}},
+    {"number": 4, "title": "Another child closed recently", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "Closes when: rollout is verified.", "subIssuesSummary": {"total": 2, "completed": 1}},
+    {"number": 5, "title": "Design references met", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "Design review: test the idea.\n\nCloses when: #10 closes and [the implementation](https://github.com/katl-dev/katl/pull/100) merges."},
+    {"number": 6, "title": "Merged PR but open issue", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "## Design\n\nCloses when: #100 is merged and #8 is closed."},
+    {"number": 7, "title": "Design with a fenced example", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "Design review: outline the approach.\n\n```text\nCloses when: #10 closes.\n```"},
+    {"number": 8, "title": "Ordinary open issue", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "Closes when: #10 closes."},
+    {"number": 9, "title": "Closed before the window", "state": "CLOSED", "createdAt": "2026-01-01T00:00:00Z", "timelineItems": {"nodes": [
+      {"__typename": "ClosedEvent", "createdAt": "2026-01-12T23:59:59Z"}
+    ]}},
+    {"number": 10, "title": "Closed at the window boundary", "state": "CLOSED", "createdAt": "2026-01-01T00:00:00Z", "milestone": {"title": "Roadmap"}, "timelineItems": {"nodes": [
+      {"__typename": "ClosedEvent", "createdAt": "2026-01-13T00:00:00Z"}
+    ]}},
+    {"number": 11, "title": "Opened, closed and reopened", "state": "OPEN", "createdAt": "2026-01-13T06:00:00Z", "milestone": {"title": "Roadmap"}, "timelineItems": {"nodes": [
+      {"__typename": "ClosedEvent", "createdAt": "2026-01-14T10:00:00Z"},
+      {"__typename": "ReopenedEvent", "createdAt": "2026-01-15T08:00:00Z"}
+    ]}},
+    {"number": 12, "title": "Old issue closed in the window", "state": "CLOSED", "createdAt": "2026-01-12T23:59:59Z", "timelineItems": {"nodes": [
+      {"__typename": "ClosedEvent", "createdAt": "2026-01-14T10:00:00Z"}
+    ]}},
+    {"number": 14, "title": "Design blocked by prose condition", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "## Proposal\n\nCloses when: the maintainer approves the proposal."},
+    {"number": 15, "title": "PR closed without merging", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z", "body": "## Design\n\nCloses when: #101 is merged."}
+  ]}}}},
+  "subIssues": {"data": {"repository": {
+    "parent1": {"subIssues": {"nodes": [
+      {"createdAt": "2026-01-01T00:00:00Z", "timelineItems": {"nodes": [{"__typename": "ClosedEvent", "createdAt": "2026-01-14T10:00:00Z"}]}}
+    ]}},
+    "parent2": {"subIssues": {"nodes": [
+      {"createdAt": "2026-01-01T00:00:00Z", "timelineItems": {"nodes": [{"__typename": "ClosedEvent", "createdAt": "2026-01-14T10:00:00Z"}]}},
+      {"createdAt": "2026-01-14T10:00:00Z", "timelineItems": {"nodes": []}}
+    ]}},
+    "parent3": {"subIssues": {"nodes": [
+      {"createdAt": "2026-01-01T00:00:00Z", "timelineItems": {"nodes": [{"__typename": "ReopenedEvent", "createdAt": "2026-01-08T12:00:00Z"}]}}
+    ]}},
+    "parent4": {"subIssues": {"nodes": [
+      {"createdAt": "2026-01-01T00:00:00Z", "timelineItems": {"nodes": []}},
+      {"createdAt": "2026-01-02T00:00:00Z", "timelineItems": {"nodes": [{"__typename": "ClosedEvent", "createdAt": "2026-01-09T12:00:00Z"}]}}
+    ]}}
+  }}},
+  "references": {"data": {"repository": {
+    "n8": {"__typename": "Issue", "state": "OPEN"},
+    "n10": {"__typename": "Issue", "state": "CLOSED"},
+    "n100": {"__typename": "PullRequest", "state": "MERGED"},
+    "n101": {"__typename": "PullRequest", "state": "CLOSED"}
+  }}}
+}

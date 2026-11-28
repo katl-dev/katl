@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"iter"
 	"regexp"
 	"slices"
 	"strconv"
@@ -47,6 +48,10 @@ type candidate struct {
 type externalRef struct {
 	Pull  bool
 	State string // OPEN, CLOSED or MERGED
+}
+
+func (r externalRef) resolved() bool {
+	return r.State == "MERGED" || r.State == "CLOSED" && !r.Pull
 }
 
 type planInput struct {
@@ -117,17 +122,27 @@ var holdLine = regexp.MustCompile(`(?i)^\s*hold:\s*(\S.*?)\s*$`)
 // declaredHold returns the reason on the first "Hold: <reason>" line of a pull
 // request body outside a code fence, or empty when there is none.
 func declaredHold(body string) string {
-	fenced := false
-	for _, line := range strings.Split(body, "\n") {
-		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			fenced = !fenced
-			continue
-		}
-		if m := holdLine.FindStringSubmatch(line); m != nil && !fenced {
+	for line := range unfencedLines(body) {
+		if m := holdLine.FindStringSubmatch(line); m != nil {
 			return m[1]
 		}
 	}
 	return ""
+}
+
+func unfencedLines(body string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		fenced := false
+		for line := range strings.SplitSeq(body, "\n") {
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+				fenced = !fenced
+				continue
+			}
+			if !fenced && !yield(line) {
+				return
+			}
+		}
+	}
 }
 
 // waits is a candidate's resolved ordering constraints. A dependency counts as
@@ -188,7 +203,7 @@ func resolveDeps(in planInput) map[int]waits {
 				unmet(queued[dep], "waits for #%d, which is queued and has not merged", queued[dep])
 			case !known:
 				unmet(dep, "depends on #%d, which was not found", dep)
-			case ref.State == "MERGED", ref.State == "CLOSED" && !ref.Pull:
+			case ref.resolved():
 			case ref.State == "CLOSED":
 				unmet(dep, "depends on #%d, which was closed without merging", dep)
 			default:

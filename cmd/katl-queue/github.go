@@ -115,7 +115,7 @@ const (
 	readAttempts     = 6
 )
 
-// read makes a REST read, which is safe to repeat, and retries transient
+// read makes an API read, which is safe to repeat, and retries transient
 // failures with jittered exponential backoff. A paginated read restarts from
 // its first page.
 func (g *gh) read(ctx context.Context, args ...string) ([]byte, error) {
@@ -141,12 +141,11 @@ func (g *gh) graphql(ctx context.Context, query string, out any) error {
 	return decodeGraphQL(raw, out)
 }
 
-// queryRaw returns the response body. gh exits non-zero for a response that
-// carries errors, and that response still has a body, so only a failure
-// without one is an error here.
+// queryRaw keeps a GraphQL response for decoding even when gh exits non-zero
+// because the response carries errors alongside partial data.
 func (g *gh) queryRaw(ctx context.Context, query string) ([]byte, error) {
-	raw, err := g.api(ctx, "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
-	if err != nil && !json.Valid(raw) {
+	raw, err := g.read(ctx, "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
+	if err != nil && (transientGH(err) || !json.Valid(raw)) {
 		return nil, err
 	}
 	return raw, nil
@@ -676,10 +675,6 @@ func (g *gh) reviewTarget(ctx context.Context, number int) (reviewTarget, error)
     pullRequest(number: %d) { state headRefOid }
   }
 }`, number)
-	raw, err := g.read(ctx, "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
-	if err != nil {
-		return reviewTarget{}, err
-	}
 	var resp struct {
 		Viewer struct {
 			Login string
@@ -688,7 +683,7 @@ func (g *gh) reviewTarget(ctx context.Context, number int) (reviewTarget, error)
 			PullRequest *prResponse
 		}
 	}
-	if err := decodeGraphQL(raw, &resp); err != nil {
+	if err := g.graphql(ctx, query, &resp); err != nil {
 		return reviewTarget{}, err
 	}
 	pr := resp.Repository.PullRequest
