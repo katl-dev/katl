@@ -61,7 +61,7 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 		return prepare(args[1:], stdout, stderr, call)
 	}
 	if args[0] == "regression" {
-		return regression(context.Background(), args[1:], stdout, newGitHubReader(call))
+		return regression(context.Background(), args[1:], stdout, stderr, newGitHubReader(call))
 	}
 	if args[0] == "record" {
 		return record(args[1:], stderr, call)

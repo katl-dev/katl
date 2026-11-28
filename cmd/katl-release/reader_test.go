@@ -47,6 +47,9 @@ func (f *fakeGitHub) read(_ context.Context, endpoint string, paginate bool, acc
 		return body, nil
 	}
 	if paginate {
+		if err, isErr := f.responses[endpoint].(error); isErr {
+			return nil, err
+		}
 		pages, ok := f.pages[endpoint]
 		if !ok {
 			f.t.Errorf("unexpected paginated read %s", endpoint)
