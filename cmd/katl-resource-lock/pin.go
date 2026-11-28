@@ -12,20 +12,28 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/resourcetest"
 )
 
-// pinnedMkosiOutputs are the build outputs a VM run consumes. Each is pinned
-// with its metadata and checksum sidecars when present. A build that does not
-// produce an output leaves it absent from the pin.
-var pinnedMkosiOutputs = []string{
-	"katl-installer.efi",
-	"katl-installer.vmlinuz",
-	"katl-installer.initrd",
-	"katl-installer.iso",
-	"katl-runtime.efi",
-	"katl-runtime-root.squashfs",
-	"katl-kubernetes.raw",
+type mkosiOutput struct {
+	name string
+	kind string
+	file string
+}
+
+// Fixed-name outputs share one list for pinning and provenance.
+var mkosiOutputs = []mkosiOutput{
+	{"installer-uki", "uki", "katl-installer.efi"},
+	{"installer-kernel", "linux-kernel", "katl-installer.vmlinuz"},
+	{"installer-initrd", "initrd", "katl-installer.initrd"},
+	{"installer-iso", "iso", "katl-installer.iso"},
+	{"runtime-uki", "uki", "katl-runtime.efi"},
+	{"runtime-root", "squashfs", "katl-runtime-root.squashfs"},
+	{"kubernetes-sysext", "sysext", "katl-kubernetes.raw"},
+	{"kubernetes-upgrade-sysext", "sysext", "katl-kubernetes-upgrade.raw"},
+	{"kubernetes-upgrade-source-sysext", "sysext", "katl-kubernetes-upgrade-source.raw"},
+	{"drbd-tools", "disk", "katl-vmtest-drbd-tools.raw"},
 }
 
 var pinnedMkosiFiles = []string{
@@ -33,8 +41,8 @@ var pinnedMkosiFiles = []string{
 	"katl-runtime.packages.tsv",
 }
 
-// pinMkosiOutputs binds the outputs of one mkosi build to pinDir and returns
-// pinDir. The builder publishes by renaming, so a hard link keeps the bytes
+// pinMkosiOutputs binds the fixed outputs and the indexed install image to
+// pinDir. The builder replaces directory entries, so a hard link keeps the bytes
 // bound here after a later build replaces the directory entry. Where a hard
 // link is not possible, a clone or a copy gives the run its own bytes.
 //
@@ -44,8 +52,8 @@ func pinMkosiOutputs(mkosiDir, pinDir string) error {
 		return fmt.Errorf("create pin directory: %w", err)
 	}
 	names := slices.Clone(pinnedMkosiFiles)
-	for _, output := range pinnedMkosiOutputs {
-		names = append(names, output, output+".json", output+".sha256")
+	for _, output := range mkosiOutputs {
+		names = append(names, output.file, output.file+".json", output.file+".sha256")
 	}
 	katlos, err := findKatlOSImage(mkosiDir)
 	if err != nil {
@@ -63,6 +71,60 @@ func pinMkosiOutputs(mkosiDir, pinDir string) error {
 	return pinArtifactIndex(filepath.Join(mkosiDir, "artifacts.json"), pinDir)
 }
 
+func pinUpgradeImage(mkosiDir, pinDir, receipt string) (resourcetest.Artifact, error) {
+	required := receipt != ""
+	if !required {
+		receipt = filepath.Join(mkosiDir, "katlos-upgrade.json")
+	}
+	data, err := os.ReadFile(receipt)
+	if !required && errors.Is(err, fs.ErrNotExist) {
+		return resourcetest.Artifact{}, nil
+	}
+	if err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("read upgrade build metadata: %w", err)
+	}
+	// Decode the snapshot the pin keeps, with the reader the run's consumers
+	// use, so the metadata that selects the image is the metadata they read.
+	snapshot, err := os.CreateTemp(pinDir, ".katlos-upgrade-*.json")
+	if err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("create pinned upgrade metadata: %w", err)
+	}
+	defer os.Remove(snapshot.Name())
+	if _, err := snapshot.Write(data); err != nil {
+		snapshot.Close()
+		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
+	}
+	metadata, err := katlosimage.ReadArtifactMetadata(snapshot.Name(), katlosimage.RoleUpgrade)
+	if err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("read upgrade build metadata %s: %w", receipt, err)
+	}
+
+	source := filepath.Join(mkosiDir, metadata.Path)
+	path := filepath.Join(pinDir, metadata.Path)
+	if err := pinFile(source, path); err != nil {
+		return resourcetest.Artifact{}, err
+	}
+	artifact, ok, err := artifactFromPath("katlos-upgrade-image", "squashfs", path)
+	if err != nil {
+		return resourcetest.Artifact{}, err
+	}
+	if !ok || artifact.Digest != metadata.SHA256 || artifact.SizeBytes != metadata.SizeBytes {
+		return resourcetest.Artifact{}, fmt.Errorf("upgrade image %s is missing or differs from its build metadata; rebuild or rerun with the matching artifacts", source)
+	}
+	// Keep the metadata snapshot that selected the image even if the builder
+	// has since replaced the build directory's sidecars.
+	if err := os.Chmod(snapshot.Name(), 0o444); err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
+	}
+	if err := os.Rename(snapshot.Name(), path+".json"); err != nil {
+		return resourcetest.Artifact{}, fmt.Errorf("write pinned upgrade metadata: %w", err)
+	}
+	return artifact, nil
+}
+
 // pinFile binds src at dst. A missing src is not an error.
 func pinFile(src, dst string) error {
 	info, err := os.Stat(src)
@@ -74,6 +136,12 @@ func pinFile(src, dst string) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("pin %s: not a regular file", src)
+	}
+	// Hosted CI reconstructs runtime components as symlinks to its unpacked
+	// install image. Bind the target inode, not the symlink.
+	src, err = filepath.EvalSymlinks(src)
+	if err != nil {
+		return fmt.Errorf("resolve pin source: %w", err)
 	}
 	if err := os.Link(src, dst); err == nil {
 		return nil

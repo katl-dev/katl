@@ -5,15 +5,18 @@ evidence=_build/hosted-evidence
 destination=_build/hosted-inputs
 mkdir -p "$destination"
 : > "$evidence/input-files.list"
+upgrade="$(jq -er '.path' _build/mkosi/katlos-upgrade.json)"
+install="$(jq -er '.artifacts[] | select(.kind == "katlos-install-image") | .path' _build/mkosi/artifacts.json)"
+install="${install##*/}"
 
 while IFS= read -r -d '' path; do
     case "${path##*/}" in
         artifacts.json | katl-installer.efi* | katl-installer.packages.tsv | \
-            katlos-install-*.squashfs* | katl-kubernetes.raw* | katl-runtime.packages.tsv | \
+            "$install" | "$install.json" | "$install.sha256" | katl-kubernetes.raw* | katl-runtime.packages.tsv | \
             katl-runtime-root.squashfs.json | katl-runtime-root.squashfs.sha256 | \
             katl-runtime.efi.json | katl-runtime.efi.sha256 | \
             katl-installer.iso* | katl-installer.vmlinuz* | katl-installer.initrd* | \
-            katlos-upgrade-*.squashfs*)
+            katlos-upgrade.json | "$upgrade" | "$upgrade.json" | "$upgrade.sha256")
             printf '%s\0' "$path" >> "$evidence/input-files.list" ;;
     esac
 done < <(find _build/mkosi -maxdepth 1 -type f -print0 | sort -z)

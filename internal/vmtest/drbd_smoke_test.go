@@ -42,24 +42,23 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	buildDir, err := MkosiBuildDir(repoRoot(t))
-	if err != nil {
-		t.Fatal(err)
+	toolsImage := os.Getenv("KATL_VMTEST_DRBD_TOOLS_IMAGE")
+	if toolsImage == "" {
+		toolsImage = requirePinnedArtifact(t, testWorld, "drbd-tools").Path
 	}
-	toolsImage := first(os.Getenv("KATL_VMTEST_DRBD_TOOLS_IMAGE"), filepath.Join(buildDir, "katl-vmtest-drbd-tools.raw"))
 	if _, err := os.Stat(toolsImage); err != nil {
 		t.Fatalf("build test tools with scripts/mkosi --profile vmtest-drbd-tools -f build: %v", err)
 	}
 	upgradeImage := strings.TrimSpace(os.Getenv("KATL_VMTEST_DRBD_UPGRADE_IMAGE"))
 	if upgradeImage == "" {
-		t.Fatal("KATL_VMTEST_DRBD_UPGRADE_IMAGE must name a production upgrade image with its exact DRBD release closure")
+		upgradeImage = requirePinnedArtifact(t, testWorld, "katlos-upgrade-image").Path
 	}
 	upgradeMetadata, err := katlosimage.ReadArtifactMetadata(upgradeImage+".json", katlosimage.RoleUpgrade)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if upgradeMetadata.ExtensionRelease == nil || upgradeMetadata.ExtensionRelease.Extensions["ghcr.io/katl-dev/katl/extensions/drbd9"] == "" {
-		t.Fatal("qualification target must advertise its release-owned DRBD9 bundle")
+		t.Fatalf("qualification target %s must advertise its release-owned DRBD9 bundle; run scripts/assemble-release-extensions, build the target with KATL_EXTENSION_RELEASE=_build/mkosi/release-extensions.json scripts/mkosi build-katlos-upgrade-image, then rerun with --no-rebuild, or name a qualifying image with KATL_VMTEST_DRBD_UPGRADE_IMAGE", upgradeImage)
 	}
 	initialImage, initialMetadata := upgradeImage, upgradeMetadata
 	previousImage := strings.TrimSpace(os.Getenv("KATL_VMTEST_DRBD_PREVIOUS_IMAGE"))

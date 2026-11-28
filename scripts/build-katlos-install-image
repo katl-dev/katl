@@ -112,4 +112,15 @@ mkosi_artifacts write-katlos-artifact \
     --architecture "$architecture" \
     --runtime-interface "$runtime_interface" >/dev/null
 
+if [[ "$image_role" == upgrade ]]; then
+    # Publish the selected output only after its image and sidecars are complete.
+    receipt="$(mktemp "$build_dir/.katlos-upgrade.XXXXXX")"
+    trap 'rm -f -- "$receipt"' EXIT
+    cp -- "$output.json" "$receipt"
+    mv -f -- "$receipt" "$build_dir/katlos-upgrade.json"
+    if [[ -n "${KATL_VMTEST_UPGRADE_METADATA:-}" ]]; then
+        cp -- "$output.json" "$KATL_VMTEST_UPGRADE_METADATA"
+    fi
+fi
+
 echo "katlos image: ${output#"$repo_root"/}"

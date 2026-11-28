@@ -470,7 +470,7 @@ func TestScanGenericInstallerArtifactChecksSquashFSPayload(t *testing.T) {
 func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	mkosiDir := filepath.Join(repo, "_build", "mkosi")
+	mkosiDir := (World{}).MkosiDir(repo)
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
 	installerISO := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.iso"), "installer-iso")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
@@ -671,7 +671,7 @@ func TestPlanFirstInstallWorldRunSelectsNodesFromSharedConfigBundle(t *testing.T
 
 func writeFixtureKatlOSInstallImage(t *testing.T, repo string) string {
 	t.Helper()
-	mkosiDir := filepath.Join(repo, "_build", "mkosi")
+	mkosiDir := (World{}).MkosiDir(repo)
 	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
 	writeFixtureFile(t, image+".json", `{
   "apiVersion": "katl.dev/v1alpha1",
@@ -962,7 +962,7 @@ func TestWorkerKubeadmConfigSetsNodeName(t *testing.T) {
 func TestPlanFirstInstallWorldRunAcceptsResolvedInstallerArtifact(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	mkosiDir := filepath.Join(repo, "_build", "mkosi")
+	mkosiDir := (World{}).MkosiDir(repo)
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
@@ -1007,7 +1007,7 @@ func TestPlanFirstInstallWorldRunAcceptsResolvedInstallerArtifact(t *testing.T) 
 func TestPlanFirstInstallWorldRunAcceptsResolvedKatlOSInstallImage(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	mkosiDir := filepath.Join(repo, "_build", "mkosi")
+	mkosiDir := (World{}).MkosiDir(repo)
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")

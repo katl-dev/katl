@@ -22,7 +22,7 @@ func runThreeControlPlaneUpgradeProof(t *testing.T, ctx context.Context, result 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	buildDir, err := vmtest.MkosiBuildDir(katlRepoRoot(t))
+	buildDir, err := vmtest.MkosiDir(katlRepoRoot(t))
 	if err != nil {
 		return err
 	}

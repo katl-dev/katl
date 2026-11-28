@@ -14,7 +14,7 @@ func kubernetesSourceSysext(repo string, upgrade bool) (artifactPath, metadataPa
 	if upgrade {
 		name = "katl-kubernetes-upgrade-source"
 	}
-	buildDir, err := vmtest.MkosiBuildDir(repo)
+	buildDir, err := vmtest.MkosiDir(repo)
 	if err != nil {
 		return "", "", err
 	}

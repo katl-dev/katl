@@ -27,7 +27,7 @@ func runEtcdUpgradeFailureProof(t *testing.T, ctx context.Context, result vmtest
 	}
 	cp1 := nodeByName(nodes, "cp-1")
 	repo := katlRepoRoot(t)
-	buildDir, err := vmtest.MkosiBuildDir(repo)
+	buildDir, err := vmtest.MkosiDir(repo)
 	if err != nil {
 		return err
 	}

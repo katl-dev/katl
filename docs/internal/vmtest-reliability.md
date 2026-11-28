@@ -37,9 +37,9 @@ Each run pins its artifacts before its first VM starts. `katl-resource-lock prep
 2. **Reflink** (`cp --reflink=always`), on filesystems that support copy-on-write clones.
 3. **Full copy** in any other case.
 
-A hard link shares its inode with the build output and keeps that file's mode; a clone or copy is made read-only. Pinning covers the installer, runtime and install-image outputs, the installer ISO, the Kubernetes sysext, their metadata and package inventories, and an artifact index whose paths name the pinned files. The upgrade images, the Kubernetes upgrade sysexts and the DRBD tools image are still read from `_build/mkosi`.
+A hard link shares its inode with the build output and keeps that file's mode. A clone or copy is made read-only. Install runs pin the installer, runtime, KatlOS install and upgrade images, Kubernetes base and upgrade sysexts, and the default DRBD tools image. The upgrade builder publishes metadata naming the output and its digest, which the pinning command checks against the pinned bytes. Runtime-only runs still use the selected build directory.
 
-`world.json` names only pinned paths. `world.json` and `run.json` record every pinned output the run can boot, the installer ISO included, with its pinned path, repository path and SHA-256. A passing run is compacted: `artifacts/` is deleted with the other images and the record keeps the digests. The pin lasts exactly as long as the run directory, so it needs no store, garbage collection or reference counting. CI extracts the producer job's artifacts and pins them the same way. Release builds never read pinned run artifacts.
+`world.json` and `run.json` record every pinned output the run can boot, the installer ISO included, with its pinned path, repository path and SHA-256. A passing run deletes `artifacts/` with the other images and keeps the digests in the record. The pin lasts exactly as long as the run directory, so it needs no store, garbage collection or reference counting. CI extracts the producer job's artifacts and pins them the same way. Release builds never read pinned run artifacts.
 
 ## Addressing
 

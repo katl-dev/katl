@@ -39,6 +39,7 @@ go_test_log="$run_dir/go-test.log"
 resource_manifest="$run_dir/resource-test-manifest.json"
 resource_manifest_sha256=""
 vmtest_artifacts_json="[]"
+upgrade_metadata=""
 vmtest_artifact_inputs_json="{}"
 debug_targets_artifact="$run_dir/preserved-vm-debug.txt"
 lease_file="$network_dir/leases.json"
@@ -540,6 +541,10 @@ build_default_artifacts() {
                     --output katl-kubernetes-upgrade-source
                 )
                 ;;
+            build-katlos-upgrade-image)
+                upgrade_metadata="$artifact_dir/katlos-upgrade.json"
+                build_command=(env "KATL_VMTEST_UPGRADE_METADATA=$upgrade_metadata" "$repo_root/scripts/mkosi" "$target")
+                ;;
             *)
                 build_command=("$repo_root/scripts/mkosi" "$target")
                 ;;
@@ -627,6 +632,7 @@ artifact_build_actions_json() {
         --arg buildInstaller "${artifact_build_actions[build-installer-iso]:-}" \
         --arg buildRuntime "${artifact_build_actions[build-runtime]:-}" \
         --arg buildInstallImage "${artifact_build_actions[build-katlos-install-image]:-}" \
+        --arg buildUpgradeImage "${artifact_build_actions[build-katlos-upgrade-image]:-}" \
         --arg buildKubernetesSysext "${artifact_build_actions[build-kubernetes-sysext]:-}" \
         --arg buildKubernetesUpgradeSysext "${artifact_build_actions[build-kubernetes-upgrade-sysext]:-}" \
         --arg buildKubernetesUpgradeSourceSysext "${artifact_build_actions[build-kubernetes-upgrade-source-sysext]:-}" \
@@ -634,6 +640,7 @@ artifact_build_actions_json() {
           "build-installer": $buildInstaller,
           "build-runtime": $buildRuntime,
           "build-katlos-install-image": $buildInstallImage,
+          "build-katlos-upgrade-image": $buildUpgradeImage,
           "build-kubernetes-sysext": $buildKubernetesSysext,
           "build-kubernetes-upgrade-sysext": $buildKubernetesUpgradeSysext,
           "build-kubernetes-upgrade-source-sysext": $buildKubernetesUpgradeSourceSysext
@@ -679,6 +686,7 @@ prepare_resource_manifest() {
 	if ! run_resource_lock prepare-mkosi \
         -manifest "$resource_manifest" \
         -mode record \
+        -upgrade-metadata "$upgrade_metadata" \
         -run-id "$run_id" \
 		-git-revision "$revision" \
 		-pin-dir "$artifact_dir" \
@@ -696,6 +704,9 @@ prepare_resource_manifest() {
             if (.name == "installer-iso") then ($actions["build-installer-iso"] // "validated")
             elif (.name | startswith("installer-")) then ($actions["build-installer"] // "validated")
             elif (.name == "kubernetes-sysext") then ($actions["build-kubernetes-sysext"] // "validated")
+            elif (.name == "katlos-upgrade-image") then ($actions["build-katlos-upgrade-image"] // "validated")
+            elif (.name == "kubernetes-upgrade-sysext") then ($actions["build-kubernetes-upgrade-sysext"] // "validated")
+            elif (.name == "kubernetes-upgrade-source-sysext") then ($actions["build-kubernetes-upgrade-source-sysext"] // "validated")
             elif (.name == "runtime-uki" or .name == "runtime-root" or .name == "katlos-install-image") then ($actions["build-katlos-install-image"] // $actions["build-runtime"] // "validated")
             else "validated"
             end;

@@ -380,17 +380,17 @@ func (world World) buildDir(repo string) string {
 	return filepath.Join(repo, "_build", "mkosi")
 }
 
-// MkosiBuildDir is the build directory bound in the current run's world, or
+// MkosiDir is the artifact directory bound in the current run's world, or
 // the checkout's default build directory outside a run. Inside a run an
 // unreadable world is an error: falling back would read another build's
 // outputs.
-func MkosiBuildDir(repo string) (string, error) {
+func MkosiDir(repo string) (string, error) {
 	if os.Getenv(WorldManifestEnv) == "" {
 		return World{}.buildDir(repo), nil
 	}
 	world, err := LoadWorldFromEnv()
 	if err != nil {
-		return "", fmt.Errorf("read the run's mkosi build directory: %w", err)
+		return "", fmt.Errorf("read the run's mkosi artifact directory: %w", err)
 	}
-	return world.buildDir(repo), nil
+	return world.MkosiDir(repo), nil
 }

@@ -10,7 +10,7 @@ import (
 
 func TestScenarioKubernetesVersion(t *testing.T) {
 	repo := t.TempDir()
-	mkosi := filepath.Join(repo, "_build/mkosi")
+	mkosi := (vmtest.World{}).MkosiDir(repo)
 	t.Setenv(vmtest.WorldManifestEnv, "")
 	if err := os.MkdirAll(mkosi, 0o755); err != nil {
 		t.Fatal(err)

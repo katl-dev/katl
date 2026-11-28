@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -2380,11 +2381,13 @@ func TestWorldMkosiDir(t *testing.T) {
 	}
 
 	t.Setenv(WorldManifestEnv, "")
-	if got, err := MkosiBuildDir(repo); err != nil || got != "/repo/_build/mkosi" {
-		t.Fatalf("MkosiBuildDir outside a run = %q, %v; want the checkout build directory", got, err)
+	if got, err := MkosiDir(repo); err != nil || got != "/repo/_build/mkosi" {
+		t.Fatalf("MkosiDir outside a run = %q, %v; want the checkout build directory", got, err)
 	}
 	world := testWorld(t)
 	world.MkosiBuildDir = "/build/lts"
+	world.ArtifactDir = filepath.Join(world.RunDir, "artifacts")
+	world.ArtifactsPinned = true
 	manifest := filepath.Join(world.RunDir, "world.json")
 	data, err := json.Marshal(world)
 	if err != nil {
@@ -2394,14 +2397,41 @@ func TestWorldMkosiDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(WorldManifestEnv, manifest)
-	if got, err := MkosiBuildDir(repo); err != nil || got != "/build/lts" {
-		t.Fatalf("MkosiBuildDir in a run = %q, %v; want the world's build directory", got, err)
+	if got, err := MkosiDir(repo); err != nil || got != world.ArtifactDir {
+		t.Fatalf("MkosiDir in a run = %q, %v; want the world's artifact directory", got, err)
 	}
 
 	// A run whose world cannot be read must not fall back to the checkout's
 	// build directory, which may hold another flavour's outputs.
 	t.Setenv(WorldManifestEnv, filepath.Join(world.RunDir, "missing.json"))
-	if got, err := MkosiBuildDir(repo); err == nil {
-		t.Fatalf("MkosiBuildDir with an unreadable world = %q, want an error", got)
+	if got, err := MkosiDir(repo); err == nil {
+		t.Fatalf("MkosiDir with an unreadable world = %q, want an error", got)
+	}
+}
+
+func TestVMConsumersUseWorldMkosiDir(t *testing.T) {
+	root := filepath.Join(scriptTestRepoRoot(t), "internal", "vmtest")
+	// Check path construction and the retired upgrade glob. Standalone test
+	// data also contains artifact paths, as expected for index fixtures.
+	livePath := regexp.MustCompile(`filepath\.Join\([^\n]*"_build(?:/mkosi|"\s*,\s*"mkosi)\b|katlos-upgrade-\*`)
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || path == filepath.Join(root, "world.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for line, source := range strings.Split(string(data), "\n") {
+			if livePath.MatchString(source) {
+				t.Errorf("%s:%d reads the build directory directly; use the VM world", path, line+1)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
