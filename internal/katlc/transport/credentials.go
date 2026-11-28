@@ -35,11 +35,10 @@ func NewClientCredentials(config *tls.Config) *clientCredentials {
 
 func (c *clientCredentials) ClientHandshake(ctx context.Context, authority string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
 	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, authority, conn)
-	var unknownCA x509.UnknownAuthorityError
 	var wrongName x509.HostnameError
 	var plaintext tls.RecordHeaderError
 	switch {
-	case errors.As(err, &unknownCA):
+	case unknownServerAuthority(err):
 		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or, if they are lost, run katlctl management identity recover --config CLUSTER.yaml: %w", err)
 	case errors.As(err, &plaintext) && plaintext.Conn != nil:
 		return nil, nil, fmt.Errorf("management endpoint answered without TLS, so the node still serves trusted-network management. Run or rerun `katlctl management enable-mtls` to move it to mTLS, or set `managementAuthentication: trusted-network` to keep managing it that way. Otherwise check that management.address points at the node's katlc agent on %d: %w", inventory.ManagementPort, err)
@@ -48,6 +47,13 @@ func (c *clientCredentials) ClientHandshake(ctx context.Context, authority strin
 	default:
 		return secure, info, err
 	}
+}
+
+// unknownServerAuthority reports a handshake that rejected the server's
+// certificate because the configured authority did not sign it.
+func unknownServerAuthority(err error) bool {
+	var unknownCA x509.UnknownAuthorityError
+	return errors.As(err, &unknownCA)
 }
 
 func (c *clientCredentials) Clone() credentials.TransportCredentials {
@@ -160,10 +166,11 @@ type managementObservationKey struct{}
 // ManagementObservation records wire evidence from a management dial. If gRPC
 // handshakes on more than one connection, the evidence is inconclusive.
 type ManagementObservation struct {
-	attempts        atomic.Uint32
-	plaintextHTTP2  atomic.Bool
-	plaintextSent   atomic.Bool
-	plaintextClosed atomic.Bool
+	attempts         atomic.Uint32
+	plaintextHTTP2   atomic.Bool
+	plaintextSent    atomic.Bool
+	plaintextClosed  atomic.Bool
+	unknownAuthority atomic.Bool
 }
 
 // ObserveManagementConnection enables one dial's wire observation through
@@ -186,26 +193,36 @@ func (o *ManagementObservation) PlaintextClosed() bool {
 	return o.attempts.Load() == 1 && o.plaintextSent.Load() && o.plaintextClosed.Load()
 }
 
+// observedCredentials records every handshake of a management connection.
+// gRPC calls ClientHandshake only on an established TCP connection, so
+// attempts counts the connections that reached the endpoint.
 type observedCredentials struct {
 	credentials.TransportCredentials
 	observation *ManagementObservation
 	plaintext   bool
+	// inspectTLS enables the buffered preface inspection of a TLS connection,
+	// which only callers of ObserveManagementConnection need.
+	inspectTLS bool
 }
 
 func (c *observedCredentials) Clone() credentials.TransportCredentials {
-	return &observedCredentials{TransportCredentials: c.TransportCredentials.Clone(), observation: c.observation, plaintext: c.plaintext}
+	clone := *c
+	clone.TransportCredentials = c.TransportCredentials.Clone()
+	return &clone
 }
 
 func (c *observedCredentials) ClientHandshake(ctx context.Context, authority string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
 	first := c.observation.attempts.Add(1) == 1
-	if first {
+	if first && (c.plaintext || c.inspectTLS) {
 		observed := &observedConn{Conn: conn, observation: c.observation}
 		if !c.plaintext {
 			observed.reader = bufio.NewReaderSize(conn, frameHeaderSize+initialMaxFrameSize)
 		}
 		conn = observed
 	}
-	return c.TransportCredentials.ClientHandshake(ctx, authority, conn)
+	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, authority, conn)
+	c.observation.unknownAuthority.Store(unknownServerAuthority(err))
+	return secure, info, err
 }
 
 const (

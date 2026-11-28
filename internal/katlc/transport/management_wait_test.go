@@ -617,3 +617,220 @@ func TestManagementDialOutcomes(t *testing.T) {
 		})
 	}
 }
+
+// heldAgent answers status only after the caller's deadline.
+type heldAgent struct {
+	agentapi.UnimplementedKatlcAgentServer
+}
+
+func (heldAgent) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusRequest) (*agentapi.NodeStatus, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func listenTCP(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
+}
+
+// A real management call yields evidence from what its connection observed:
+// unreachable only when no TCP connection was established, and a named cause
+// only for typed handshake evidence.
+func TestManagementEvidenceFromConnection(t *testing.T) {
+	trustedNetwork := managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}
+	type setup struct {
+		endpoint string
+		identity managementidentity.ClientCredentials
+		node     string
+		dialer   func(context.Context, string) (net.Conn, error)
+		cancel   bool
+	}
+	tests := map[string]struct {
+		setup func(*testing.T) setup
+		want  ManagementEvidence
+	}{
+		"nothing listening": {setup: func(t *testing.T) setup {
+			listener := listenTCP(t)
+			endpoint := listener.Addr().String()
+			_ = listener.Close()
+			return setup{endpoint: endpoint, identity: trustedNetwork}
+		}, want: ManagementUnreachable},
+		"dial blocks until deadline": {setup: func(t *testing.T) setup {
+			return setup{endpoint: "192.0.2.1:9443", identity: trustedNetwork, dialer: blockingDial}
+		}, want: ManagementUnreachable},
+		"dial blocks until cancelled": {setup: func(t *testing.T) setup {
+			return setup{endpoint: "192.0.2.1:9443", identity: trustedNetwork, dialer: blockingDial, cancel: true}
+		}, want: ManagementInconclusive},
+		"foreign authority": {setup: func(t *testing.T) setup {
+			endpoint, _ := serveMutualTLS(t, &countingAgent{})
+			_, foreign := serveMutualTLS(t, &countingAgent{})
+			return setup{endpoint: endpoint, identity: foreign}
+		}, want: ManagementAuthorityMismatch},
+		"plaintext client at mTLS node": {setup: func(t *testing.T) setup {
+			endpoint, _ := serveMutualTLS(t, &countingAgent{})
+			return setup{endpoint: endpoint, identity: trustedNetwork}
+		}, want: ManagementRequiresTLS},
+		"TLS client, listener accepts and closes": {setup: func(t *testing.T) setup {
+			listener := listenTCP(t)
+			go func() {
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					_ = conn.Close()
+				}
+			}()
+			_, client := serveMutualTLS(t, &countingAgent{})
+			return setup{endpoint: listener.Addr().String(), identity: client}
+		}, want: ManagementInconclusive},
+		"TLS client, plaintext HTTP/2 server": {setup: func(t *testing.T) setup {
+			_, client := serveMutualTLS(t, &countingAgent{})
+			return setup{endpoint: serve(t, &countingAgent{}, 0).Addr().String(), identity: client}
+		}, want: ManagementInconclusive},
+		"certificate for another node": {setup: func(t *testing.T) setup {
+			endpoint, client := serveMutualTLS(t, &countingAgent{})
+			return setup{endpoint: endpoint, identity: client, node: "cp-2"}
+		}, want: ManagementInconclusive},
+		"reply after deadline": {setup: func(t *testing.T) setup {
+			listener := listenTCP(t)
+			server := grpc.NewServer()
+			agentapi.RegisterKatlcAgentServer(server, heldAgent{})
+			t.Cleanup(server.Stop)
+			go func() { _ = server.Serve(listener) }()
+			return setup{endpoint: listener.Addr().String(), identity: trustedNetwork}
+		}, want: ManagementInconclusive},
+		"agent reports Unavailable": {setup: func(t *testing.T) setup {
+			agent := &countingAgent{status: grpcstatus.Error(codes.Unavailable, "dial tcp 10.0.0.9:6443: connect: connection refused")}
+			return setup{endpoint: serve(t, agent, 0).Addr().String(), identity: trustedNetwork}
+		}, want: ManagementInconclusive},
+	}
+	for name, test := range tests {
+		for _, wait := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/wait=%t", name, wait), func(t *testing.T) {
+				shortWait(t, 300*time.Millisecond)
+				s := test.setup(t)
+				if s.node == "" {
+					s.node = "cp-1"
+				}
+				creds, err := ClientCredentialsForNode(s.identity, s.node)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				if s.cancel {
+					time.AfterFunc(200*time.Millisecond, cancel)
+				}
+				if !wait {
+					ctx = WithoutManagementWait(ctx)
+				}
+				options := ManagementDialOptions(ctx, s.node, s.endpoint, creds)
+				if s.dialer != nil {
+					options = append(options, grpc.WithContextDialer(s.dialer))
+				}
+				conn, err := grpc.NewClient("passthrough:///"+s.endpoint, options...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = conn.Close() })
+
+				_, err = agentapi.NewKatlcAgentClient(conn).GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+
+				if got := ClassifyManagementEvidence(err, nil, nil); got != test.want {
+					t.Fatalf("evidence = %v, want %v; error: %v", got, test.want, err)
+				}
+			})
+		}
+	}
+}
+
+// A refused endpoint that never starts listening before the caller's deadline
+// is unreachable, although the readiness wait ends the call with an
+// inconclusive budget error.
+func TestManagementEvidenceRefusedUntilDeadline(t *testing.T) {
+	shortWait(t, 30*time.Second)
+	listener := listenTCP(t)
+	endpoint := listener.Addr().String()
+	_ = listener.Close()
+	creds, err := ClientCredentialsForNode(managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}, "cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	conn, err := grpc.NewClient("passthrough:///"+endpoint, ManagementDialOptions(ctx, "cp-1", endpoint, creds)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	_, err = agentapi.NewKatlcAgentClient(conn).GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+
+	if !errors.Is(err, ErrManagementRPCInconclusive) || !strings.Contains(err.Error(), "refused connections") {
+		t.Fatalf("error = %v, want the readiness wait to give up at the deadline", err)
+	}
+	if got := ClassifyManagementEvidence(err, nil, nil); got != ManagementUnreachable {
+		t.Fatalf("evidence = %v, want unreachable", got)
+	}
+}
+
+func blockingDial(ctx context.Context, _ string) (net.Conn, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// Carrying connection evidence does not change what callers see of a call's
+// error: its status, its message and its identity.
+func TestManagementCallErrorKeepsStatus(t *testing.T) {
+	for name, inner := range map[string]error{
+		"status":       grpcstatus.Error(codes.Unavailable, "connection error"),
+		"wrapped":      fmt.Errorf("node likely serves mTLS: %w", grpcstatus.Error(codes.Unavailable, "server preface")),
+		"inconclusive": managementRPCInconclusive{cause: context.DeadlineExceeded},
+		"plain":        io.ErrUnexpectedEOF,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wrapped := error(&managementCallError{err: inner})
+
+			if got, want := grpcstatus.Code(wrapped), grpcstatus.Code(inner); got != want {
+				t.Errorf("code = %v, want %v", got, want)
+			}
+			if got, want := grpcstatus.Convert(wrapped).Message(), grpcstatus.Convert(inner).Message(); got != want {
+				t.Errorf("message = %q, want %q", got, want)
+			}
+			_, gotOK := grpcstatus.FromError(wrapped)
+			_, wantOK := grpcstatus.FromError(inner)
+			if gotOK != wantOK {
+				t.Errorf("FromError ok = %t, want %t", gotOK, wantOK)
+			}
+			if wrapped.Error() != inner.Error() || !errors.Is(wrapped, inner) {
+				t.Errorf("error = %v, want it to be %v", wrapped, inner)
+			}
+			if errors.Is(inner, ErrManagementRPCInconclusive) != errors.Is(wrapped, ErrManagementRPCInconclusive) {
+				t.Error("wrapping changed whether the call was inconclusive")
+			}
+		})
+	}
+
+	t.Run("stream end", func(t *testing.T) {
+		endpoint := serve(t, &countingAgent{}, 0).Addr().String()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		client := dialManagement(ctx, t, endpoint, insecure.NewCredentials(), nil)
+		stream, err := client.WatchOperation(ctx, &agentapi.WatchOperationRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Recv(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Recv(); err != io.EOF {
+			t.Fatalf("end of stream = %v, want io.EOF itself", err)
+		}
+	})
+}
