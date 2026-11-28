@@ -68,10 +68,10 @@ func TestInterruptedConfigRenderReleasesLockAndCandidate(t *testing.T) {
 		t.Fatalf("startup audit did not reproduce held lock: %+v", before)
 	}
 
-	if err := recoverInterruptedConfigApplies(server.Root, server.Store, server.Now()); err != nil {
+	if err := recoverInterruptedConfigApplies(server.BootMover, server.Root, server.Store, server.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverInterruptedConfigApplies(server.Root, server.Store, server.Now()); err != nil {
+	if err := recoverInterruptedConfigApplies(server.BootMover, server.Root, server.Store, server.Now()); err != nil {
 		t.Fatalf("repeated recovery: %v", err)
 	}
 	if _, err := os.Stat(candidateDir); !os.IsNotExist(err) {
@@ -120,7 +120,7 @@ func TestInterruptedConfigRenderKeepsSelectedOrMutatedCandidate(t *testing.T) {
 			if _, err := AuditStartup(server.Store, server.Now()); err != nil {
 				t.Fatal(err)
 			}
-			if err := recoverInterruptedConfigApplies(server.Root, server.Store, server.Now()); err != nil {
+			if err := recoverInterruptedConfigApplies(server.BootMover, server.Root, server.Store, server.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(candidateDir); err != nil {

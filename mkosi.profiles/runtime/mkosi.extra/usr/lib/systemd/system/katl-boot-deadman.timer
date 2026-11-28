@@ -1,10 +1,9 @@
 [Unit]
 Description=Katl boot health deadline
 Documentation=man:systemd.timer(5)
+# Activation starts the timer only for a boot trial. OnBootSec= counts
+# from boot, so a timer started late still expires on time.
 
 [Timer]
 OnBootSec=10min
 Unit=katl-boot-deadman.service
-
-[Install]
-WantedBy=timers.target

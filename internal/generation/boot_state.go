@@ -59,11 +59,6 @@ func ReadBootTargets(root string, legacyCurrent func(BootSelectionRecord) string
 	return targets, err
 }
 
-type bootState struct {
-	intent *bootMoveIntent
-	legacy *legacyBootState
-}
-
 type bootGenerationState struct {
 	spec   GenerationSpec
 	status GenerationStatus
@@ -78,26 +73,6 @@ type legacyBootState struct {
 	// identity and keeps working even when it cannot observe EFI.
 	efi    efiboot.Entries
 	efiErr error
-}
-
-// withBootState reads the intent first and keeps the lock through the caller's
-// use of the snapshot. A reader that finds an intent must not infer a move
-// from a possibly partially projected selection or generation status.
-func withBootState(root, runningID string, readEFI func(string) (efiboot.Entries, error), action func(bootState) error) error {
-	return withBootStateLock(root, func() error {
-		intent, err := readBootMoveIntent(root)
-		if err != nil {
-			return err
-		}
-		if intent != nil {
-			return action(bootState{intent: intent})
-		}
-		legacy, err := readLegacyBootState(root, runningID, readEFI)
-		if err != nil {
-			return err
-		}
-		return action(bootState{legacy: legacy})
-	})
 }
 
 // readLegacyBootState imports the selected generations and raw EFI variables.

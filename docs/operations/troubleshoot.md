@@ -76,11 +76,24 @@ snapshot looks stale:
 Do not edit operation, generation, or boot-selection records as a repair method.
 
 After a failed trial, the previous-boot journal shows why boot health failed and
-whether `katl-boot-recovery.service` requested the single automatic fallback
-reboot. If the fallback also failed, or `recoveryRequired` is true, Katl does not
-reboot again. Preserve the journal and use the console to select or repair a
-healthy generation. If no healthy generation remains, reinstall the node
-without treating host rollback as a Kubernetes or data backup.
+whether `katl-boot-recovery.service` or `katl-boot-deadman.service` requested
+the single automatic fallback reboot. The rejected generation is listed as
+failed and unhealthy by `katlctl node generations list`.
+
+Boot health that fails outside a boot trial changes nothing and does not reboot
+the node. That covers the first boot after install, a reboot of the default
+generation, and a generation booted from the boot menu or by manual selection.
+`katlctl node status` reports health `failed` with the failed unit or offline
+link, `katl-boot-deadman.timer` is inactive, and `katl-boot-recovery.service`
+is failed with a journal line naming the running generation, the default, the
+next boot, and what to do next. Fix the cause, then run `katlctl node reboot`.
+
+If a failed trial has no usable fallback, Katl does not reboot and reports that
+recovery is required. Repair the cause and run `katlctl node reboot`; a healthy
+boot of the generation clears the state. Otherwise preserve the journal and use
+the console to boot another generation from the boot menu. If the fallback also
+failed, Katl does not reboot again. If no healthy generation remains, reinstall
+the node without treating host rollback as a Kubernetes or data backup.
 
 ## Installer evidence
 

@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/katl-dev/katl/internal/efiboot"
 )
 
 const (
@@ -34,49 +32,21 @@ type ActivationLink struct {
 	ActivationPath string
 }
 
-// ActivateBootGeneration applies the kernel-selected generation under the boot
-// lock. An explicit activation without kernel evidence uses the legacy path.
-func ActivateBootGeneration(root, id, commandLine string) (ActivationPlan, error) {
-	root = cleanRoot(root)
-	var plan ActivationPlan
-	activate := func(state bootState) error {
-		if state.intent != nil {
-			record, err := state.intent.activationRecord(root, id, commandLine)
-			if err != nil {
-				return err
-			}
-			plan, err = ApplyActivation(root, record)
-			if err != nil {
-				return err
-			}
-			return writeCurrentBoot(root, currentBoot{GenerationID: id})
-		}
-
-		path, err := MetadataPath(root, id)
-		if err != nil {
-			return err
-		}
-		record, err := ReadRecord(path)
-		if err != nil {
-			return err
-		}
-		if record.GenerationID != id {
-			return fmt.Errorf("metadata generation %q does not match selected generation %q", record.GenerationID, id)
-		}
-		if commandLine != "" {
-			if err := recordLegacyBootedGeneration(root, id, commandLine, state.legacy); err != nil {
-				return fmt.Errorf("record booted generation: %w", err)
-			}
-		}
-		plan, err = ApplyActivation(root, record)
-		return err
+// plainActivationRecord reads a generation's activation record when no boot
+// move is outstanding.
+func plainActivationRecord(root, id string) (Record, error) {
+	path, err := MetadataPath(root, id)
+	if err != nil {
+		return Record{}, err
 	}
-	if commandLine == "" {
-		err := WithLegacyBootState(root, func() error { return activate(bootState{}) })
-		return plan, err
+	record, err := ReadRecord(path)
+	if err != nil {
+		return Record{}, err
 	}
-	err := withBootState(root, id, efiboot.Reader{}.Read, activate)
-	return plan, err
+	if record.GenerationID != id {
+		return Record{}, fmt.Errorf("metadata generation %q does not match selected generation %q", record.GenerationID, id)
+	}
+	return record, nil
 }
 
 func (intent bootMoveIntent) activationRecord(root, id, commandLine string) (Record, error) {

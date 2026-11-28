@@ -15,7 +15,7 @@ import (
 // A config render can leave a partial candidate when the agent stops. Before
 // serving new requests, discard only work that never reached live mutation or
 // boot selection; the source generation remains the authority for a retry.
-func recoverInterruptedConfigApplies(root string, store operation.Store, now time.Time) error {
+func recoverInterruptedConfigApplies(mover *generation.BootMover, root string, store operation.Store, now time.Time) error {
 	lock, err := store.AcquireMutationLock()
 	if err != nil {
 		return err
@@ -57,7 +57,10 @@ func recoverInterruptedConfigApplies(root string, store operation.Store, now tim
 				// cannot safely discard. Keep the lock for explicit recovery.
 				continue
 			}
-			if err := generation.Remove(root, candidate); err != nil {
+			if mover == nil {
+				return fmt.Errorf("remove interrupted candidate %s: boot management is not configured", candidate)
+			}
+			if err := mover.Remove(candidate); err != nil {
 				return fmt.Errorf("remove interrupted candidate %s: %w", candidate, err)
 			}
 		} else {

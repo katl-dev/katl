@@ -71,3 +71,19 @@ The reboot ends with `NODE rebooted successfully; health OK`, and
 if its selected boot entry is missing for another reason, such as disk damage.
 The boot-menu recovery above still returns such a node to service by booting
 the newest configuration that has an entry; it does not repair the damage.
+## Upgrade only from 2026.11.6 or later
+
+A node must run KatlOS 2026.11.6 or later to upgrade to this release, because the previous release is the fallback if the new one fails and only 2026.11.6 and later can read the boot records this release writes. `katlctl node upgrade` refuses an earlier source with `upgrade to 2026.11.6 or later first`. Upgrade to 2026.11.6 or later, then retry. An older `katlctl`, or an upgrade submitted straight to the node, is not stopped by that check, but the node refuses the move itself and changes nothing.
+
+An upgrade or next-boot apply that starts while the node runs a generation other than its default, for example after you chose one from the boot menu, is refused with `select the running generation first with 'katlctl node generations select <running> <node>'` unless the default generation has already run a release that owns boot state. Select the running generation, then retry.
+
+## Boot health changes
+
+- A failed first boot no longer marks the node recovery-required. The generation stays pending and unknown, no reboot follows, and apply stays refused until a boot of it is healthy. Fix the cause and run `katlctl node reboot`.
+- Only a boot trial reboots the node after a boot health failure. A failed boot of the default, a boot-menu generation, or a manual selection reports the failure and changes nothing. `katl-boot-recovery.service` names the running generation, the default, the next boot, and the next action in its journal.
+- A failed trial with no usable fallback stays on the failed generation, reports that recovery is required, and does not reboot. A healthy boot of that generation clears the state.
+- `katl-boot-deadman.timer` is active only during a boot trial.
+
+## Finishing an interrupted first trial
+
+If power is lost inside the move that fails or promotes the first trial after upgrading from an earlier release, the node keeps a boot-move record that only this release completes. If the node comes back on the old generation, boot the new generation from the boot menu to finish the move.

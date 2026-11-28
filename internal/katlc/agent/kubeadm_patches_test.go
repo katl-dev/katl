@@ -39,8 +39,7 @@ func TestKubeadmUpgradePatches(t *testing.T) {
 				executor := newUpgradeExecutor(root, store)
 				executor.Async = false
 				executor.Now = func() time.Time { return now.Add(time.Minute) }
-				executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-				executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+				executor.BootMover, _ = newBootMover(t, root, "boot-1", "gen0")
 				upgraded := false
 				executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 					joined := strings.Join(argv, " ")

@@ -30,7 +30,8 @@ import (
 
 func externalWorkerRequest(t *testing.T, server *testServer, executor *Executor) *agentapi.SubmitOperationRequest {
 	t.Helper()
-	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
+	server.seedBootstrapRuntime(t, "worker")
+	executor.BootMover = server.BootMover
 	configuration, err := configapply.ReadGenerationConfiguration(server.Root, "0")
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +70,7 @@ func externalWorkerRequest(t *testing.T, server *testServer, executor *Executor)
 
 func TestExternalWorkerEnrollment(t *testing.T) {
 	server := newTestServer(t)
-	executor := NewExecutor(server.Root, server.Store, "external-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "external-test")
 	executor.Async = false
 	executor.Now = server.Now
 	req := externalWorkerRequest(t, server, executor)
@@ -139,7 +140,7 @@ func TestExternalWorkerEnrollment(t *testing.T) {
 
 func TestExternalWorkerContinuation(t *testing.T) {
 	server := newTestServer(t)
-	executor := NewExecutor(server.Root, server.Store, "external-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "external-test")
 	executor.Async = false
 	executor.Now = server.Now
 	req := externalWorkerRequest(t, server, executor)
@@ -260,7 +261,7 @@ func TestExternalWorkerContinuation(t *testing.T) {
 
 func TestExternalWorkerFinishesWithoutBootstrap(t *testing.T) {
 	server := newTestServer(t)
-	executor := NewExecutor(server.Root, server.Store, "external-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "external-test")
 	executor.Async, executor.Now = false, server.Now
 	req := externalWorkerRequest(t, server, executor)
 	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
@@ -347,7 +348,7 @@ func writeExternalWorkerCertificate(t *testing.T, root string, now time.Time) {
 
 func TestExternalWorkerWaitsForCertificate(t *testing.T) {
 	server := newTestServer(t)
-	executor := NewExecutor(server.Root, server.Store, "external-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "external-test")
 	req := externalWorkerRequest(t, server, executor)
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
 	accepted, err := server.SubmitOperation(context.Background(), req)
@@ -377,8 +378,7 @@ func TestExternalWorkerUpgrade(t *testing.T) {
 	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	executor.BootMover, _ = newBootMover(t, root, "boot-1", "gen0")
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		joined := strings.Join(argv, " ")
 		if filepath.Base(argv[0]) == "kubeadm" || strings.Contains(joined, "admin.conf") || slices.Contains(argv, "configmap") {

@@ -83,9 +83,9 @@ type Dispatcher interface {
 }
 
 type Server struct {
-	MountBootRoot  func(context.Context, string) error
-	SetBootDefault func(context.Context, string, string) error
-	SetBootOneshot func(context.Context, string, string) error
+	MountBootRoot func(context.Context, string) error
+	// BootMover is the only writer of boot targets; nil disables boot management.
+	BootMover *generation.BootMover
 	agentapi.UnimplementedKatlcAgentServer
 
 	Root                     string
@@ -129,8 +129,7 @@ func NewServer(root string, store operation.Store) *Server {
 	startID, _ := randomID("agent")
 	return &Server{
 		MountBootRoot:            runtimeBootRootMounter(root),
-		SetBootDefault:           setBootDefault,
-		SetBootOneshot:           setBootOneshot,
+		BootMover:                productionBootMover(root),
 		Root:                     strings.TrimSpace(root),
 		Store:                    store,
 		AgentStartID:             startID,
@@ -184,12 +183,18 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	if len(active) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, "cannot reboot while another operation is active")
 	}
-	if err := generation.WithLegacyBootState(s.Root, func() error {
-		if err := s.checkRebootTarget(ctx, target); err != nil {
+	if s.BootMover == nil {
+		return nil, status.Error(codes.FailedPrecondition, "boot management is not configured")
+	}
+	err = s.BootMover.Read(func(selection generation.BootSelectionRecord) error {
+		if err := s.checkRebootTarget(ctx, selection, target); err != nil {
 			return fmt.Errorf("%w. Check 'katlctl node generations list' and restore the boot target before retrying", err)
 		}
 		return nil
-	}); err != nil {
+	})
+	// A failed trial that stopped before spending its reboot completes on the
+	// next boot of any recorded target, so the operator's reboot is the way on.
+	if err != nil && !errors.Is(err, generation.ErrTrialResolving) {
 		return nil, status.Errorf(codes.FailedPrecondition, "refuse reboot: %v", err)
 	}
 	if s.RunReboot == nil {
@@ -202,11 +207,7 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	return &agentapi.RebootAccepted{Scheduled: true, TargetGenerationId: target}, nil
 }
 
-func (s *Server) checkRebootTarget(ctx context.Context, target string) error {
-	selection, err := generation.ReadBootSelection(s.Root)
-	if err != nil {
-		return err
-	}
+func (s *Server) checkRebootTarget(ctx context.Context, selection generation.BootSelectionRecord, target string) error {
 	if selection.NextBootGenerationID() != target {
 		return fmt.Errorf("generation %q is recorded for next boot, requested %q", selection.NextBootGenerationID(), target)
 	}
@@ -582,7 +583,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "operation locks conflict with active operation %s", conflict)
 	}
 	if req.GetHostUpgrade() != nil || req.GetConfigApply() != nil {
-		if err := generation.ValidateMutationBase(s.Root, req.ExpectedCurrentGenerationId); err != nil {
+		if err := s.validateMutationBase(req.ExpectedCurrentGenerationId); err != nil {
 			return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 	}

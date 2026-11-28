@@ -113,7 +113,7 @@ Successful activation records the kernel-selected generation in `/run`.
 During a pending move, node status and the console display that generation
 as current and the intent's desired one-shot or default as the next target
 after the move completes. The reader-only runtime leaves the durable
-selection and intent untouched. It withholds legacy recovery authorization
+selection and intent untouched. It withholds recovery authorization
 and refuses boot health, target moves, and managed reboots. It also keeps
 interrupted live promotion receipts eligible for recovery at a later startup
 after a runtime capable of reconciliation completes the move. A missing
@@ -121,19 +121,28 @@ intent uses the existing boot health and selection path.
 
 ## Boot move owner
 
-One owner in `internal/generation` writes boot moves. Production writers
-keep the legacy flow in Transaction Flow below until they move to this owner.
-Every step runs under the boot-state lock, in this order:
+One owner in `internal/generation`, `BootMover`, writes boot moves. It is the
+only code that writes `selection.json`, `move-intent.json`, `LoaderEntryDefault`,
+`LoaderEntryOneShot`, and the generation status transitions that belong to a
+boot move. Config apply, host upgrade, live promotion, manual selection, slot
+invalidation, removal, pruning, boot activation, and boot health all call it,
+and they differ only in their inputs. Every step runs under the boot-state
+lock, in this order:
 
 1. Reconcile any outstanding intent, then admit the move. A stale
    `expectedSelectionRevision` is rejected. Repeating a move that was already
-   published and resolved changes nothing and reports it resolved. A repeat
-   is recognised only when the next revision holds its selection and every
-   generation it changes carries its operation ID, so a different move with
-   an equal selection is rejected as stale. An operation ID that already
+   published and resolved changes nothing and reports it resolved. A move that
+   changes status is a repeat only when the next revision holds its selection
+   and every generation it changes carries its operation ID, so a different
+   move with an equal selection is rejected as stale. A move with no status
+   changes leaves no durable operation ID, so a request for the selection that
+   already holds is a repeat. an operation ID that already
    appears in a target generation's transitions is refused, as is a move
    while a one-shot for a generation other than the running one or the
-   default is selected, because the intent could not record it.
+   default is selected, because the intent could not record it. That
+   one-shot blocks every move, including a change of the one-shot, until the
+   node reboots into it, because lifting the block would let the issuing boot
+   accept a running generation outside the four recorded targets.
 2. Durably write the intent. Before writing, the owner validates the intent
    with the v1 reader's rules and checks the status transitions and the
    bootability of every target that is not the running generation.
@@ -158,6 +167,23 @@ on the boot that began the move, when the running generation is not the
 move's next target. A crash between the spend and the dispatch leaves zero
 reboots for that trial, and a retry never requests a second one.
 
+Admission refuses to write an intent when a recorded target other than the
+running generation, meaning the prior or desired default or one-shot, runs a
+release that cannot read boot-move records. `internal/generation` owns that
+rule: a runtime version that parses as a release below 2026.11.6 is refused,
+and a version that does not parse is a development build, which counts as
+having the reader, as does any pre-release of 2026.11.6 or later. The refusal
+changes nothing and tells the operator to boot the named generation from the
+boot menu and upgrade or remove it. `katlctl node upgrade` applies the same
+predicate before it starts, refusing a source below 2026.11.6 when the target is
+at or after its own release, but only the owner's refusal holds for an older
+`katlctl` or a request sent straight to the agent. An arm is also refused when
+the running generation is not the published default, because the fallback is
+always the published default and must complete the records a failed trial
+leaves. It succeeds only when the default has run a release with the owner,
+which activation records as a marker file at
+`/var/lib/katl/boot/owners/<generation ID>`.
+
 The projection depends on the boot. On the boot that began the move, it is
 the desired default and the desired one-shot. Once that boot has ended, the
 desired one-shot counts as delivered: firmware boots a one-shot at most once,
@@ -175,13 +201,42 @@ without changes. With no intent, reconciliation imports a legacy trial as an
 in-memory trial authority (see Migration below). Generation 0 and manual selections
 have no legacy trial and import nothing.
 
+Activation reconciles in a restricted mode, because its sandbox can neither
+open the root partition for a full bootability check nor write EFI variables.
+It projects status, accepts EFI that already matches, publishes the selection
+and resolves the intent where it can. A step that needs an EFI write or a full
+check, including the `unconfirmed-` resolution of a trial, is deferred with
+every file as it was. A deferral does not fail activation of an accepted
+generation. `katl-boot-health.service`, or `katl-boot-recovery.service` when
+health fails, reconciles unrestricted before its own decision, so the move
+completes in the same boot. Until then every move and managed reboot refuses
+with the reconcile error. When no intent remains, activation also observes the
+boot with the same rules the reader-only runtime applies, publishing only the
+booted fields, the active generation, and the booted one-shot. With an intent
+present it writes nothing to `selection.json`, and the move that resolves the
+intent publishes the booted fields instead.
+
+Only `FailTrial` may cross the reboot spend. Reconciliation from every other
+entry point stops before the spend when it meets an unspent, eligible,
+non-authority intent and refuses with a message that
+`katl-boot-recovery.service` finishes the failed trial. Only the recovery and
+deadman units turn a requested reboot into a reboot, so a spend anywhere else
+would lose the trial's one reboot.
+
 Every transition that a timer or a fault causes, such as a deadline expiry,
 a health failure, or a trial that ended without confirmation, is a move.
 Each records a status transition carrying its operation ID, reason and time,
 so tests observe the event in `status.json` rather than on a wall clock. The
 owner takes its clock as an input. The deadlines that trigger these moves are
-unchanged: the 90-second management-link check in `katl-boot-health` and the
-10-minute `katl-boot-deadman.timer`.
+the 90-second management-link check in `katl-boot-health` and the 10-minute
+`katl-boot-deadman.timer`. The timer is not enabled in `timers.target`.
+Activation starts it only when it binds a trial authority to the boot, and
+`katl-boot-health` stops it once `ConfirmBoot` or `FailTrial` has decided the
+boot. `OnBootSec=` counts from boot, so a timer started late still expires ten
+minutes after boot. A failed start fails the trial: activation completes,
+reports that it could not start the boot deadline, and exits unsuccessfully, so
+the failed health service runs `katl-boot-recovery.service` on the bound trial.
+A failed stop is logged and does not fail boot health.
 
 ## Trial authority lifetime
 
@@ -200,6 +255,15 @@ than with caller convention:
   reader would classify as a legacy trial: pending health validation and a
   `pendingTransactionID` for a generation with a predecessor.
 
+A move that withdraws a trial is admitted only while the authority exists and
+is not bound, because the candidate has not booted under it. Its intent
+replaces the authority, clears the trial pointers and pending state, clears the
+one-shot, and grants no reboot. The candidate's status is whatever the
+request projects; it is not marked failed. The only production caller is slot invalidation
+when the slot holds the armed candidate. No public command withdraws a trial: a
+second apply, a manual selection, and an upgrade are refused with the guidance
+to reboot into the trial.
+
 An authority survives publication and the reboot, because it is the only
 durable record that arms recovery. While it exists, only a move that resolves
 it is admitted. That move replaces the authority with its own intent. If the
@@ -215,8 +279,10 @@ resolve only a bound authority.
 Promotion publishes the candidate as the default without granting a reboot.
 
 A health failure or deadline on a boot bound to the authority ends a confirmed
-trial of candidate `C`. `failTrial` is the owner's only entry point for this
-failure. It derives the operation ID by prefixing the authority's trial ID
+trial of candidate `C`. `FailTrial` is the owner's only entry point for this
+failure. On a boot with no bound trial it returns a report-only result and
+writes nothing, except that a consumed manual selection is cleared by a move
+with no status changes. It derives the operation ID by prefixing the authority's trial ID
 with `fail-`, so repeat triggers can finish the same move without spending
 another reboot. When reconciliation finds a published authority on a later
 boot of a different recorded generation `R`, it resolves the trial as
@@ -252,7 +318,16 @@ Every completed resolution marks `C` failed and unhealthy, records it as
 the failed boot, and clears the trial and one-shot state. The selection's
 previous-known-good pointers name the usable fallback, or are cleared when
 recovery is required. The default entry follows the selected generation's
-loader binding and EFI follows the published selection.
+loader binding and EFI follows the published selection. The resolving move
+also publishes the running generation as the booted and active generation.
+
+When recovery is required the owner publishes the running generation, with
+`recoveryRequired`, an empty destination, and no reboot. A later healthy boot
+of the published default clears `recoveryRequired` in the `ConfirmBoot` move,
+and every other mutation stays refused until then, with that step in the
+message. An indeterminate check keeps the trial pending. Boot health that fails
+with no bound trial, including the first boot after install, is report-only and
+sets no `recoveryRequired`.
 
 Binding is derived, not recorded: every boot of the candidate that is not the
 issuing boot binds the authority again, so the candidate may run more than
@@ -331,78 +406,20 @@ boot the node's own legacy trial. The import therefore keeps the authority in
 memory, and each reconciliation derives it again from the unchanged legacy
 selection. The authority becomes durable only in the intent of the move that
 resolves it: a promotion, a failure, or an unconfirmed-trial resolution,
-which expects the legacy selection's revision.
+which expects the legacy selection's revision. A trial armed by a runtime
+without the owner has that reader-only runtime as its fallback. Durable import
+is revisited when no supported rollback target is reader-only.
 
-### Open questions
+An arm interrupted before its one-shot is written resolves on a later boot
+with the same reason as a trial that firmware booted, because firmware
+consumes the one-shot on every boot and the state cannot tell the two
+apart.
 
-- Withdrawing or superseding an armed trial before its reboot, for example
-  when the operator cancels a next-boot change, has no move today: while the
-  authority exists only a resolving move is admitted. #820 must define that
-  workflow.
-- No move clears `recoveryRequired`. #963 must define the supported recovery
-  workflow before the writer cutover.
+When a status change commits a generation, the owner keeps an existing
+`committedAt` and `committedByOperation`, so live promotion does not overwrite
+them.
 
-### Notes for #820
-
-- `removeBootMoveIntent` is kept as written; review it when production
-  callers start resolving intents.
-- The owner keeps an existing `committedAt` when a status change commits a
-  generation, while the live promotion path in `boot_health.go` overwrites
-  it. #820 must choose one rule when it moves that path to the owner.
-- The legacy failure adapter preserves three rules until the production writer
-  cutover. **No EFI write without a fallback** keeps the published default
-  when recovery is required because the legacy writer leaves EFI unwritten
-  in that branch. The **`bootFiles` check level** keeps the legacy
-  loader-entry and UKI checks. **Candidate `F` only** keeps the legacy
-  fallback set even when a distinct `D` is usable. #963 removes all three
-  with the legacy writer and removes the matching “keeps the default”
-  sentence from [boot health semantics](boot-health-semantics.md).
-  The `recordedFallbackOnly` flag also preserves the exact loader entry and
-  previous-known-good pointer values in the legacy record without rewriting
-  them from the spec, clearing the pointers only when a recorded fallback is
-  rejected, and #963 removes this behavior alongside those three rules.
-- An arm interrupted before its one-shot is written resolves on a later boot
-  with the same reason as a trial that firmware booted, because firmware
-  consumes the one-shot on every boot and the state cannot tell the two
-  apart.
-
-## Transaction Flow
-
-To try a new candidate generation:
-
-```text
-1. validate candidate spec/status and previous known-good status
-2. write pendingTransactionID in selection.json
-3. install or validate the candidate boot entry and UKI path
-4. arm systemd-boot one-shot or boot-counted trial entry
-5. atomically replace selection.json with trialGenerationID set
-6. fsync the boot-selection directory
-7. reboot or report the armed trial
-```
-
-To promote a booted generation after `katl-boot-complete.target`:
-
-```text
-1. verify bootedGenerationID matches the boot entry, root PARTUUID, and spec
-2. verify the generation reached bootState good and healthState healthy
-3. update selection.json so defaultGenerationID becomes the booted generation
-4. clear trialGenerationID and pendingTransactionID
-5. record previousKnownGoodGenerationID
-6. update systemd-boot persistent default or bless boot state
-7. mark the previous committed generation superseded when appropriate
-```
-
-To roll back after a failed trial:
-
-```text
-1. mark the tried generation failed/unhealthy
-2. select previousKnownGoodGenerationID from validated selection and status
-3. arm or restore the previous known-good boot entry
-4. clear trialGenerationID and pendingTransactionID
-5. record recoveryRequired when no previous known-good generation is available
-6. allow systemd to reboot only when the validated previous generation was
-   selected successfully
-```
+## Atomic Writes
 
 Every `selection.json` update uses same-filesystem temporary files, `fsync`,
 atomic rename, and directory `fsync`. Temporary files are ignored during
@@ -410,28 +427,28 @@ recovery.
 
 ## Failure Handling
 
-If power is lost after resources are staged but before `selection.json` changes,
-the generation is still only a candidate and is not selected for boot.
+If power is lost after resources are staged but before the arm move writes its
+intent, the generation is still only a candidate and is not selected for boot.
 
-If power is lost after systemd-boot is armed but before `selection.json` names
-the trial generation, boot-time reconciliation must refuse promotion and restore
-the previous known-good selection when available.
+If power is lost after the arm move wrote its intent, reconciliation at the next
+activation completes it from its first unfinished step, or resolves it as
+unconfirmed when the candidate is not running and its issuing boot has ended.
 
-If power is lost after `selection.json` names a trial but before reboot, the next
-boot continues the bounded trial or reports that the trial was armed but not
+If power is lost after the trial is armed but before reboot, the next boot
+continues the bounded trial or reports that the trial was armed but not
 started.
 
 If a booted generation cannot prove `bootedGenerationID`, root PARTUUID, and spec
 digest agreement, Katl must not promote or bless the boot.
 
-If the trial fails after the recovery units are available, Katl persists the
-failed trial and restored default before `katl-boot-recovery.service` requests a
-normal systemd reboot. Activation arms that reboot only on the selected trial
-after validating a distinct known-good fallback, and failure handling consumes
-the authorization before requesting it. The fallback cannot re-arm recovery and
-is the final automatic attempt. If it also fails, Katl records recovery-required
-state and leaves the node running for console diagnosis instead of creating a
-reboot loop.
+If the trial fails on a boot bound to its authority, `FailTrial` persists the
+failed trial and the fallback default and spends the reboot before
+`katl-boot-recovery.service` or `katl-boot-deadman.service` requests a normal
+systemd reboot by exiting successfully. Any other outcome, including a
+report-only result, exits unsuccessfully so systemd leaves the node running.
+The fallback is not a trial and is the final automatic attempt. If it also
+fails, its failure is report-only and the node stays running for console
+diagnosis instead of looping through reboots.
 
 If `selection.json` is missing, corrupt, or inconsistent with generation
 metadata, boot-time reconciliation reports recovery-required. It may reconstruct

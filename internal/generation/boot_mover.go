@@ -2,14 +2,19 @@ package generation
 
 import (
 	"cmp"
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/efiboot"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
 	"github.com/katl-dev/katl/internal/persistedrecord"
+	"github.com/katl-dev/katl/internal/releaseversion"
 )
 
 // legacyImportBootID records that the boot which armed an imported legacy
@@ -39,11 +44,37 @@ const (
 type trialEffect uint8
 
 const (
-	trialNone    trialEffect = iota // grants no authority
-	trialArm                        // arms a trial named by the operation ID
-	trialPromote                    // resolves the bound trial without a reboot
-	trialFail                       // resolves the bound trial and may spend its reboot
+	trialNone     trialEffect = iota // grants no authority
+	trialArm                         // arms a trial named by the operation ID
+	trialPromote                     // resolves the bound trial without a reboot
+	trialFail                        // resolves the bound trial and may spend its reboot
+	trialWithdraw                    // replaces an authority whose candidate has not booted
 )
+
+// reconcileMode bounds what reconciliation may do for its entry point.
+type reconcileMode uint8
+
+const (
+	// reconcileRestricted is activation's. Its sandbox can neither write EFI
+	// variables nor open a root partition, so it defers any step that needs one.
+	reconcileRestricted reconcileMode = iota
+	// reconcileFull completes every step except spending a trial's reboot.
+	reconcileFull
+	// reconcileFailing is FailTrial's. Only the recovery and deadline units turn
+	// a requested reboot into one, so only they may spend the trial's reboot.
+	reconcileFailing
+)
+
+// errBootMoveDeferred marks a step that activation leaves to boot health.
+var errBootMoveDeferred = errors.New("deferred")
+
+// ErrTrialResolving reports a failed trial whose move stopped before it spent
+// the trial's reboot on the boot that issued it.
+var ErrTrialResolving = fmt.Errorf("%w: failed trial", ErrBootMoveBlocked)
+
+func deferral(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errBootMoveDeferred, fmt.Sprintf(format, args...))
+}
 
 // bootMoveRequest describes one move. The owner sets the selection revision,
 // spentRecoveryTrialID and updatedAt, and the time of each status change.
@@ -63,11 +94,13 @@ type bootMoveResult struct {
 	// overwrite a slot or remove loader entries.
 	Resolved        bool
 	RebootRequested bool
+	// Completed names an earlier operation that this call carried to resolution.
+	Completed string
 }
 
-// bootMover is the only writer of boot moves: the intent, the generation
+// BootMover is the only writer of boot moves: the intent, the generation
 // status it projects, the EFI variables and the published selection.
-type bootMover struct {
+type BootMover struct {
 	root        string
 	bootID      string // kernel boot ID of the running boot
 	commandLine string // kernel command line of the running boot
@@ -80,13 +113,65 @@ type bootMover struct {
 	checkpoint func(bootMoveStep) error
 }
 
+// BootDefaultSetter writes one systemd-boot EFI variable for a loader entry.
+type BootDefaultSetter func(root string, bootEntry string) error
+
+// BootMoverOptions describes the running boot. The zero value observes the
+// running kernel and writes the firmware through bootctl.
+type BootMoverOptions struct {
+	BootID      string // default: the kernel boot ID
+	CommandLine string // default: the kernel command line
+	Now         func() time.Time
+	ReadEFI     func(root string) (efiboot.Entries, error)
+	SetDefault  BootDefaultSetter
+	SetOneShot  BootDefaultSetter
+}
+
+const kernelBootIDPath = "/proc/sys/kernel/random/boot_id"
+
+// NewBootMover returns the boot-state owner for root and the running boot.
+func NewBootMover(root string, options BootMoverOptions) (*BootMover, error) {
+	root = cleanRoot(root)
+	if options.BootID == "" {
+		data, err := os.ReadFile(rootedPathUnchecked(root, kernelBootIDPath))
+		if err != nil {
+			return nil, fmt.Errorf("read kernel boot ID: %w", err)
+		}
+		options.BootID = strings.TrimSpace(string(data))
+	}
+	if options.CommandLine == "" {
+		fields, err := kernelcmdline.ReadCurrent(root)
+		if err != nil {
+			return nil, fmt.Errorf("read kernel command line: %w", err)
+		}
+		options.CommandLine = strings.Join(fields, " ")
+	}
+	mover := &BootMover{
+		root: root, bootID: options.BootID, commandLine: options.CommandLine,
+		now: options.Now, readEFI: options.ReadEFI, setDefault: options.SetDefault, setOneShot: options.SetOneShot,
+	}
+	if mover.now == nil {
+		mover.now = time.Now
+	}
+	if mover.readEFI == nil {
+		mover.readEFI = efiboot.Reader{}.Read
+	}
+	if mover.setDefault == nil {
+		mover.setDefault = efiboot.SetDefault
+	}
+	if mover.setOneShot == nil {
+		mover.setOneShot = efiboot.SetOneShot
+	}
+	return mover, nil
+}
+
 // timestamp drops the monotonic reading so a published time compares equal
 // to the same time decoded from disk.
-func (m *bootMover) timestamp() time.Time {
+func (m *BootMover) timestamp() time.Time {
 	return m.now().UTC().Round(0)
 }
 
-func (m *bootMover) reached(step bootMoveStep) error {
+func (m *BootMover) reached(step bootMoveStep) error {
 	if m.checkpoint == nil {
 		return nil
 	}
@@ -94,120 +179,219 @@ func (m *bootMover) reached(step bootMoveStep) error {
 }
 
 // reconcile completes or resolves any outstanding move for the running boot.
-func (m *bootMover) reconcile() (bootMoveResult, error) {
+func (m *BootMover) reconcile() (bootMoveResult, error) {
 	var result bootMoveResult
 	err := withBootStateLock(m.root, func() error {
 		var err error
-		result, _, err = m.reconcileLocked(false)
+		result, _, err = m.reconcileLocked(reconcileFull)
 		return err
 	})
 	return result, err
 }
 
 // move admits a request after reconciliation and carries it through the protocol.
-func (m *bootMover) move(request bootMoveRequest) (bootMoveResult, error) {
-	if request.Trial == trialFail {
-		return bootMoveResult{}, fmt.Errorf("trial failures must use failTrial")
-	}
+func (m *BootMover) move(request bootMoveRequest) (bootMoveResult, error) {
+	return m.moveWith(func(BootSelectionRecord, *bootMoveIntent) (*bootMoveRequest, error) {
+		return &request, nil
+	})
+}
+
+// moveWith reconciles, then builds the request from the selection and
+// authority read under the same lock. A nil request moves nothing.
+func (m *BootMover) moveWith(build func(BootSelectionRecord, *bootMoveIntent) (*bootMoveRequest, error)) (bootMoveResult, error) {
 	var result bootMoveResult
 	err := withBootStateLock(m.root, func() error {
-		reconciled, authority, err := m.reconcileLocked(false)
-		if err != nil {
-			return err
-		}
-		selection, err := ReadBootSelection(m.root)
-		if err != nil {
-			return err
-		}
-		published, err := m.published(request, selection)
-		if err != nil {
-			return err
-		}
-		if published {
-			result = reconciled
-			return nil
-		}
-		if reconciled.RebootRequested {
-			result = reconciled
-			return fmt.Errorf("%w: a completed move requested a reboot; reboot before starting operation %s", ErrBootMoveBlocked, request.OperationID)
-		}
-		if selection.Revision != request.ExpectedRevision {
-			return fmt.Errorf("boot selection revision is %d, not %d: another change moved the boot target. Read the boot state again before retrying", selection.Revision, request.ExpectedRevision)
-		}
-		intent, err := m.admit(request, selection, authority)
-		if err != nil {
-			return err
-		}
-		result, err = m.startMove(intent)
+		var err error
+		result, err = m.moveWithLocked(build)
 		return err
 	})
 	return result, err
 }
 
-// failTrial records a health failure or deadline for the bound trial. Every
-// trigger derives the same operation ID so it can finish an interrupted move.
-func (m *bootMover) failTrial(reason string) (bootMoveResult, error) {
+func (m *BootMover) moveWithLocked(build func(BootSelectionRecord, *bootMoveIntent) (*bootMoveRequest, error)) (bootMoveResult, error) {
+	reconciled, authority, err := m.reconcileLocked(reconcileFull)
+	if err != nil {
+		return bootMoveResult{}, err
+	}
+	selection, err := ReadBootSelection(m.root)
+	if err != nil {
+		return bootMoveResult{}, err
+	}
+	request, err := build(selection, authority)
+	if err != nil || request == nil {
+		return reconciled, err
+	}
+	return m.moveLocked(*request, selection, authority, reconciled)
+}
+
+func (m *BootMover) moveLocked(request bootMoveRequest, selection BootSelectionRecord, authority *bootMoveIntent, reconciled bootMoveResult) (bootMoveResult, error) {
+	if request.Trial == trialFail {
+		return bootMoveResult{}, fmt.Errorf("trial failures must use FailTrial")
+	}
+	published, err := m.published(request, selection)
+	if err != nil {
+		return bootMoveResult{}, err
+	}
+	if published {
+		return reconciled, nil
+	}
+	if reconciled.RebootRequested {
+		return reconciled, fmt.Errorf("%w: a completed move requested a reboot; reboot before starting operation %s", ErrBootMoveBlocked, request.OperationID)
+	}
+	if selection.Revision != request.ExpectedRevision {
+		return bootMoveResult{}, fmt.Errorf("boot selection revision is %d, not %d: another change moved the boot target. Read the boot state again before retrying", selection.Revision, request.ExpectedRevision)
+	}
+	// A status-less request for the selection that already holds wants the
+	// state it would publish, so it is a repeat rather than a new move.
+	if request.Trial == trialNone && len(request.StatusChanges) == 0 && sameMoveSelection(selection, request.Selection) {
+		return bootMoveResult{Resolved: true}, nil
+	}
+	intent, err := m.admit(request, selection, authority)
+	if err != nil {
+		return bootMoveResult{}, err
+	}
+	return m.startMove(intent, reconcileFull)
+}
+
+// FailTrial records a health failure or deadline. Only a trial bound to this
+// boot changes boot state; any other boot reports without changing it.
+func (m *BootMover) FailTrial(reason string) (BootHealthResult, error) {
+	var health BootHealthResult
+	err := withBootStateLock(m.root, func() error {
+		running, err := m.runningGenerationID()
+		if err != nil {
+			return err
+		}
+		failure, err := m.failTrialLocked(running, reason)
+		if err != nil {
+			return err
+		}
+		if health, err = m.healthResult(running, BootHealthFailure); err != nil {
+			return err
+		}
+		health.RebootRequested = failure.result.RebootRequested
+		health.ReportOnly = failure.reportOnly
+		health.Failed = !failure.reportOnly
+		health.FallbackProblem = failure.fallbackProblem
+		return nil
+	})
+	return health, err
+}
+
+// failTrial is FailTrial at the level of the move protocol.
+func (m *BootMover) failTrial(reason string) (bootMoveResult, error) {
 	var result bootMoveResult
 	err := withBootStateLock(m.root, func() error {
 		running, err := m.runningGenerationID()
 		if err != nil {
 			return err
 		}
-		reconciled, authority, err := m.reconcileLocked(true)
-		if err != nil {
-			return err
+		failure, err := m.failTrialLocked(running, reason)
+		result = failure.result
+		if err == nil && failure.reportOnly {
+			err = fmt.Errorf("failure needs a trial armed for running generation %s; this boot reports health without changing the boot target. Inspect 'katlctl node status'", running)
 		}
-		selection, err := ReadBootSelection(m.root)
-		if err != nil {
-			return moveSelectionReadError(running, err)
-		}
-		if authority == nil && selection.FailedBootGenerationID == running {
-			result = reconciled
-			return nil
-		}
-		if !m.boundTrial(authority, running) {
-			return fmt.Errorf("failure needs a trial armed for running generation %s; this boot reports health without changing the boot target. Inspect 'katlctl node status'", running)
-		}
-
-		operationID := "fail-" + *authority.Reboot.TrialID
-		spec, status, err := m.readMoveGeneration(running)
-		if err != nil {
-			return err
-		}
-		failure, verificationErr := resolveFailedTrial(m.root, selection, running, running, spec.Boot.LoaderEntryPath, bootFull, false)
-		if verificationErr != nil {
-			return fmt.Errorf("operation %s: %w", operationID, verificationErr)
-		}
-		request := bootMoveRequest{
-			OperationID: operationID, ExpectedRevision: selection.Revision, Source: running, Destination: failure.destination,
-			Selection: failure.selection, StatusChanges: []bootStatusChange{failedTrialStatus(status, reason)}, Trial: trialFail,
-		}
-		intent, err := m.admit(request, selection, authority)
-		if err != nil {
-			return err
-		}
-		result, err = m.startMove(intent)
 		return err
 	})
 	return result, err
 }
 
+type trialFailure struct {
+	result bootMoveResult
+	// reportOnly reports that no trial is bound to this boot.
+	reportOnly      bool
+	fallbackProblem string
+}
+
+// failTrialLocked derives the same operation ID from every trigger, so any
+// of them can finish an interrupted move. A boot with no bound trial changes
+// nothing but a manual selection it consumed.
+func (m *BootMover) failTrialLocked(running, reason string) (trialFailure, error) {
+	reconciled, authority, err := m.reconcileLocked(reconcileFailing)
+	if err != nil {
+		return trialFailure{}, err
+	}
+	selection, err := ReadBootSelection(m.root)
+	if err != nil {
+		return trialFailure{}, moveSelectionReadError(running, err)
+	}
+	if authority == nil && selection.FailedBootGenerationID == running {
+		return trialFailure{result: reconciled}, nil
+	}
+	if !m.boundTrial(authority, running) {
+		result, err := m.clearConsumedSelection(selection, authority, running)
+		return trialFailure{result: result, reportOnly: true}, err
+	}
+
+	operationID := "fail-" + *authority.Reboot.TrialID
+	spec, status, err := m.readMoveGeneration(running)
+	if err != nil {
+		return trialFailure{}, err
+	}
+	failure, err := resolveFailedTrial(m.root, selection, running, running, spec.Boot.LoaderEntryPath)
+	if err != nil {
+		return trialFailure{}, fmt.Errorf("operation %s: %w", operationID, err)
+	}
+	request := bootMoveRequest{
+		OperationID: operationID, ExpectedRevision: selection.Revision, Source: running, Destination: failure.destination,
+		Selection: failure.selection, StatusChanges: []bootStatusChange{failedTrialStatus(status, reason)}, Trial: trialFail,
+	}
+	intent, err := m.admit(request, selection, authority)
+	if err != nil {
+		return trialFailure{}, err
+	}
+	result, err := m.startMove(intent, reconcileFailing)
+	return trialFailure{result: result, fallbackProblem: failure.problem()}, err
+}
+
+// clearConsumedSelection retires a manual selection that this failed boot
+// consumed. Both manual modes write LoaderEntryOneShot, so its presence
+// protects a selection for a later boot of the same generation.
+func (m *BootMover) clearConsumedSelection(selection BootSelectionRecord, authority *bootMoveIntent, running string) (bootMoveResult, error) {
+	if authority != nil || selection.PendingHealthValidation || selection.TargetBootGenerationID != running {
+		return bootMoveResult{}, nil
+	}
+	efi, err := m.readEFI(m.root)
+	if err != nil {
+		return bootMoveResult{}, fmt.Errorf("check EFI one-shot boot selection: %w", err)
+	}
+	if efi.OneShot != "" {
+		return bootMoveResult{}, nil
+	}
+	// The consumed one-shot stays as evidence about the running boot: health
+	// retries and activation of the default still need it.
+	consumed := selection
+	consumed.BootedOneShot = selection.BootedOneShot || (selection.OneShot && running != selection.DefaultGenerationID)
+	consumed.TargetBootGenerationID, consumed.TargetBootEntry = "", ""
+	consumed.OneShot = false
+	return m.moveLocked(bootMoveRequest{
+		OperationID: "health-" + m.bootID, ExpectedRevision: selection.Revision,
+		Source: running, Destination: selection.DefaultGenerationID, Selection: consumed,
+		OneShot: armedOneShot(consumed),
+	}, selection, nil, bootMoveResult{})
+}
+
+// armedOneShot is the generation that a selection keeps LoaderEntryOneShot on.
+func armedOneShot(selection BootSelectionRecord) string {
+	return cmp.Or(selection.TargetBootGenerationID, selection.TrialGenerationID)
+}
+
 // startMove durably binds the decision before projecting any of its effects.
-func (m *bootMover) startMove(intent bootMoveIntent) (bootMoveResult, error) {
+func (m *BootMover) startMove(intent bootMoveIntent, mode reconcileMode) (bootMoveResult, error) {
 	if err := writeBootMoveIntent(m.root, intent); err != nil {
 		return bootMoveResult{}, err
 	}
 	if err := m.reached(stepIntentWritten); err != nil {
 		return bootMoveResult{}, err
 	}
-	result, _, err := m.complete(&intent, false)
+	result, _, err := m.complete(&intent, false, mode)
 	return result, err
 }
 
 // published reports whether an earlier attempt published this request: the
 // next revision holds its selection and every generation it changes carries
 // its operation ID. A different move with an equal selection is stale.
-func (m *bootMover) published(request bootMoveRequest, selection BootSelectionRecord) (bool, error) {
+func (m *BootMover) published(request bootMoveRequest, selection BootSelectionRecord) (bool, error) {
 	if selection.Revision != request.ExpectedRevision+1 || !sameMoveSelection(selection, request.Selection) {
 		return false, nil
 	}
@@ -229,7 +413,7 @@ func carriesOperation(status GenerationStatus, operationID string) bool {
 	})
 }
 
-func (m *bootMover) runningGenerationID() (string, error) {
+func (m *BootMover) runningGenerationID() (string, error) {
 	id, err := SelectedGenerationFromCommandLine(m.commandLine)
 	if err != nil {
 		return "", fmt.Errorf("cannot identify the running generation: %w. Boot state is unchanged. Preserve the journal, then boot a healthy generation from the boot menu, or reinstall the node", err)
@@ -237,12 +421,12 @@ func (m *bootMover) runningGenerationID() (string, error) {
 	return id, nil
 }
 
-func (m *bootMover) boundTrial(authority *bootMoveIntent, running string) bool {
+func (m *BootMover) boundTrial(authority *bootMoveIntent, running string) bool {
 	return authority != nil && m.bootID != authority.BootID && running == *authority.DestinationGenerationID
 }
 
 // reconcileLocked returns the trial authority that remains after completion.
-func (m *bootMover) reconcileLocked(failingTrial bool) (bootMoveResult, *bootMoveIntent, error) {
+func (m *BootMover) reconcileLocked(mode reconcileMode) (bootMoveResult, *bootMoveIntent, error) {
 	running, err := m.runningGenerationID()
 	if err != nil {
 		return bootMoveResult{}, nil, err
@@ -253,6 +437,7 @@ func (m *bootMover) reconcileLocked(failingTrial bool) (bootMoveResult, *bootMov
 	}
 	var authority *bootMoveIntent
 	var activated Record
+	var result bootMoveResult
 	if intent == nil {
 		// An imported legacy trial stays in memory until a move resolves it.
 		if authority, err = m.importLegacyTrial(running); err != nil || authority == nil {
@@ -265,22 +450,25 @@ func (m *bootMover) reconcileLocked(failingTrial bool) (bootMoveResult, *bootMov
 		if activated, err = intent.activationRecord(m.root, running, m.commandLine); err != nil {
 			return bootMoveResult{}, nil, cannotReconcileBoot(running, err)
 		}
-		var result bootMoveResult
 		// A resolution checks its inputs before any EFI writes. If the arm
 		// already published, its old EFI projection need not be replayed first.
-		resolving := failingTrial || (m.bootID != intent.BootID && running != *intent.DestinationGenerationID)
-		if result, authority, err = m.complete(intent, resolving); err != nil || authority == nil {
+		resolving := mode == reconcileFailing || (m.bootID != intent.BootID && running != *intent.DestinationGenerationID)
+		if result, authority, err = m.complete(intent, resolving, mode); err != nil || authority == nil {
 			return result, authority, err
 		}
 	}
 	if m.bootID == authority.BootID || running == *authority.DestinationGenerationID {
-		return bootMoveResult{}, authority, nil
+		return result, authority, nil
+	}
+	if mode == reconcileRestricted {
+		return result, authority, deferral("trial %s ended without a health result; resolving it needs a full bootability check, which katl-boot-health.service or katl-boot-recovery.service runs", *authority.Reboot.TrialID)
 	}
 	unconfirmed, err := m.unconfirmedTrial(authority, running, activated.Boot.LoaderEntryPath)
 	if err != nil {
 		return bootMoveResult{}, authority, err
 	}
-	result, err := m.startMove(unconfirmed)
+	result, err = m.startMove(unconfirmed, mode)
+	result.Completed = cmp.Or(result.Completed, unconfirmed.OperationID)
 	return result, nil, err
 }
 
@@ -289,7 +477,7 @@ func cannotReconcileBoot(running string, err error) error {
 }
 
 // admit builds the intent for a request and checks it before it is durable.
-func (m *bootMover) admit(request bootMoveRequest, selection BootSelectionRecord, authority *bootMoveIntent) (bootMoveIntent, error) {
+func (m *BootMover) admit(request bootMoveRequest, selection BootSelectionRecord, authority *bootMoveIntent) (bootMoveIntent, error) {
 	running, err := m.runningGenerationID()
 	if err != nil {
 		return bootMoveIntent{}, err
@@ -308,9 +496,15 @@ func (m *bootMover) admit(request bootMoveRequest, selection BootSelectionRecord
 		if request.Trial == trialFail && request.Destination != "" && selection.SpentRecoveryTrialID != trialID {
 			reboot = bootMoveReboot{TrialID: new(trialID), Eligible: new(true), Spent: new(false)}
 		}
+	case trialWithdraw:
+		// Once the candidate has booted under the authority, only its health
+		// result may resolve the trial.
+		if authority == nil || m.boundTrial(authority, running) {
+			return bootMoveIntent{}, fmt.Errorf("operation %s withdraws only a trial whose candidate has not booted", request.OperationID)
+		}
 	default:
 		if authority != nil {
-			return bootMoveIntent{}, fmt.Errorf("%w: trial %s awaits its health result before operation %s can move the boot target", ErrBootMoveBlocked, *authority.Reboot.TrialID, request.OperationID)
+			return bootMoveIntent{}, pendingTrialError(*authority.DestinationGenerationID, request.OperationID)
 		}
 		if request.Trial == trialArm {
 			if request.Selection.DefaultGenerationID != selection.DefaultGenerationID {
@@ -394,7 +588,7 @@ func (m *bootMover) admit(request bootMoveRequest, selection BootSelectionRecord
 	return intent, nil
 }
 
-func (m *bootMover) observeEFI(operation, generationID string) (efiboot.Entries, error) {
+func (m *BootMover) observeEFI(operation, generationID string) (efiboot.Entries, error) {
 	observed, err := m.readEFI(m.root)
 	if err != nil {
 		return efiboot.Entries{}, efiObservationError(operation, generationID, err)
@@ -408,7 +602,7 @@ func efiObservationError(operation, generationID string, err error) error {
 
 // newIntent records the prior targets from the published selection and the
 // observed EFI variables, and validates the intent with the v1 reader's rules.
-func (m *bootMover) newIntent(operationID string, selection, desired BootSelectionRecord, observed efiboot.Entries,
+func (m *BootMover) newIntent(operationID string, selection, desired BootSelectionRecord, observed efiboot.Entries,
 	running, source, destination, oneShot string, changes []bootStatusChange, reboot bootMoveReboot) (bootMoveIntent, error) {
 	// The running generation is always a recorded target, so activation
 	// accepts it again if the move is interrupted.
@@ -440,12 +634,15 @@ func (m *bootMover) newIntent(operationID string, selection, desired BootSelecti
 	if err := intent.validateBindings(m.root); err != nil {
 		return bootMoveIntent{}, fmt.Errorf("operation %s: %w", operationID, err)
 	}
+	if err := intent.checkReaders(m.root, running); err != nil {
+		return bootMoveIntent{}, fmt.Errorf("operation %s: %w", operationID, err)
+	}
 	return intent, nil
 }
 
 // observedTarget keeps an observed entry only when it is the named
 // generation's loader entry; the reader rejects any other binding.
-func (m *bootMover) observedTarget(id, entry string) *bootMoveTarget {
+func (m *BootMover) observedTarget(id, entry string) *bootMoveTarget {
 	if id == "" {
 		return &bootMoveTarget{new(""), new("")}
 	}
@@ -458,7 +655,7 @@ func (m *bootMover) observedTarget(id, entry string) *bootMoveTarget {
 
 // checkTargets verifies the status the intent projects and that every next
 // target either passes the bootability check or is the running generation.
-func (m *bootMover) checkTargets(intent bootMoveIntent, running string) error {
+func (m *BootMover) checkTargets(intent bootMoveIntent, running string) error {
 	projected, err := m.checkStatusChanges(intent)
 	if err != nil {
 		return err
@@ -482,7 +679,7 @@ func (m *bootMover) checkTargets(intent bootMoveIntent, running string) error {
 	return nil
 }
 
-func (m *bootMover) checkStatusChanges(intent bootMoveIntent) (map[string]GenerationStatus, error) {
+func (m *BootMover) checkStatusChanges(intent bootMoveIntent) (map[string]GenerationStatus, error) {
 	projected := map[string]GenerationStatus{}
 	for _, change := range intent.StatusChanges {
 		spec, status, err := m.readMoveGeneration(change.GenerationID)
@@ -506,7 +703,7 @@ func (m *bootMover) checkStatusChanges(intent bootMoveIntent) (map[string]Genera
 // classification. It writes nothing: a rollback target may run a reader-only
 // release, which refuses any intent it cannot complete, so the authority
 // becomes durable only in the intent of the move that resolves it.
-func (m *bootMover) importLegacyTrial(running string) (*bootMoveIntent, error) {
+func (m *BootMover) importLegacyTrial(running string) (*bootMoveIntent, error) {
 	legacy, err := readLegacyBootState(m.root, running, m.readEFI)
 	if err != nil {
 		return nil, moveSelectionReadError(running, err)
@@ -538,7 +735,7 @@ func (m *bootMover) importLegacyTrial(running string) (*bootMoveIntent, error) {
 // unconfirmedTrial resolves an authority whose trial ended without a
 // health result, on a later boot of another recorded target. It never
 // reboots. The selection follows the same failure rule as a failed trial.
-func (m *bootMover) unconfirmedTrial(authority *bootMoveIntent, running, runningEntry string) (bootMoveIntent, error) {
+func (m *BootMover) unconfirmedTrial(authority *bootMoveIntent, running, runningEntry string) (bootMoveIntent, error) {
 	candidate := *authority.DestinationGenerationID
 	trialID := *authority.Reboot.TrialID
 	selection, err := ReadBootSelection(m.root)
@@ -554,9 +751,9 @@ func (m *bootMover) unconfirmedTrial(authority *bootMoveIntent, running, running
 		return bootMoveIntent{}, err
 	}
 
-	failure, verificationErr := resolveFailedTrial(m.root, selection, candidate, running, runningEntry, bootFull, false)
-	if verificationErr != nil {
-		return bootMoveIntent{}, fmt.Errorf("resolve trial %s: %w", trialID, verificationErr)
+	failure, err := resolveFailedTrial(m.root, selection, candidate, running, runningEntry)
+	if err != nil {
+		return bootMoveIntent{}, fmt.Errorf("resolve trial %s: %w", trialID, err)
 	}
 	desired := failure.selection
 	desired.Revision = selection.Revision + 1
@@ -581,7 +778,7 @@ func moveSelectionReadError(id string, err error) error {
 	return fmt.Errorf("cannot read boot selection for generation %s: %w. Boot state is unchanged. Restore access to intact boot state and retry", id, err)
 }
 
-func (m *bootMover) readMoveGeneration(id string) (GenerationSpec, GenerationStatus, error) {
+func (m *BootMover) readMoveGeneration(id string) (GenerationSpec, GenerationStatus, error) {
 	spec, status, err := ReadGeneration(m.root, id)
 	if err != nil {
 		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("cannot read generation %s: %w. Boot state is unchanged. Restore access to the generation record and retry", id, err)
@@ -622,24 +819,22 @@ func (e *failedTrialVerificationError) Unwrap() error { return e.cause }
 // resolveFailedTrial chooses the first usable recorded target. An unavailable
 // target permits another check, while an indeterminate target keeps the trial
 // pending. Without a usable target, the owner can keep only the running boot.
-func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, running, runningEntry string,
-	level bootabilityLevel, recordedFallbackOnly bool) (failedTrialResolution, *failedTrialVerificationError) {
-	fallback := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+// The selection records the running boot, which a later activation observes.
+func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, running, runningEntry string) (failedTrialResolution, error) {
+	fallback := selection.PreviousKnownGoodGenerationID
 	if (selection.OneShot || fallback == "") && selection.DefaultGenerationID != candidate {
-		fallback = strings.TrimSpace(selection.DefaultGenerationID)
+		fallback = selection.DefaultGenerationID
 		selection.PreviousKnownGoodGenerationID = fallback
 		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
 	}
 	recordedEntry := recoveryFallbackEntry(selection, fallback)
 	targets := []string{fallback}
-	if !recordedFallbackOnly {
-		def := strings.TrimSpace(selection.DefaultGenerationID)
-		if def != candidate && def != fallback {
-			targets = append(targets, def)
-		}
-		if running != candidate && running != fallback && running != def {
-			targets = append(targets, running)
-		}
+	def := selection.DefaultGenerationID
+	if def != candidate && def != fallback {
+		targets = append(targets, def)
+	}
+	if running != candidate && running != fallback && running != def {
+		targets = append(targets, running)
 	}
 
 	var result failedTrialResolution
@@ -656,7 +851,7 @@ func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, r
 		verdict := bootability{state: bootUnavailable, evidence: "fallback is the failed generation"}
 		var entry string
 		if id != candidate {
-			entry, verdict = check.knownGoodFallback(id, entryBinding, level)
+			entry, verdict = check.knownGoodFallback(id, entryBinding, bootFull)
 		}
 		if verdict.state == bootIndeterminate {
 			return result, &failedTrialVerificationError{generationID: id, cause: verdict.problem()}
@@ -667,16 +862,7 @@ func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, r
 		}
 
 		result.destination = id
-		// The legacy writer preserves the exact values already in the record,
-		// including an omitted previous-known-good entry for the default.
-		if recordedFallbackOnly {
-			entry = selection.DefaultBootEntry
-			if strings.TrimSpace(selection.PreviousKnownGoodBootEntry) != "" {
-				entry = selection.PreviousKnownGoodBootEntry
-			}
-		} else {
-			selection.PreviousKnownGoodGenerationID, selection.PreviousKnownGoodBootEntry = id, entry
-		}
+		selection.PreviousKnownGoodGenerationID, selection.PreviousKnownGoodBootEntry = id, entry
 		selection.DefaultGenerationID, selection.DefaultBootEntry = id, entry
 		break
 	}
@@ -684,11 +870,10 @@ func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, r
 	selection.RecoveryRequired = result.destination == ""
 	if selection.RecoveryRequired {
 		selection.DefaultGenerationID, selection.DefaultBootEntry = running, runningEntry
-		// Legacy clears the pointers only when it rejected a recorded fallback.
-		if !recordedFallbackOnly || fallback != "" {
-			selection.PreviousKnownGoodGenerationID, selection.PreviousKnownGoodBootEntry = "", ""
-		}
+		selection.PreviousKnownGoodGenerationID, selection.PreviousKnownGoodBootEntry = "", ""
 	}
+	selection.BootedGenerationID, selection.BootedBootEntry = running, runningEntry
+	selection.ActiveGenerationID = running
 	selection.OneShot = false
 	selection.BootedOneShot = false
 	selection.FailedBootGenerationID = candidate
@@ -704,7 +889,7 @@ func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, r
 
 // complete carries a durable intent from its first unfinished step. It
 // returns the intent when it remains as a trial authority.
-func (m *bootMover) complete(intent *bootMoveIntent, resolvingTrial bool) (bootMoveResult, *bootMoveIntent, error) {
+func (m *BootMover) complete(intent *bootMoveIntent, resolvingTrial bool, mode reconcileMode) (bootMoveResult, *bootMoveIntent, error) {
 	running, err := m.runningGenerationID()
 	if err != nil {
 		return bootMoveResult{}, nil, err
@@ -723,14 +908,31 @@ func (m *bootMover) complete(intent *bootMoveIntent, resolvingTrial bool) (bootM
 	if published && resolvingTrial && intent.isTrialAuthority() {
 		return bootMoveResult{}, intent, nil
 	}
+	authority := intent.isTrialAuthority()
+	if spend := !authority && *intent.Reboot.Eligible && !*intent.Reboot.Spent; spend && mode != reconcileFailing {
+		// On the issuing boot the reboot is still owed, and only the recovery
+		// and deadline units reboot. A later boot has already left the trial.
+		if mode == reconcileRestricted {
+			return bootMoveResult{}, nil, deferral("the failed trial of generation %s is resolved by katl-boot-health.service or katl-boot-recovery.service", intent.SourceGenerationID)
+		}
+		if m.bootID == intent.BootID {
+			return bootMoveResult{}, nil, fmt.Errorf("%w: a failed trial of generation %s is being resolved; katl-boot-recovery.service finishes it, or run 'katlctl node reboot <node>'", ErrTrialResolving, intent.SourceGenerationID)
+		}
+	}
+	if mode == reconcileRestricted {
+		// A deferred move must leave every file, so the EFI check comes
+		// before any status projection.
+		if observed, err := m.readEFI(m.root); err != nil || !intent.efiMatches(observed, m.bootID == intent.BootID) {
+			return bootMoveResult{}, nil, deferral("operation %s needs EFI boot variable writes, which katl-boot-health.service or katl-boot-recovery.service makes", intent.OperationID)
+		}
+	}
 	if err := m.projectStatus(*intent); err != nil {
 		return bootMoveResult{}, nil, err
 	}
-	if err := m.syncEFI(*intent); err != nil {
+	if err := m.syncEFI(*intent, mode); err != nil {
 		return bootMoveResult{}, nil, err
 	}
 
-	authority := intent.isTrialAuthority()
 	spent := false
 	if !authority && *intent.Reboot.Eligible && !*intent.Reboot.Spent {
 		// The spend is durable before any reboot is requested, so a retry
@@ -764,10 +966,10 @@ func (m *bootMover) complete(intent *bootMoveIntent, resolvingTrial bool) (bootM
 		return bootMoveResult{}, nil, err
 	}
 	reboot := spent && m.bootID == intent.BootID && running != intent.nextGenerationID()
-	return bootMoveResult{Resolved: true, RebootRequested: reboot}, nil, nil
+	return bootMoveResult{Resolved: true, RebootRequested: reboot, Completed: intent.OperationID}, nil, nil
 }
 
-func (m *bootMover) projectStatus(intent bootMoveIntent) error {
+func (m *BootMover) projectStatus(intent bootMoveIntent) error {
 	for _, change := range intent.StatusChanges {
 		spec, status, err := ReadGeneration(m.root, change.GenerationID)
 		if err != nil {
@@ -807,10 +1009,13 @@ func projectStatusChange(status GenerationStatus, change bootStatusChange, opera
 
 // syncEFI writes the projection in a fixed order and verifies it by reading
 // both variables back. An unreadable variable never counts as a match.
-func (m *bootMover) syncEFI(intent bootMoveIntent) error {
+func (m *BootMover) syncEFI(intent bootMoveIntent, mode reconcileMode) error {
 	issuing := m.bootID == intent.BootID
 	if observed, err := m.readEFI(m.root); err == nil && intent.efiMatches(observed, issuing) {
 		return m.reached(stepReadBack)
+	}
+	if mode == reconcileRestricted {
+		return deferral("operation %s needs EFI boot variable writes, which katl-boot-health.service or katl-boot-recovery.service makes", intent.OperationID)
 	}
 	if m.setDefault == nil || m.setOneShot == nil {
 		return fmt.Errorf("operation %s needs EFI boot variable writers", intent.OperationID)
@@ -898,4 +1103,542 @@ func removeBootMoveIntent(root string) error {
 		return fmt.Errorf("resolve boot move intent: %w", err)
 	}
 	return nil
+}
+
+// pendingTrialError refuses a move while an armed trial waits for its boot.
+func pendingTrialError(candidate, operationID string) error {
+	return fmt.Errorf("%w: a boot trial of generation %s is pending; run 'katlctl node reboot <node>' to try it before operation %s can move the boot target", ErrBootMoveBlocked, candidate, operationID)
+}
+
+// FirstBootMoveReader is the first KatlOS release that reads boot-move records.
+var FirstBootMoveReader = releaseversion.Version{Year: 2026, Month: 11, Patch: 6}
+
+// ReadsBootMoves reports whether a runtime can read boot-move records. A
+// version outside the release grammar is a development build, which has the
+// reader, as has any prerelease of the first reader release or later.
+func ReadsBootMoves(runtimeVersion string) bool {
+	version, err := releaseversion.Parse(runtimeVersion)
+	return err != nil || version.Base().Compare(FirstBootMoveReader) >= 0
+}
+
+// checkReaders refuses an intent while a recorded target other than the
+// running generation runs a release that could not read it.
+func (intent bootMoveIntent) checkReaders(root, running string) error {
+	for _, target := range []*bootMoveTarget{intent.PriorDefault, intent.PriorOneShot, intent.DesiredDefault, intent.DesiredOneShot} {
+		id := *target.GenerationID
+		if id == "" || id == running {
+			continue
+		}
+		spec, _, err := ReadGeneration(root, id)
+		if err != nil {
+			return fmt.Errorf("read recorded boot target %s: %w", id, err)
+		}
+		if !ReadsBootMoves(spec.RuntimeVersion) {
+			return fmt.Errorf("generation %s runs KatlOS %s, which cannot read boot-move records; boot generation %s from the boot menu and upgrade it to %s or later, or remove it with 'katlctl node generations remove', then retry",
+				id, spec.RuntimeVersion, id, FirstBootMoveReader)
+		}
+	}
+	return nil
+}
+
+// problem describes the first recorded target the failure rule rejected.
+func (resolution failedTrialResolution) problem() string {
+	if len(resolution.rejected) == 0 {
+		return ""
+	}
+	rejected := resolution.rejected[0]
+	return fmt.Sprintf("generation %s was not used as the fallback: %v. Check 'katlctl node generations list' and restore its boot artifacts", rejected.generationID, rejected.verdict.problem())
+}
+
+func (m *BootMover) healthResult(running, result string) (BootHealthResult, error) {
+	selection, err := ReadBootSelection(m.root)
+	if err != nil {
+		return BootHealthResult{}, moveSelectionReadError(running, err)
+	}
+	_, status, err := m.readMoveGeneration(running)
+	if err != nil {
+		return BootHealthResult{}, err
+	}
+	return BootHealthResult{
+		GenerationID: running, Result: result, KnownGood: IsKnownGood(status),
+		RecoveryRequired:  selection.RecoveryRequired,
+		DefaultGeneration: selection.DefaultGenerationID, NextBootGeneration: selection.NextBootGenerationID(),
+		BootDefaultEntry: selection.DefaultBootEntry,
+	}, nil
+}
+
+// ActivationOutcome reports what activation did to boot state.
+type ActivationOutcome struct {
+	// TrialBound reports that this boot runs the candidate of an armed trial.
+	TrialBound bool
+	// Reconciled names the operation that activation completed.
+	Reconciled string
+	// ReconcileErr is a step activation deferred, or another reconcile
+	// error. Neither fails activation of an accepted generation.
+	ReconcileErr error
+}
+
+// Deferred reports whether the reconcile error is a step left to boot health.
+func (outcome ActivationOutcome) Deferred() bool {
+	return errors.Is(outcome.ReconcileErr, errBootMoveDeferred)
+}
+
+// Activate applies the kernel-selected generation. It reconciles within the
+// activation sandbox, accepts the running generation against any outstanding
+// move, and records the booted generation when no move is outstanding.
+func (m *BootMover) Activate(id string) (ActivationPlan, ActivationOutcome, error) {
+	var plan ActivationPlan
+	var outcome ActivationOutcome
+	err := withBootStateLock(m.root, func() error {
+		running, err := m.runningGenerationID()
+		if err != nil {
+			return err
+		}
+		if id != running {
+			return fmt.Errorf("selected generation %s does not match kernel generation %s", id, running)
+		}
+		_, activated, err := readCurrentBoot(m.root)
+		if err != nil {
+			return err
+		}
+		result, authority, reconcileErr := m.reconcileLocked(reconcileRestricted)
+		outcome.Reconciled, outcome.ReconcileErr = result.Completed, reconcileErr
+
+		intent, err := readBootMoveIntent(m.root)
+		if err != nil {
+			return err
+		}
+		var record Record
+		switch {
+		case intent != nil:
+			authority = nil
+			if intent.isTrialAuthority() {
+				authority = intent
+			}
+			record, err = intent.activationRecord(m.root, running, m.commandLine)
+		case authority != nil:
+			record, err = authority.activationRecord(m.root, running, m.commandLine)
+		default:
+			record, err = m.observe(running, !activated)
+		}
+		if err != nil {
+			return err
+		}
+		outcome.TrialBound = m.boundTrial(authority, running)
+
+		if plan, err = ApplyActivation(m.root, record); err != nil {
+			return err
+		}
+		if err := recordOwner(m.root, running); err != nil {
+			return err
+		}
+		return writeCurrentBoot(m.root, currentBoot{GenerationID: running})
+	})
+	return plan, outcome, err
+}
+
+// observe records the booted generation in the published selection. It
+// publishes one file and touches neither EFI nor generation status.
+func (m *BootMover) observe(running string, firstActivation bool) (Record, error) {
+	record, err := plainActivationRecord(m.root, running)
+	if err != nil {
+		return Record{}, err
+	}
+	selection, err := ReadBootSelection(m.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return record, nil
+	}
+	if err != nil {
+		return Record{}, err
+	}
+	spec, _, err := ReadGeneration(m.root, running)
+	if err != nil {
+		return Record{}, err
+	}
+	observed, err := observedBoot(selection, spec, running, m.commandLine, firstActivation)
+	if err != nil {
+		return Record{}, fmt.Errorf("record booted generation: %w", err)
+	}
+	if observed == selection {
+		return record, nil
+	}
+	observed.Revision = selection.Revision + 1
+	observed.UpdatedAt = m.timestamp()
+	if err := WriteBootSelection(m.root, observed); err != nil {
+		return Record{}, fmt.Errorf("record booted generation: %w", err)
+	}
+	return record, nil
+}
+
+// ActivateGeneration applies an explicitly named generation without kernel
+// evidence, for tests and target preparation. It writes no boot state.
+func ActivateGeneration(root, id string) (ActivationPlan, error) {
+	root = cleanRoot(root)
+	var plan ActivationPlan
+	err := withBootStateLock(root, func() error {
+		intent, err := readBootMoveIntent(root)
+		if err != nil {
+			return err
+		}
+		if intent != nil {
+			return fmt.Errorf("%w (operation %s): activate the generation the kernel selected", ErrBootMoveBlocked, intent.OperationID)
+		}
+		record, err := plainActivationRecord(root, id)
+		if err != nil {
+			return err
+		}
+		plan, err = ApplyActivation(root, record)
+		return err
+	})
+	return plan, err
+}
+
+// bootOwnersDir records each generation whose runtime has run this owner, so
+// a trial can tell whether its fallback completes the records it leaves.
+const bootOwnersDir = bootStateDir + "/owners"
+
+func recordOwner(root, id string) error {
+	path := rootedPathUnchecked(root, filepath.Join(bootOwnersDir, id))
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if err := persistedrecord.WriteFileAtomic(path, nil, 0o644); err != nil {
+		return fmt.Errorf("record boot-state owner for generation %s: %w", id, err)
+	}
+	return nil
+}
+
+func hasOwner(root, id string) (bool, error) {
+	_, err := os.Stat(rootedPathUnchecked(root, filepath.Join(bootOwnersDir, id)))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// ConfirmBoot records that this boot passed health. It promotes a bound
+// trial, records the boot otherwise, and leaves an armed trial waiting on the
+// boot that armed it.
+func (m *BootMover) ConfirmBoot(reason string) (BootHealthResult, error) {
+	var health BootHealthResult
+	err := withBootStateLock(m.root, func() error {
+		running, err := m.runningGenerationID()
+		if err != nil {
+			return err
+		}
+		reconciled, authority, err := m.reconcileLocked(reconcileFull)
+		if err != nil {
+			return err
+		}
+		selection, err := ReadBootSelection(m.root)
+		if err != nil {
+			return moveSelectionReadError(running, err)
+		}
+		promoted := false
+		if authority == nil || m.boundTrial(authority, running) {
+			request, err := confirmedBoot(m.root, selection, running, m.commandLine, reason, m.timestamp())
+			if err != nil {
+				return err
+			}
+			if request != nil {
+				request.OperationID, request.Trial = "health-"+m.bootID, trialNone
+				if authority != nil {
+					request.OperationID, request.Trial = "promote-"+*authority.Reboot.TrialID, trialPromote
+				}
+				request.OneShot = armedOneShot(request.Selection)
+				if _, err := m.moveLocked(*request, selection, authority, reconciled); err != nil {
+					return err
+				}
+				promoted = request.Selection.DefaultGenerationID == running
+			}
+		}
+		if health, err = m.healthResult(running, BootHealthSuccess); err != nil {
+			return err
+		}
+		health.Promoted = promoted
+		return nil
+	})
+	return health, err
+}
+
+// TrialRequest arms a boot trial of a committed candidate. The caller has
+// written the candidate's loader entry.
+type TrialRequest struct {
+	OperationID  string
+	GenerationID string
+	Reason       string
+	Now          time.Time
+}
+
+// ArmTrial arms the one trial that config apply, host upgrade and a prepared
+// handoff start. The published default is the fallback. It returns when the
+// candidate was committed to the trial.
+func (m *BootMover) ArmTrial(request TrialRequest) (time.Time, error) {
+	candidate := request.GenerationID
+	at := request.Now.UTC().Round(0)
+	if at.IsZero() {
+		at = m.timestamp()
+	}
+	_, err := m.moveWith(func(selection BootSelectionRecord, authority *bootMoveIntent) (*bootMoveRequest, error) {
+		spec, status, err := m.readMoveGeneration(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if authority != nil && *authority.Reboot.TrialID == request.OperationID {
+			// A repeat of a published arm.
+			at = armedAt(status, request.OperationID, at)
+			return nil, nil
+		}
+		if authority != nil {
+			return nil, pendingTrialError(*authority.DestinationGenerationID, request.OperationID)
+		}
+		running, err := m.runningGenerationID()
+		if err != nil {
+			return nil, err
+		}
+		if running != selection.DefaultGenerationID {
+			// A failed trial returns to the published default, which must
+			// complete the records this owner leaves.
+			owner, err := hasOwner(m.root, selection.DefaultGenerationID)
+			if err != nil {
+				return nil, err
+			}
+			if !owner {
+				return nil, fmt.Errorf("generation %s runs while generation %s is the boot default, and generation %s has not run a KatlOS release that can return from a failed trial; select the running generation first with 'katlctl node generations select %s <node>', then retry",
+					running, selection.DefaultGenerationID, selection.DefaultGenerationID, running)
+			}
+		}
+		entry := spec.Boot.LoaderEntryPath
+		trial := selection
+		trial.OneShot = false
+		trial.TargetBootGenerationID, trial.TargetBootEntry = candidate, entry
+		trial.TrialGenerationID, trial.TrialBootEntry = candidate, entry
+		trial.PreviousKnownGoodGenerationID = selection.DefaultGenerationID
+		trial.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
+		if trial.Generation0FallbackID == "" {
+			trial.Generation0FallbackID = selection.DefaultGenerationID
+		}
+		trial.PendingTransactionID = request.OperationID
+		trial.PendingHealthValidation = true
+		trial.PersistentDefaultPromotion = DefaultPromotionPending
+		if err := CheckTrialFallback(m.root, trial); err != nil {
+			return nil, err
+		}
+		return &bootMoveRequest{
+			OperationID: request.OperationID, ExpectedRevision: selection.Revision,
+			Source: running, Destination: candidate, Selection: trial, OneShot: candidate,
+			StatusChanges: []bootStatusChange{{
+				GenerationID: candidate, At: at, Reason: request.Reason,
+				CommitState: CommitStateCommitted, BootState: BootStateTrying, HealthState: HealthStateUnknown,
+				UnavailableReason: new(status.UnavailableReason),
+			}},
+			Trial: trialArm,
+		}, nil
+	})
+	return at, err
+}
+
+func armedAt(status GenerationStatus, operationID string, fallback time.Time) time.Time {
+	for _, transition := range status.StatusTransitions {
+		if transition.OperationID == operationID {
+			return transition.At
+		}
+	}
+	return fallback
+}
+
+// PromoteLive makes a live-validated candidate the default without a reboot.
+// A retry with the same operation ID repeats the published promotion.
+func (m *BootMover) PromoteLive(request LivePromotionRequest) error {
+	_, err := m.moveWith(func(selection BootSelectionRecord, _ *bootMoveIntent) (*bootMoveRequest, error) {
+		return livePromotion(m.root, selection, request)
+	})
+	return err
+}
+
+// SelectRequest selects a known-good generation for the next boot, or as the
+// default unless OneShot is set.
+type SelectRequest struct {
+	GenerationID string
+	OneShot      bool
+}
+
+// Select records a manual boot selection. A cancelled context leaves either
+// nothing or a complete move.
+func (m *BootMover) Select(ctx context.Context, request SelectRequest) error {
+	_, err := m.moveWith(func(selection BootSelectionRecord, authority *bootMoveIntent) (*bootMoveRequest, error) {
+		if authority != nil {
+			return nil, pendingTrialError(*authority.DestinationGenerationID, "select")
+		}
+		next, err := selectedBoot(m.root, selection, request)
+		if err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		next.OperationID = fmt.Sprintf("select-%d", selection.Revision+1)
+		return next, nil
+	})
+	return err
+}
+
+// InvalidateSlot removes boot entry points before the caller overwrites the
+// root slot. Generation records stay for diagnostics and shared artifact
+// ownership until garbage collection. Loader entries go only after the move
+// resolves, so an interrupted move never leaves a target without its entry.
+func (m *BootMover) InvalidateSlot(operationID, partitionUUID string) error {
+	var replaced []GenerationSpec
+	_, err := m.moveThen(func(selection BootSelectionRecord, authority *bootMoveIntent) (*bootMoveRequest, error) {
+		running, err := m.runningGenerationID()
+		if err != nil {
+			return nil, err
+		}
+		request, specs, err := invalidatedSlot(m.root, selection, authority, running, partitionUUID)
+		if err != nil || request == nil {
+			return nil, err
+		}
+		replaced = specs
+		request.OperationID = "invalidate-" + operationID
+		return request, nil
+	}, func(bootMoveResult) error {
+		for _, spec := range replaced {
+			if err := removeEntries(m.root, spec); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return err
+}
+
+// Remove deletes a generation that nothing protects.
+func (m *BootMover) Remove(id string) error {
+	if _, err := cleanSegment("generation id", id); err != nil {
+		return err
+	}
+	var target *GenerationSpec
+	_, err := m.moveThen(func(selection BootSelectionRecord, authority *bootMoveIntent) (*bootMoveRequest, error) {
+		if authority != nil || selection.PendingHealthValidation || selection.RecoveryRequired {
+			return nil, fmt.Errorf("finish the pending boot or recover boot health before removing generations")
+		}
+		items, err := inspect(m.root, selection, true)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if item.Spec.GenerationID != id {
+				continue
+			}
+			if len(item.ProtectedBy) > 0 {
+				return nil, fmt.Errorf("generation %s is protected: %s", id, strings.Join(item.ProtectedBy, ", "))
+			}
+			target = &item.Spec
+			return removedPointers(selection, id), nil
+		}
+		return nil, nil
+	}, func(bootMoveResult) error {
+		if target == nil {
+			return nil
+		}
+		return remove(m.root, *target)
+	})
+	return err
+}
+
+// Prune applies both retention floors per installed version. Callers exclude
+// active operations; the boot lock excludes concurrent boot moves.
+func (m *BootMover) Prune(policy Retention, now time.Time) ([]string, error) {
+	count, age, err := policy.Limits()
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	err = withBootStateLock(m.root, func() error {
+		reconciled, authority, err := m.reconcileLocked(reconcileFull)
+		if err != nil {
+			return err
+		}
+		selection, err := ReadBootSelection(m.root)
+		if err != nil {
+			return err
+		}
+		if authority != nil || selection.PendingHealthValidation || selection.RecoveryRequired {
+			return nil
+		}
+		items, err := inspect(m.root, selection, true)
+		if err != nil {
+			return err
+		}
+		counts := map[string]int{}
+		for _, item := range items {
+			key := item.Spec.RuntimeVersion + "/" + item.Spec.Root.Flavour
+			counts[key]++
+			if len(item.ProtectedBy) > 0 {
+				continue
+			}
+			if item.Status.UnavailableReason == "" && !item.replaced &&
+				(counts[key] <= count || !item.Spec.CreatedAt.Before(now.Add(-age))) {
+				continue
+			}
+			if _, err := m.moveLocked(*removedPointers(selection, item.Spec.GenerationID), selection, nil, reconciled); err != nil {
+				return err
+			}
+			if selection, err = ReadBootSelection(m.root); err != nil {
+				return err
+			}
+			if err := remove(m.root, item.Spec); err != nil {
+				return err
+			}
+			removed = append(removed, item.Spec.GenerationID)
+		}
+		return nil
+	})
+	return removed, err
+}
+
+// Read reconciles, then reads the published selection under the lock. An
+// outstanding move that cannot complete is an error, so a caller never
+// interprets a partly projected selection.
+func (m *BootMover) Read(read func(BootSelectionRecord) error) error {
+	return withBootStateLock(m.root, func() error {
+		if _, _, err := m.reconcileLocked(reconcileFull); err != nil {
+			return err
+		}
+		selection, err := ReadBootSelection(m.root)
+		if err != nil {
+			return err
+		}
+		return read(selection)
+	})
+}
+
+// moveThen is moveWith followed, under the same lock, by an action that may
+// run only once the move resolved.
+func (m *BootMover) moveThen(build func(BootSelectionRecord, *bootMoveIntent) (*bootMoveRequest, error), after func(bootMoveResult) error) (bootMoveResult, error) {
+	var result bootMoveResult
+	err := withBootStateLock(m.root, func() error {
+		var err error
+		if result, err = m.moveWithLocked(build); err != nil {
+			return err
+		}
+		if !result.Resolved {
+			return fmt.Errorf("%w: the boot move did not resolve", ErrBootMoveBlocked)
+		}
+		return after(result)
+	})
+	return result, err
+}
+
+// publishInitialSelection is the owner's first publication, on the target
+// root of an installation: revision 0 with generation 0 pending health.
+func publishInitialSelection(root string, spec GenerationSpec) error {
+	return WriteBootSelection(root, BootSelectionRecord{
+		APIVersion: APIVersion, Kind: BootSelectionKind,
+		DefaultGenerationID: spec.GenerationID, DefaultBootEntry: spec.Boot.LoaderEntryPath,
+		TargetBootGenerationID: spec.GenerationID, TargetBootEntry: spec.Boot.LoaderEntryPath,
+		Generation0FallbackID:   spec.GenerationID,
+		PendingHealthValidation: true, PersistentDefaultPromotion: DefaultPromotionPending,
+		UpdatedAt: spec.CreatedAt,
+	})
 }

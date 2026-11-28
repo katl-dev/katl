@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -52,28 +53,27 @@ type ToolRunner func(context.Context, []string, func(int)) ToolResult
 
 type (
 	BootRootMounter            func(context.Context, string) error
-	BootEntrySetter            func(context.Context, string, string) error
 	HostUpgradeResolver        func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error)
 	ContextWaiter              func(context.Context, time.Duration) error
 	LocalAPIAccessConfigurator func(context.Context, string, operation.BootstrapRequest, ToolRunner) error
 )
 
 type Executor struct {
-	nodeBootHealth         func(context.Context) boothealth.Status
-	observeUpgradeEtcd     func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error)
-	inspectUpgradeEtcd     func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error)
-	Root                   string
-	Store                  operation.Store
-	AgentStartID           string
-	Now                    func() time.Time
-	RunTool                ToolRunner
-	RunReadiness           ToolRunner
-	RunPostHealth          ToolRunner
-	RunEndpointLifecycle   ToolRunner
-	RunPoweroff            ToolRunner
-	MountBootRoot          BootRootMounter
-	SetBootOneshot         BootEntrySetter
-	SetBootDefault         BootEntrySetter
+	nodeBootHealth       func(context.Context) boothealth.Status
+	observeUpgradeEtcd   func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error)
+	inspectUpgradeEtcd   func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error)
+	Root                 string
+	Store                operation.Store
+	AgentStartID         string
+	Now                  func() time.Time
+	RunTool              ToolRunner
+	RunReadiness         ToolRunner
+	RunPostHealth        ToolRunner
+	RunEndpointLifecycle ToolRunner
+	RunPoweroff          ToolRunner
+	MountBootRoot        BootRootMounter
+	// BootMover is the only writer of boot targets; nil disables boot moves.
+	BootMover              *generation.BootMover
 	ConfigApplyRunner      configapply.CommandRunner
 	ConfigApplyActivator   configapply.ConfextActivator
 	BundleClient           *http.Client
@@ -115,8 +115,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		workerCancel:         workerCancel,
 	}
 	if runtimeRoot(executor.Root) == "/" {
-		executor.SetBootOneshot = setBootOneshot
-		executor.SetBootDefault = setBootDefault
+		executor.BootMover = productionBootMover(root)
 	}
 	return executor
 }
@@ -868,95 +867,61 @@ func (e *Executor) promoteLiveGeneration(ctx context.Context, record operation.O
 		// receipt chain. Keep its owner while replaying incomplete EFI writes.
 		promotionID = state.CommittedByOperation
 	}
-	return generation.PromoteLiveGeneration(generation.LivePromotionRequest{
-		Root:         e.Root,
+	mover, err := e.bootMover()
+	if err != nil {
+		return err
+	}
+	return mover.PromoteLive(generation.LivePromotionRequest{
 		GenerationID: record.CandidateGenerationID,
 		OperationID:  promotionID,
 		Reason:       reason,
 		Now:          now,
-		SetBootDefault: func(root, entry string) error {
-			if e.SetBootDefault == nil {
-				return fmt.Errorf("boot default updater is not configured")
-			}
-			return e.SetBootDefault(ctx, root, entry)
-		},
-		SetBootOneshot: func(root, entry string) error {
-			if e.SetBootOneshot == nil {
-				return fmt.Errorf("boot one-shot updater is not configured")
-			}
-			return e.SetBootOneshot(ctx, root, entry)
-		},
 	})
 }
 
+func (e *Executor) bootMover() (*generation.BootMover, error) {
+	return configuredBootMover(e.BootMover)
+}
+
+func configuredBootMover(mover *generation.BootMover) (*generation.BootMover, error) {
+	if mover == nil {
+		return nil, fmt.Errorf("boot management is not configured")
+	}
+	return mover, nil
+}
+
+func (e *Executor) validateMutationBase(expected string) error {
+	mover, err := e.bootMover()
+	if err != nil {
+		return err
+	}
+	return mover.ValidateMutationBase(expected)
+}
+
+func (s *Server) validateMutationBase(expected string) error {
+	mover, err := configuredBootMover(s.BootMover)
+	if err != nil {
+		return err
+	}
+	return mover.ValidateMutationBase(expected)
+}
+
 func (e *Executor) commitTrialGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
-	return generation.WithLegacyBootState(e.Root, func() error {
-		candidate := strings.TrimSpace(record.CandidateGenerationID)
-		if candidate == "" {
-			return fmt.Errorf("candidate generation id is required")
-		}
-		spec, status, entry, err := e.writeCandidateLoaderEntry(ctx, candidate)
-		if err != nil {
-			return err
-		}
-		committedAt := now.UTC()
-		selection, err := generation.ReadBootSelection(e.Root)
-		if err != nil {
-			return fmt.Errorf("read boot selection: %w", err)
-		}
-		previousSelection := selection
-		fallback := strings.TrimSpace(selection.Generation0FallbackID)
-		if fallback == "" {
-			fallback = selection.DefaultGenerationID
-		}
-		selection.OneShot = false
-		selection.TargetBootGenerationID = candidate
-		selection.TrialGenerationID = candidate
-		selection.PreviousKnownGoodGenerationID = selection.DefaultGenerationID
-		selection.Generation0FallbackID = fallback
-		selection.TargetBootEntry = entry
-		selection.TrialBootEntry = entry
-		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
-		selection.PendingTransactionID = record.OperationID
-		selection.PendingHealthValidation = true
-		selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
-		selection.UpdatedAt = committedAt
-		if err := generation.CheckTrialFallback(e.Root, selection); err != nil {
-			return err
-		}
-		if err := generation.WriteBootSelection(e.Root, selection); err != nil {
-			return fmt.Errorf("arm boot health validation: %w", err)
-		}
-		if e.SetBootOneshot != nil {
-			if err := e.SetBootOneshot(ctx, e.Root, selection.TrialBootEntry); err != nil {
-				if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
-					return fmt.Errorf("arm boot health validation: %w; restore boot selection: %w", err, restoreErr)
-				}
-				return fmt.Errorf("arm boot health validation: %w", err)
-			}
-		}
-		status.CommitState = generation.CommitStateCommitted
-		status.BootState = generation.BootStateTrying
-		status.HealthState = generation.HealthStateUnknown
-		status.UpdatedAt = committedAt
-		status.CommittedAt = &committedAt
-		status.CommittedByOperation = record.OperationID
-		status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{
-			At:          committedAt,
-			OperationID: record.OperationID,
-			Reason:      reason,
-			CommitState: status.CommitState,
-			BootState:   status.BootState,
-			HealthState: status.HealthState,
-		})
-		if err := generation.WriteGenerationStatus(e.Root, spec, status); err != nil {
-			if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
-				return fmt.Errorf("commit candidate generation: %w; restore boot selection: %w", err, restoreErr)
-			}
-			return fmt.Errorf("commit candidate generation: %w", err)
-		}
-		return nil
-	})
+	candidate := strings.TrimSpace(record.CandidateGenerationID)
+	if candidate == "" {
+		return fmt.Errorf("candidate generation id is required")
+	}
+	mover, err := e.bootMover()
+	if err != nil {
+		return err
+	}
+	if _, _, _, err := e.writeCandidateLoaderEntry(ctx, candidate); err != nil {
+		return err
+	}
+	if _, err := mover.ArmTrial(generation.TrialRequest{OperationID: record.OperationID, GenerationID: candidate, Reason: reason, Now: now}); err != nil {
+		return fmt.Errorf("arm boot health validation: %w", err)
+	}
+	return nil
 }
 
 func (e *Executor) writeCandidateLoaderEntry(ctx context.Context, candidate string) (generation.GenerationSpec, generation.GenerationStatus, string, error) {
@@ -1393,34 +1358,15 @@ func (m bootRootMounter) isMountpoint(ctx context.Context, bootRoot string) (boo
 	return false, fmt.Errorf("check boot root mountpoint %s: %s", bootRoot, toolFailure(result))
 }
 
-func setBootOneshot(ctx context.Context, root string, bootEntry string) error {
-	return setBootEntry(ctx, root, "set-oneshot", bootEntry)
-}
-
-func setBootDefault(ctx context.Context, root string, bootEntry string) error {
-	return setBootEntry(ctx, root, "set-default", bootEntry)
-}
-
-func setBootEntry(ctx context.Context, root, verb, bootEntry string) error {
-	if strings.TrimSpace(bootEntry) != "" {
-		bootEntry = filepath.Base(strings.TrimSpace(bootEntry))
+// productionBootMover owns boot state for the running boot, or is nil when
+// the running boot cannot be observed, which disables boot moves.
+func productionBootMover(root string) *generation.BootMover {
+	mover, err := generation.NewBootMover(runtimeRoot(root), generation.BootMoverOptions{})
+	if err != nil {
+		log.Printf("boot management is disabled: %v", err)
+		return nil
 	}
-	if bootEntry == "." || (bootEntry == "" && verb != "set-oneshot") {
-		return fmt.Errorf("boot entry is required")
-	}
-	args := []string{"bootctl"}
-	root = runtimeRoot(root)
-	if root != "/" {
-		args = append(args, "--esp-path="+filepath.Join(root, "efi"))
-	}
-	args = append(args, verb, bootEntry)
-	bootCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
-	defer cancel()
-	result := runChildProcess(bootCtx, args, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return fmt.Errorf("%s: %s", strings.Join(args, " "), toolFailure(result))
-	}
-	return nil
+	return mover
 }
 
 func runChildProcess(ctx context.Context, argv []string, started func(int)) ToolResult {

@@ -47,6 +47,7 @@ func TestUpgradeRoleMatchesNode(t *testing.T) {
 				writeTestFile(t, rootedRuntimePath(root, tc.controlPlanePath), "control-plane state")
 			}
 			server := NewServer(root, store)
+			server.BootMover, _ = newBootMover(t, root, "boot-1", "gen0")
 			update := record.KubernetesSysextUpdate
 			request := &agentapi.SubmitOperationRequest{OperationKind: OperationKindKubeadmUpgrade, ExpectedCurrentGenerationId: "gen0", KubernetesSysextUpdate: &agentapi.KubernetesSysextUpdateOperationRequest{
 				SourcePayloadVersion: update.SourcePayloadVersion, TargetPayloadVersion: update.TargetPayloadVersion,

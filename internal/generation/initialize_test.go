@@ -50,12 +50,13 @@ func TestInitialHandoff(t *testing.T) {
 				t.Fatal("unbooted generation is healthy")
 			}
 
-			request := BootHealthRequest{Root: root, GenerationID: "0", CommandLine: "katl.generation=0 root=PARTUUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", Result: BootHealthSuccess, Now: now.Add(time.Minute)}
-			if _, err := RecordBootHealth(request); err == nil {
+			m, _ := moverOn(t, root, "0")
+			m.commandLine = "katl.generation=0 root=PARTUUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+			if _, err := m.ConfirmBoot(""); err == nil {
 				t.Fatal("health for another root was accepted")
 			}
-			request.CommandLine = "katl.generation=0 root=PARTUUID=11111111-2222-3333-4444-555555555555"
-			if _, err := RecordBootHealth(request); err != nil {
+			m.commandLine = "katl.generation=0 root=PARTUUID=11111111-2222-3333-4444-555555555555"
+			if _, err := m.ConfirmBoot(""); err != nil {
 				t.Fatalf("first boot: %v", err)
 			}
 			if err := Initialize(root, spec); err != nil {

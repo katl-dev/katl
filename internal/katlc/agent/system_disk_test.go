@@ -102,6 +102,9 @@ func testBootRootImage() []byte {
 
 func writeTestBootDisk(t *testing.T, root, partUUID string) {
 	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, "dev/vda1")); err == nil {
+		return
+	}
 	host := newHostDisks(t, hostDisk{"vda", 17, []hostPartition{
 		{1, "KATL_ROOT_A", partUUID, rootType},
 		{2, "KATL_ESP", "esp-partuuid", espType},

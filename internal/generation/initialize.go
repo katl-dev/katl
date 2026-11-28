@@ -23,7 +23,14 @@ func Initialize(root string, spec GenerationSpec) error {
 	if err != nil {
 		return err
 	}
-	return WithLegacyBootState(root, func() error {
+	return withBootStateLock(root, func() error {
+		intent, err := readBootMoveIntent(root)
+		if err != nil {
+			return err
+		}
+		if intent != nil {
+			return fmt.Errorf("%w (operation %s): the target root already has boot moves", ErrBootMoveBlocked, intent.OperationID)
+		}
 		selection, err := ReadBootSelection(root)
 		exists := err == nil
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -38,13 +45,6 @@ func Initialize(root string, spec GenerationSpec) error {
 		if exists {
 			return nil
 		}
-		return WriteBootSelection(root, BootSelectionRecord{
-			APIVersion: APIVersion, Kind: BootSelectionKind,
-			DefaultGenerationID: spec.GenerationID, DefaultBootEntry: spec.Boot.LoaderEntryPath,
-			TargetBootGenerationID: spec.GenerationID, TargetBootEntry: spec.Boot.LoaderEntryPath,
-			Generation0FallbackID:   spec.GenerationID,
-			PendingHealthValidation: true, PersistentDefaultPromotion: DefaultPromotionPending,
-			UpdatedAt: spec.CreatedAt,
-		})
+		return publishInitialSelection(root, spec)
 	})
 }

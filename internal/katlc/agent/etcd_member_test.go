@@ -61,7 +61,7 @@ func TestValidateEtcdRemovalPreconditionsAllowsOneFailedMemberWithQuorum(t *test
 
 func TestEtcdMemberRemoveOperationValidatesAndVerifiesRemoval(t *testing.T) {
 	server := newTestServer(t)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	removed := false
@@ -100,7 +100,7 @@ func TestEtcdMemberRemoveOperationValidatesAndVerifiesRemoval(t *testing.T) {
 
 func TestEtcdMemberRemoveMovesTargetLeadershipThroughLeaderEndpoint(t *testing.T) {
 	server := newTestServer(t)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	removed := false

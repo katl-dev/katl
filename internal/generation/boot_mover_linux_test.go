@@ -2,6 +2,7 @@ package generation
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,46 +15,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/efiboot"
 )
-
-// fakeEFI models the two systemd-boot variables. Firmware consumes the
-// one-shot on every boot, including a boot chosen from the menu.
-type fakeEFI struct {
-	entries efiboot.Entries
-	fault   string // "read", "read-back", "write" or "mismatch"
-	written bool
-}
-
-var errEFIFault = errors.New("injected EFI fault")
-
-func (f *fakeEFI) read(string) (efiboot.Entries, error) {
-	if f.fault == "read" || (f.fault == "read-back" && f.written) {
-		return efiboot.Entries{}, errEFIFault
-	}
-	return f.entries, nil
-}
-
-func (f *fakeEFI) set(entry *string) BootDefaultSetter {
-	return func(_ string, path string) error {
-		f.written = true
-		switch f.fault {
-		case "write":
-			return errEFIFault
-		case "mismatch":
-			return nil
-		}
-		*entry = ""
-		if path != "" {
-			*entry = filepath.Base(path)
-		}
-		return nil
-	}
-}
-
-func (f *fakeEFI) boot() string {
-	entry := cmp.Or(f.entries.OneShot, f.entries.Default)
-	f.entries.OneShot = ""
-	return strings.TrimSuffix(strings.TrimPrefix(entry, "katl-"), ".conf")
-}
 
 var errCrash = errors.New("injected crash")
 
@@ -102,12 +63,12 @@ func newMoveWorld(t *testing.T) *moveWorld {
 	return &moveWorld{t: t, root: root, efi: &fakeEFI{entries: efiboot.Entries{Default: "katl-gen1.conf"}}, bootID: "b-1", running: "gen1"}
 }
 
-func (w *moveWorld) mover(checkpoint func(bootMoveStep) error) *bootMover {
+func (w *moveWorld) mover(checkpoint func(bootMoveStep) error) *BootMover {
 	return w.moverWithCommandLine(bootHealthCommandLine(w.running), checkpoint)
 }
 
-func (w *moveWorld) moverWithCommandLine(commandLine string, checkpoint func(bootMoveStep) error) *bootMover {
-	return &bootMover{
+func (w *moveWorld) moverWithCommandLine(commandLine string, checkpoint func(bootMoveStep) error) *BootMover {
+	return &BootMover{
 		root: w.root, bootID: w.bootID, commandLine: commandLine,
 		now:        func() time.Time { return time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC) },
 		readEFI:    w.efi.read,
@@ -143,7 +104,7 @@ type moveOp struct {
 	// setup prepares the boot that issues the operation.
 	setup func(*moveWorld)
 	// run issues the operation, or reconciles for a migration.
-	run   func(*moveWorld, *bootMover) (bootMoveResult, error)
+	run   func(*moveWorld, *BootMover) (bootMoveResult, error)
 	steps []bootMoveStep
 	// issuing is the outcome after completion on the issuing boot.
 	issuing moveOutcome
@@ -253,13 +214,13 @@ func resolvedTrial(w *moveWorld) BootSelectionRecord {
 	return selection
 }
 
-func moveRun(request func(*moveWorld) bootMoveRequest) func(*moveWorld, *bootMover) (bootMoveResult, error) {
-	return func(w *moveWorld, m *bootMover) (bootMoveResult, error) { return m.move(request(w)) }
+func moveRun(request func(*moveWorld) bootMoveRequest) func(*moveWorld, *BootMover) (bootMoveResult, error) {
+	return func(w *moveWorld, m *BootMover) (bootMoveResult, error) { return m.move(request(w)) }
 }
 
 const trialDeadlineReason = "katl-boot-health-deadline-expired"
 
-func failMove(_ *moveWorld, m *bootMover) (bootMoveResult, error) {
+func failMove(_ *moveWorld, m *BootMover) (bootMoveResult, error) {
 	return m.failTrial(trialDeadlineReason)
 }
 
@@ -483,7 +444,7 @@ func moveOps() []moveOp {
 			writeBootHealthSelection(w.t, w.root, selection)
 			w.bootID, w.running = "b-2", "gen2"
 		},
-		run:     func(_ *moveWorld, m *bootMover) (bootMoveResult, error) { return m.reconcile() },
+		run:     func(_ *moveWorld, m *BootMover) (bootMoveResult, error) { return m.reconcile() },
 		issuing: imported,
 		later:   map[string]moveOutcome{"gen1": importedUnconfirmed, "gen2": imported},
 	}}
@@ -776,7 +737,7 @@ func TestBootMoveAdmission(t *testing.T) {
 		armAndBootCandidate(w)
 		request := armRequest(w)
 		request.OperationID, request.ExpectedRevision = "apply-8", 5
-		assertMoveRefused(t, w, request, "trial apply-7 awaits its health result")
+		assertMoveRefused(t, w, request, "a boot trial of generation gen2 is pending; run 'katlctl node reboot <node>'")
 	})
 	t.Run("fail on issuing boot", func(t *testing.T) {
 		w := newMoveWorld(t)
@@ -798,7 +759,7 @@ func TestBootMoveAdmission(t *testing.T) {
 	})
 	t.Run("caller-built failure", func(t *testing.T) {
 		w := newMoveWorld(t)
-		assertMoveRefused(t, w, bootMoveRequest{Trial: trialFail}, "trial failures must use failTrial")
+		assertMoveRefused(t, w, bootMoveRequest{Trial: trialFail}, "trial failures must use FailTrial")
 	})
 	t.Run("unbootable target", func(t *testing.T) {
 		w := newMoveWorld(t)
@@ -877,7 +838,7 @@ func assertErrorContains(t *testing.T, err error, details ...string) {
 	}
 }
 
-func assertRefusedWithoutChange(t *testing.T, w *moveWorld, m *bootMover) {
+func assertRefusedWithoutChange(t *testing.T, w *moveWorld, m *BootMover) {
 	t.Helper()
 	intent, err := readBootMoveIntent(w.root)
 	if err != nil {
@@ -1246,11 +1207,9 @@ func TestBootMoveUnconfirmedTrial(t *testing.T) {
 			assertTrialResolution(t, w, result, tc.want, tc.defaultEntry, tc.previousID, tc.previousEntry)
 
 			if tc.name == "running known-good" {
-				request := bootMoveRequest{OperationID: "next-ordinary-move", ExpectedRevision: 6,
-					Source: "gen3", Destination: "gen3", Selection: w.selection()}
-				result, err := w.mover(nil).move(request)
-				if err != nil || result != (bootMoveResult{Resolved: true}) || w.selection().Revision != 7 {
-					t.Fatalf("ordinary move after resolution = %+v, %v; revision %d", result, err, w.selection().Revision)
+				err := w.mover(nil).Select(context.Background(), SelectRequest{GenerationID: "outside", OneShot: true})
+				if err != nil || w.selection().Revision != 7 || w.selection().TargetBootGenerationID != "outside" {
+					t.Fatalf("ordinary move after resolution = %v; selection %#v", err, w.selection())
 				}
 			}
 		})

@@ -479,6 +479,9 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.flavour == flavour.LTS && current.GetRuntimeFlavour() == "" {
 		return fmt.Errorf("this node predates kernel flavour support; first upgrade it to the standard flavour of this release, then retry with --flavour lts")
 	}
+	if err := checkBootMoveSource(current.GetRuntimeVersion(), opts.version, version); err != nil {
+		return err
+	}
 
 	// A retained candidate from an earlier operation must not prevent another
 	// upgrade from the same base after rollback. Retries share the request ID.
@@ -3875,4 +3878,26 @@ func parseUint32(value, name string) (uint32, error) {
 		return 0, fmt.Errorf("%s must be non-zero", name)
 	}
 	return uint32(parsed), nil
+}
+
+// checkBootMoveSource refuses an upgrade whose target writes boot-move
+// records that the node's current runtime, its fallback after the upgrade,
+// cannot read. A target at or after this katlctl's own release writes them;
+// a development katlctl, whose version is not a release, cannot tell and
+// leaves the decision to the node.
+//
+// The check is client-side only: an older katlctl, or a request sent straight
+// to the agent, is not stopped by it. On the node, the boot-state owner
+// refuses the move itself and writes nothing.
+func checkBootMoveSource(currentVersion, targetVersion, clientVersion string) error {
+	client, err := releaseversion.Parse(strings.TrimPrefix(clientVersion, "v"))
+	if err != nil || generation.ReadsBootMoves(currentVersion) {
+		return nil
+	}
+	target, err := releaseversion.Parse(targetVersion)
+	if err != nil || target.Base().Compare(client.Base()) < 0 {
+		return nil
+	}
+	return fmt.Errorf("this node runs KatlOS %s, which cannot read the boot records KatlOS %s writes, so it could not serve as the upgrade's fallback; upgrade to %s or later first, then retry",
+		currentVersion, targetVersion, generation.FirstBootMoveReader)
 }

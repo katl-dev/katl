@@ -193,17 +193,16 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	previousKubernetes := previousSpec.Sysexts[0]
 
 	plan, err := payload.HostUpgradePlan(HostUpgradeRequest{
-		GenerationID:         "gen1",
-		PreviousSpec:         previousSpec,
-		PreviousStatus:       previousStatus,
-		RootSlot:             "root-b",
-		RootPartitionUUID:    "bbbbbbbb-1111-2222-3333-444444444444",
-		UKIPath:              "/efi/EFI/Linux/katl-gen1.efi",
-		LoaderEntryPath:      "loader/entries/katl-gen1.conf",
-		OperationID:          "op-host-upgrade",
-		BootCountedTrialPath: "/efi/loader/entries/katl-gen1+3.conf",
-		Bootstrapped:         true,
-		CreatedAt:            time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
+		GenerationID:      "gen1",
+		PreviousSpec:      previousSpec,
+		PreviousStatus:    previousStatus,
+		RootSlot:          "root-b",
+		RootPartitionUUID: "bbbbbbbb-1111-2222-3333-444444444444",
+		UKIPath:           "/efi/EFI/Linux/katl-gen1.efi",
+		LoaderEntryPath:   "loader/entries/katl-gen1.conf",
+		OperationID:       "op-host-upgrade",
+		Bootstrapped:      true,
+		CreatedAt:         time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatalf("HostUpgradePlan() error = %v", err)
@@ -257,18 +256,6 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	}
 	if plan.Status.CommitState != generation.CommitStateCandidate || plan.Status.BootState != generation.BootStatePending || plan.Status.HealthState != generation.HealthStateUnknown {
 		t.Fatalf("candidate status = %#v", plan.Status)
-	}
-	if plan.BootSelection.DefaultGenerationID != "gen0" ||
-		plan.BootSelection.TargetBootGenerationID != "gen1" ||
-		plan.BootSelection.TrialGenerationID != "gen1" ||
-		plan.BootSelection.PreviousKnownGoodGenerationID != "gen0" ||
-		plan.BootSelection.TrialBootEntry != "loader/entries/katl-gen1.conf" ||
-		plan.BootSelection.TargetBootEntry != "loader/entries/katl-gen1.conf" ||
-		plan.BootSelection.PreviousKnownGoodBootEntry != "loader/entries/katl-gen0.conf" ||
-		!plan.BootSelection.PendingHealthValidation ||
-		plan.BootSelection.PersistentDefaultPromotion != generation.DefaultPromotionPending ||
-		plan.BootSelection.BootCountedTrialPath != "/efi/loader/entries/katl-gen1+3.conf" {
-		t.Fatalf("boot selection = %#v", plan.BootSelection)
 	}
 }
 
@@ -442,83 +429,6 @@ func TestHostUpgradePlanRequiresKnownGoodPreviousGeneration(t *testing.T) {
 	_, err := payload.HostUpgradePlan(request)
 	if err == nil || !strings.Contains(err.Error(), "not known-good") {
 		t.Fatalf("HostUpgradePlan() error = %v, want known-good refusal", err)
-	}
-}
-
-func TestHostUpgradeRollbackMetadataRestoresPreviousKnownGood(t *testing.T) {
-	root := t.TempDir()
-	payload := upgradePayload(t, nil)
-	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", sha256Bytes([]byte("kubernetes sysext")), "v1.35.0")
-	previousSpec, previousStatus = writePreservedGenerationAssets(t, root, previousSpec)
-	plan, err := payload.HostUpgradePlan(HostUpgradeRequest{
-		GenerationID:      "gen1",
-		PreviousSpec:      previousSpec,
-		PreviousStatus:    previousStatus,
-		RootSlot:          "root-b",
-		RootPartitionUUID: "bbbbbbbb-1111-2222-3333-444444444444",
-		UKIPath:           "/efi/EFI/Linux/katl-gen1.efi",
-		LoaderEntryPath:   "loader/entries/katl-gen1.conf",
-		OperationID:       "op-host-upgrade",
-		Bootstrapped:      true,
-		CreatedAt:         time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC),
-	})
-	if err != nil {
-		t.Fatalf("HostUpgradePlan() error = %v", err)
-	}
-	if err := generation.WriteGeneration(root, previousSpec, previousStatus); err != nil {
-		t.Fatalf("WriteGeneration(previous) error = %v", err)
-	}
-	if err := generation.WriteGeneration(root, plan.Spec, plan.Status); err != nil {
-		t.Fatalf("WriteGeneration(candidate) error = %v", err)
-	}
-	for _, rel := range []string{filepath.Join("efi", previousSpec.Boot.LoaderEntryPath), previousSpec.Boot.UKIPath} {
-		path := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("previous boot artifact"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	booted := plan.BootSelection
-	booted.BootedGenerationID = "gen1"
-	booted.BootedBootEntry = "loader/entries/katl-gen1.conf"
-	if err := generation.WriteBootSelection(root, booted); err != nil {
-		t.Fatalf("WriteBootSelection() error = %v", err)
-	}
-
-	result, err := generation.RecordBootHealth(generation.BootHealthRequest{
-		Root:         root,
-		GenerationID: "gen1",
-		CommandLine:  "root=PARTUUID=bbbbbbbb-1111-2222-3333-444444444444 katl.generation=gen1",
-		Result:       generation.BootHealthFailure,
-		Reason:       "host upgrade trial failed",
-		Now:          time.Date(2026, 6, 17, 12, 10, 0, 0, time.UTC),
-	})
-	if err != nil {
-		t.Fatalf("RecordBootHealth(failure) error = %v", err)
-	}
-	if !result.Failed || result.DefaultGeneration != "gen0" || result.RecoveryRequired {
-		t.Fatalf("boot health result = %#v, want rollback to gen0", result)
-	}
-	selection, err := generation.ReadBootSelection(root)
-	if err != nil {
-		t.Fatalf("ReadBootSelection() error = %v", err)
-	}
-	if selection.DefaultGenerationID != "gen0" ||
-		selection.BootedGenerationID != "gen1" ||
-		selection.FailedBootGenerationID != "gen1" ||
-		selection.TrialGenerationID != "" ||
-		selection.PendingHealthValidation ||
-		selection.RecoveryRequired {
-		t.Fatalf("rollback selection = %#v", selection)
-	}
-	_, previousAfter, err := generation.ReadGeneration(root, "gen0")
-	if err != nil {
-		t.Fatalf("ReadGeneration(gen0) error = %v", err)
-	}
-	if previousAfter.CommitState != generation.CommitStateCommitted || previousAfter.BootState != generation.BootStateGood || previousAfter.HealthState != generation.HealthStateHealthy {
-		t.Fatalf("previous status = %#v, want still known-good", previousAfter)
 	}
 }
 

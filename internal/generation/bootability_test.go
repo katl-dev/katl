@@ -139,14 +139,15 @@ func TestDiscoveryErrorsProtectRollback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			m, _ := moverOn(t, root, "current")
 			if err := CheckBootability(root, spec, state); !errors.Is(err, fault.want) || !strings.Contains(err.Error(), "bootability indeterminate") {
 				t.Fatalf("check = %v, want indeterminate with %v", err, fault.want)
 			}
-			if err := Remove(root, "old"); err == nil || !strings.Contains(err.Error(), "bootability indeterminate") {
+			if err := m.Remove("old"); err == nil || !strings.Contains(err.Error(), "bootability indeterminate") {
 				t.Fatalf("remove = %v, want indeterminate protection", err)
 			}
 			keepLast := 1
-			if removed, err := Prune(root, Retention{KeepLast: &keepLast, MaxAge: "30d"}, now); err != nil || len(removed) != 0 {
+			if removed, err := m.Prune(Retention{KeepLast: &keepLast, MaxAge: "30d"}, now); err != nil || len(removed) != 0 {
 				t.Fatalf("prune = %v, %v, want old generation retained", removed, err)
 			}
 		})
@@ -171,7 +172,8 @@ func TestBootabilityGuidesSelectionAndCleanup(t *testing.T) {
 			removeBootFixture(t, path)
 			test.makeRoot(t, path)
 
-			items, before, err := Inspect(root)
+			m, efi := moverOn(t, root, "current")
+			items, _, err := m.Inspect()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -179,23 +181,18 @@ func TestBootabilityGuidesSelectionAndCleanup(t *testing.T) {
 			if index < 0 || items[index].UnavailableReason != "" {
 				t.Fatalf("listed generations = %+v, want old with its boot artifacts present", items)
 			}
-			setter := func(_, entry string) error {
-				t.Errorf("unexpected EFI write to %q", entry)
-				return nil
-			}
-			err = Select(t.Context(), SelectRequest{Root: root, GenerationID: "old", SetDefault: setter, SetOneshot: setter})
+			kept := keepsBootState(t, root, efi)
+			err = m.Select(t.Context(), SelectRequest{GenerationID: "old"})
 			if err == nil || !strings.Contains(err.Error(), test.reason) {
 				t.Fatalf("selection = %v, want root evidence %q", err, test.reason)
 			}
-			if after, err := ReadBootSelection(root); err != nil || after != before {
-				t.Fatalf("selection changed to %+v, %v", after, err)
-			}
+			kept()
 			if test.name == "indeterminate" {
-				if err := Remove(root, "old"); err == nil || !strings.Contains(err.Error(), test.reason) {
+				if err := m.Remove("old"); err == nil || !strings.Contains(err.Error(), test.reason) {
 					t.Fatalf("remove = %v, want indeterminate protection", err)
 				}
 				keepLast := 1
-				if removed, err := Prune(root, Retention{KeepLast: &keepLast, MaxAge: "30d"}, now); err != nil || len(removed) != 0 {
+				if removed, err := m.Prune(Retention{KeepLast: &keepLast, MaxAge: "30d"}, now); err != nil || len(removed) != 0 {
 					t.Fatalf("prune = %v, %v, want old generation retained", removed, err)
 				}
 			}
@@ -223,6 +220,9 @@ func bootDevicePath(root, slot string) string {
 
 func writeBootDisk(t *testing.T, root string) {
 	t.Helper()
+	if _, err := os.Lstat(filepath.Join(root, "sys/devices/vda")); err == nil {
+		return
+	}
 	var stat unix.Stat_t
 	if err := unix.Stat(root, &stat); err != nil {
 		t.Fatal(err)

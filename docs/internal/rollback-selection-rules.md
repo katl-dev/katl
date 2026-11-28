@@ -59,9 +59,11 @@ regenerate /run extension, confext, and app status roots from previous known-goo
 boot previous known-good generation
 ```
 
-If there is no previous known-good generation, automatic rollback is not
-available. That is the first-install failure case and requires reinstall or
-repair tooling.
+If no previous known-good generation can be used, automatic rollback is not
+available. The running generation stays the default with `recoveryRequired`,
+and a healthy boot of it clears the state after the cause is repaired. The
+first boot after install is not a failed trial: it has no fallback, stays
+pending, and requires repair or reinstall.
 
 Failed boot rollback marks only the failed tried generation `failed/unhealthy`.
 The rollback target keeps its existing `good/healthy` boot health and its
@@ -119,8 +121,9 @@ stale-post-mutation and stale-ambiguous records until an explicit retry or repai
 operation clears it.
 
 When rollback cannot select a previous known-good generation, Katl reports
-recovery-required and records diagnostics for a deferred recovery operation. It
-must not invent a rollback target.
+recovery-required, publishes the running generation as the default without
+requesting a reboot, and records diagnostics for a deferred recovery operation.
+It must not invent a rollback target.
 
 ## First Install Seed
 

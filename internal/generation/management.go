@@ -1,14 +1,12 @@
 package generation
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
@@ -22,16 +20,13 @@ type ManagedGeneration struct {
 }
 
 // Inspect lists recorded state and checks artifact presence without reading root images.
-func Inspect(root string) ([]ManagedGeneration, BootSelectionRecord, error) {
+func (m *BootMover) Inspect() ([]ManagedGeneration, BootSelectionRecord, error) {
 	var items []ManagedGeneration
 	var selection BootSelectionRecord
-	err := WithLegacyBootState(root, func() error {
+	err := m.Read(func(published BootSelectionRecord) error {
 		var err error
-		selection, err = ReadBootSelection(root)
-		if err != nil {
-			return err
-		}
-		items, err = inspect(root, selection, false)
+		selection = published
+		items, err = inspect(m.root, selection, false)
 		return err
 	})
 	return items, selection, err
@@ -139,15 +134,6 @@ func inspect(root string, selection BootSelectionRecord, verifyRoot bool) ([]Man
 	return items, nil
 }
 
-type SelectRequest struct {
-	Root         string
-	GenerationID string
-	OneShot      bool
-	Now          time.Time
-	SetDefault   BootDefaultSetter
-	SetOneshot   BootDefaultSetter
-}
-
 func manualBootEligibility(result bootability, status GenerationStatus) error {
 	if err := result.problem(); err != nil {
 		return err
@@ -158,147 +144,39 @@ func manualBootEligibility(result bootability, status GenerationStatus) error {
 	return nil
 }
 
-func Select(ctx context.Context, request SelectRequest) error {
-	return WithLegacyBootState(request.Root, func() error {
-		selection, err := ReadBootSelection(request.Root)
-		if err != nil {
-			return err
-		}
-		if selection.PendingHealthValidation || selection.RecoveryRequired {
-			return fmt.Errorf("finish the pending boot or recover boot health before selecting a generation")
-		}
-		spec, status, err := ReadGeneration(request.Root, request.GenerationID)
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("generation %q does not exist or is incomplete; list generations first", request.GenerationID)
-		}
-		if err != nil {
-			return err
-		}
-		check := bootabilityCheck{root: request.Root}
-		if err := manualBootEligibility(check.check(spec, status, bootFull), status); err != nil {
-			return fmt.Errorf("generation %s %w", request.GenerationID, err)
-		}
-		if request.SetDefault == nil || request.SetOneshot == nil {
-			return fmt.Errorf("boot selection setters are required")
-		}
-		previous := selection
-		selection.TargetBootGenerationID = request.GenerationID
-		selection.TargetBootEntry = spec.Boot.LoaderEntryPath
-		selection.OneShot = request.OneShot
-		if !request.OneShot {
-			if selection.DefaultGenerationID != request.GenerationID {
-				selection.PreviousKnownGoodGenerationID = previous.DefaultGenerationID
-				selection.PreviousKnownGoodBootEntry = previous.DefaultBootEntry
-			}
-			selection.DefaultGenerationID = request.GenerationID
-			selection.DefaultBootEntry = spec.Boot.LoaderEntryPath
-		}
-		selection.UpdatedAt = request.Now.UTC()
-		if selection.UpdatedAt.IsZero() {
-			selection.UpdatedAt = time.Now().UTC()
-		}
-		// Publish intent before EFI: boot health must understand the selection even
-		// if the machine loses power immediately after the firmware variable changes.
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := WriteBootSelection(request.Root, selection); err != nil {
-			return err
-		}
-		if !request.OneShot {
-			err = request.SetDefault(request.Root, selection.DefaultBootEntry)
-		}
-		if err == nil {
-			err = request.SetOneshot(request.Root, selection.TargetBootEntry)
-		}
-		if err == nil {
-			return nil
-		}
-		// Restore EFI before restoring intent; a failed compensation leaves the
-		// intent visible so the operator can repeat the selection safely.
-		restore := request.SetDefault(request.Root, previous.DefaultBootEntry)
-		restore = errors.Join(restore, request.SetOneshot(request.Root, previous.TargetBootEntry))
-		if restore == nil {
-			restore = WriteBootSelection(request.Root, previous)
-		}
-		return errors.Join(err, restore)
-	})
-}
-
-func Remove(root, id string) error {
-	if _, err := cleanSegment("generation id", id); err != nil {
-		return err
+// selectedBoot builds a manual selection. Both modes arm the one-shot; a
+// persistent selection also becomes the default.
+func selectedBoot(root string, selection BootSelectionRecord, request SelectRequest) (*bootMoveRequest, error) {
+	if selection.PendingHealthValidation || selection.RecoveryRequired {
+		return nil, fmt.Errorf("finish the pending boot or recover boot health before selecting a generation")
 	}
-	return WithLegacyBootState(root, func() error {
-		selection, err := ReadBootSelection(root)
-		if err != nil {
-			return err
-		}
-		if selection.PendingHealthValidation || selection.RecoveryRequired {
-			return fmt.Errorf("finish the pending boot or recover boot health before removing generations")
-		}
-		items, err := inspect(root, selection, true)
-		if err != nil {
-			return err
-		}
-		for _, item := range items {
-			if item.Spec.GenerationID != id {
-				continue
-			}
-			if len(item.ProtectedBy) > 0 {
-				return fmt.Errorf("generation %s is protected: %s", id, strings.Join(item.ProtectedBy, ", "))
-			}
-			if err := clearRemovedPointers(root, &selection, item.Spec.GenerationID); err != nil {
-				return err
-			}
-			return remove(root, item.Spec)
-		}
-		return nil
-	})
-}
-
-// Prune applies both retention floors per installed version. Callers exclude
-// active operations; the boot lock excludes concurrent boot-health transitions.
-func Prune(root string, policy Retention, now time.Time) ([]string, error) {
-	count, age, err := policy.Limits()
+	spec, status, err := ReadGeneration(root, request.GenerationID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("generation %q does not exist or is incomplete; list generations first", request.GenerationID)
+	}
 	if err != nil {
 		return nil, err
 	}
-	var removed []string
-	err = WithLegacyBootState(root, func() error {
-		selection, err := ReadBootSelection(root)
-		if err != nil {
-			return err
+	check := bootabilityCheck{root: root}
+	if err := manualBootEligibility(check.check(spec, status, bootFull), status); err != nil {
+		return nil, fmt.Errorf("generation %s %w", request.GenerationID, err)
+	}
+	previous := selection
+	selection.TargetBootGenerationID = request.GenerationID
+	selection.TargetBootEntry = spec.Boot.LoaderEntryPath
+	selection.OneShot = request.OneShot
+	if !request.OneShot {
+		if selection.DefaultGenerationID != request.GenerationID {
+			selection.PreviousKnownGoodGenerationID = previous.DefaultGenerationID
+			selection.PreviousKnownGoodBootEntry = previous.DefaultBootEntry
 		}
-		if selection.PendingHealthValidation || selection.RecoveryRequired {
-			return nil
-		}
-		items, err := inspect(root, selection, true)
-		if err != nil {
-			return err
-		}
-		counts := map[string]int{}
-		for _, item := range items {
-			key := item.Spec.RuntimeVersion + "/" + item.Spec.Root.Flavour
-			counts[key]++
-			if len(item.ProtectedBy) > 0 {
-				continue
-			}
-			if item.Status.UnavailableReason == "" && !item.replaced &&
-				(counts[key] <= count || !item.Spec.CreatedAt.Before(now.Add(-age))) {
-				continue
-			}
-			if err := clearRemovedPointers(root, &selection, item.Spec.GenerationID); err != nil {
-				return err
-			}
-			if err := remove(root, item.Spec); err != nil {
-				return err
-			}
-			removed = append(removed, item.Spec.GenerationID)
-		}
-		return nil
-	})
-	return removed, err
+		selection.DefaultGenerationID = request.GenerationID
+		selection.DefaultBootEntry = spec.Boot.LoaderEntryPath
+	}
+	return &bootMoveRequest{
+		ExpectedRevision: previous.Revision, Source: previous.DefaultGenerationID, Destination: request.GenerationID,
+		Selection: selection, OneShot: request.GenerationID,
+	}, nil
 }
 
 func remove(root string, spec GenerationSpec) error {
@@ -351,116 +229,96 @@ func removeEntries(root string, spec GenerationSpec) error {
 
 const slotReplaced = "OS slot has been replaced"
 
-// InvalidateSlot removes boot entry points before the caller overwrites a root.
-// Metadata stays available for diagnostics and shared artifact ownership until GC.
-func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOneshot BootDefaultSetter) error {
-	return WithLegacyBootState(root, func() error {
-		selection, err := ReadBootSelection(root)
+// invalidatedSlot builds the move that retires every generation in a root
+// slot. When the slot holds a boot target, the running generation becomes the
+// default, so a failed transfer still boots it; an armed trial whose
+// candidate is in the slot is withdrawn. It returns the newly retired specs.
+func invalidatedSlot(root string, selection BootSelectionRecord, authority *bootMoveIntent, running, partitionUUID string) (*bootMoveRequest, []GenerationSpec, error) {
+	items, err := readManagedGenerations(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	next := selection
+	invalid := map[string]bool{}
+	for _, item := range items {
+		if !strings.EqualFold(item.Spec.Root.PartitionUUID, partitionUUID) {
+			continue
+		}
+		id := item.Spec.GenerationID
+		if id == running || id == selection.ActiveGenerationID || id == selection.BootedGenerationID {
+			return nil, nil, fmt.Errorf("cannot overwrite slot containing selected generation %s; boot and select the running slot first", id)
+		}
+		invalid[id] = true
+	}
+	trial := trialNone
+	if invalid[selection.DefaultGenerationID] || invalid[selection.TargetBootGenerationID] || invalid[selection.TrialGenerationID] {
+		spec, state, err := ReadGeneration(root, running)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		before := selection
-		items, err := readManagedGenerations(root)
-		if err != nil {
-			return err
+		if !IsKnownGood(state) {
+			return nil, nil, fmt.Errorf("running generation %s is not a safe boot default", running)
 		}
-		invalid := map[string]bool{}
-		for _, item := range items {
-			if !strings.EqualFold(item.Spec.Root.PartitionUUID, partitionUUID) {
-				continue
-			}
-			id := item.Spec.GenerationID
-			if id == selection.ActiveGenerationID || id == selection.BootedGenerationID {
-				return fmt.Errorf("cannot overwrite slot containing selected generation %s; boot and select the running slot first", id)
-			}
-			invalid[id] = true
+		next.DefaultGenerationID = running
+		next.DefaultBootEntry = spec.Boot.LoaderEntryPath
+		next.TargetBootGenerationID, next.TargetBootEntry = "", ""
+		next.TrialGenerationID, next.TrialBootEntry = "", ""
+		next.OneShot = false
+		next.PendingHealthValidation = false
+		next.PendingTransactionID = ""
+		next.PersistentDefaultPromotion = DefaultPromotionDone
+		next.BootCountedTrialPath = ""
+		if authority != nil && invalid[*authority.DestinationGenerationID] {
+			trial = trialWithdraw
 		}
-		// Before replacing a staged or default target, point firmware at the
-		// healthy running generation. A failed transfer must still boot that slot.
-		if invalid[selection.DefaultGenerationID] || invalid[selection.TargetBootGenerationID] || invalid[selection.TrialGenerationID] {
-			active := selection.ActiveGenerationID
-			if active == "" {
-				active = selection.BootedGenerationID
-			}
-			spec, state, err := ReadGeneration(root, active)
-			if err != nil {
-				return err
-			}
-			if !IsKnownGood(state) || invalid[active] {
-				return fmt.Errorf("running generation is not a safe boot default")
-			}
-			check := bootabilityCheck{root: root}
-			if err := check.check(spec, state, bootFiles).problem(); err != nil {
-				return fmt.Errorf("cannot replace selected slot: running generation %s %w. Restore its boot artifacts before retrying", active, err)
-			}
-			if setDefault == nil || setOneshot == nil {
-				return fmt.Errorf("boot setters required to replace selected slot")
-			}
-			if err := setDefault(root, spec.Boot.LoaderEntryPath); err != nil {
-				return err
-			}
-			if err := setOneshot(root, ""); err != nil {
-				return err
-			}
-			selection.DefaultGenerationID = active
-			selection.DefaultBootEntry = spec.Boot.LoaderEntryPath
-			selection.TargetBootGenerationID = ""
-			selection.TargetBootEntry = ""
-			selection.TrialGenerationID = ""
-			selection.TrialBootEntry = ""
-			selection.OneShot = false
-			selection.PendingHealthValidation = false
-			selection.PendingTransactionID = ""
-			selection.PersistentDefaultPromotion = DefaultPromotionDone
-			selection.BootCountedTrialPath = ""
+	}
+	// Clear obsolete recovery pointers before invalidating their records.
+	if invalid[next.PreviousKnownGoodGenerationID] {
+		next.PreviousKnownGoodGenerationID, next.PreviousKnownGoodBootEntry = "", ""
+	}
+	if invalid[next.Generation0FallbackID] {
+		next.Generation0FallbackID = ""
+	}
+	if invalid[next.FailedBootGenerationID] {
+		next.FailedBootGenerationID = ""
+	}
+	var changes []bootStatusChange
+	var replaced []GenerationSpec
+	for _, item := range items {
+		if !invalid[item.Spec.GenerationID] || item.Status.UnavailableReason == slotReplaced {
+			continue
 		}
-		// Clear obsolete recovery pointers before invalidating their records.
-		if invalid[selection.PreviousKnownGoodGenerationID] {
-			selection.PreviousKnownGoodGenerationID = ""
-			selection.PreviousKnownGoodBootEntry = ""
-		}
-		if invalid[selection.Generation0FallbackID] {
-			selection.Generation0FallbackID = ""
-		}
-		if invalid[selection.FailedBootGenerationID] {
-			selection.FailedBootGenerationID = ""
-		}
-		// A slot that is already invalid leaves the persisted selection alone.
-		if selection != before {
-			selection.UpdatedAt = now.UTC()
-			if err := WriteBootSelection(root, selection); err != nil {
-				return err
-			}
-		}
-		for _, item := range items {
-			if !invalid[item.Spec.GenerationID] || item.Status.UnavailableReason == slotReplaced {
-				continue
-			}
-			item.Status.UnavailableReason = slotReplaced
-			item.Status.UpdatedAt = now.UTC()
-			if err := WriteGenerationStatus(root, item.Spec, item.Status); err != nil {
-				return err
-			}
-			if err := removeEntries(root, item.Spec); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+		status := item.Status
+		changes = append(changes, bootStatusChange{
+			GenerationID: item.Spec.GenerationID, Reason: slotReplaced,
+			CommitState: status.CommitState, BootState: status.BootState, HealthState: status.HealthState,
+			UnavailableReason: new(slotReplaced),
+		})
+		replaced = append(replaced, item.Spec)
+	}
+	// A slot that is already invalid leaves the boot state alone.
+	if len(changes) == 0 && next == selection {
+		return nil, nil, nil
+	}
+	return &bootMoveRequest{
+		ExpectedRevision: selection.Revision, Source: selection.DefaultGenerationID, Destination: next.DefaultGenerationID,
+		Selection: next, OneShot: armedOneShot(next), StatusChanges: changes, Trial: trial,
+	}, replaced, nil
 }
 
-func clearRemovedPointers(root string, selection *BootSelectionRecord, id string) error {
-	changed := false
-	if selection.Generation0FallbackID == id {
-		selection.Generation0FallbackID = ""
-		changed = true
+// removedPointers builds the status-less move that drops the selection's
+// pointers to a generation about to be removed.
+func removedPointers(selection BootSelectionRecord, id string) *bootMoveRequest {
+	next := selection
+	if next.Generation0FallbackID == id {
+		next.Generation0FallbackID = ""
 	}
-	if selection.FailedBootGenerationID == id {
-		selection.FailedBootGenerationID = ""
-		changed = true
+	if next.FailedBootGenerationID == id {
+		next.FailedBootGenerationID = ""
 	}
-	if changed {
-		return WriteBootSelection(root, *selection)
+	return &bootMoveRequest{
+		OperationID: "remove-" + id, ExpectedRevision: selection.Revision,
+		Source: selection.DefaultGenerationID, Destination: selection.DefaultGenerationID,
+		Selection: next, OneShot: armedOneShot(next),
 	}
-	return nil
 }

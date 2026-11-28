@@ -128,8 +128,7 @@ func TestKubeadmUpgradeRetainsNewestSnapshots(t *testing.T) {
 			executor.Async = false
 			executor.Now = func() time.Time { return now.Add(time.Minute) }
 			executor.WaitBeforeKubeadm = func(context.Context, time.Duration) error { return nil }
-			executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-			executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+			executor.BootMover, _ = newBootMover(t, root, "boot-1", "gen0")
 			executor.RunTool = successfulUpgradeTool(&commands)
 
 			if err := executor.Execute(context.Background(), record); err != nil {

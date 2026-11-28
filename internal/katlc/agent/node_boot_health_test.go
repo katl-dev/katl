@@ -125,14 +125,6 @@ func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
 			writeRebootEFIDefault(t, server.Server)
 			efi := rootedPath(server.Root, efiVarsPath)
 			writeTestEFIVariable(t, efi, "LoaderEntryOneShot", "katl-generation-0.conf")
-			server.SetBootDefault = func(_ context.Context, _, entry string) error {
-				writeTestEFIVariable(t, efi, "LoaderEntryDefault", entry)
-				return nil
-			}
-			server.SetBootOneshot = func(_ context.Context, _, entry string) error {
-				writeTestEFIVariable(t, efi, "LoaderEntryOneShot", entry)
-				return nil
-			}
 			server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
 				t.Fatal("a management link outage requested a reboot")
 				return ToolResult{}
@@ -193,6 +185,9 @@ func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
 				}
 				network = readyManagementLink
 			}
+			if server.efi.written() {
+				t.Fatalf("reporting boot health wrote firmware variables: %+v", server.efi.observed())
+			}
 		})
 	}
 }
@@ -234,7 +229,7 @@ func TestRepairDuringStalledBootHealth(t *testing.T) {
 	unit.set(healthStalled)
 	server.RunBootHealthStatus = unit.run
 	server.MountBootRoot = func(context.Context, string) error { return nil }
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	server.Dispatcher = executor
 

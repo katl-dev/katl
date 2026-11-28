@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/efiboot"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
@@ -106,6 +107,10 @@ func TestExecutorClassifiesHostUpgradeFailureByMutationBoundary(t *testing.T) {
 
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	exerciseHostUpgrade(t, OperationKindHostUpgrade, true)
+}
+
+func TestExecutorArmsHandoffTrial(t *testing.T) {
+	exerciseHostUpgrade(t, operationKindHostUpgradeHandoff, true)
 }
 
 func TestExecutorPreservesFallbackWhenBootHealthBecomesUnknown(t *testing.T) {
@@ -203,7 +208,7 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 		t.Fatal(err)
 	}
 
-	runtimeBytes := []byte("next runtime root")
+	runtimeBytes := testBootRootImage()
 	ukiBytes := []byte("next runtime uki")
 	nextEndpointAdvertiserBytes := []byte("next endpoint advertiser sysext")
 	payloadRoot := filepath.Join(root, "payload")
@@ -254,7 +259,10 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	efi := &fakeEFI{root: root}
+	mover := newBootMoverCommandLine(t, root, "boot-1", commandLine, efi)
 	server := NewServer(root, store)
+	server.BootMover = mover
 	unit := &healthUnit{}
 	unit.set(healthSucceeded)
 	server.RunBootHealthStatus = unit.run
@@ -264,7 +272,6 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 	}); err != nil {
 		t.Fatalf("admit upgrade while healthy: %v", err)
 	}
-	oneshoot := ""
 	host := newHostDisks(t, hostDisk{name: "vda", seq: 1, partitions: []hostPartition{
 		{1, "KATL_ESP", "esp-partuuid", espType},
 		{2, "KATL_ROOT_A", "aaaaaaaa-1111-2222-3333-444444444444", rootType},
@@ -296,7 +303,7 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 		}
 		return nil
 	}
-	executor.SetBootOneshot = func(_ context.Context, _ string, entry string) error { oneshoot = entry; return nil }
+	executor.BootMover = mover
 	var toolCalls []string
 	var stagedRoot []byte
 	activeUKI := filepath.Join(root, "efi/EFI/Linux/katl_gen0.efi")
@@ -354,12 +361,30 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 		err = executor.executeHostUpgradeHandoff(t.Context(), record, executor.ResolveHostUpgrade,
 			func(_ context.Context, _ katlosimage.Payload, handoff generation.UpgradeHandoff, _ string) (preparedUpgrade, error) {
 				// The target planner's output lives in a private state view.
-				prepared := preparedUpgrade{root: t.TempDir()}
-				dir, err := generation.GenerationDir(prepared.root, handoff.CandidateGenerationID)
+				prepared := preparedUpgrade{root: t.TempDir(), work: t.TempDir()}
+				spec := previous
+				spec.GenerationID, spec.PreviousGenerationID = handoff.CandidateGenerationID, previous.GenerationID
+				spec.RuntimeVersion = nextVersion
+				spec.Root = generation.RootSelection{
+					Slot: handoff.RootSlot, PartitionUUID: handoff.RootPartitionUUID, RuntimeVersion: nextVersion,
+					RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: testSHA(runtimeBytes),
+				}
+				spec.Boot = generation.BootSelection{UKIPath: handoff.UKIPath, LoaderEntryPath: handoff.LoaderEntryPath}
+				spec.Sysexts = nil
+				status, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, now)
 				if err != nil {
 					t.Fatal(err)
 				}
-				writeTestFile(t, filepath.Join(dir, "spec.json"), "prepared generation")
+				if err := generation.WriteGeneration(prepared.root, spec, status); err != nil {
+					t.Fatal(err)
+				}
+				dir, err := generation.GenerationDir(prepared.root, spec.GenerationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if prepared.result.CandidateSHA256, err = generation.DigestDirectory(dir); err != nil {
+					t.Fatal(err)
+				}
 				return prepared, nil
 			})
 	} else {
@@ -386,6 +411,10 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
+	if kind == operationKindHostUpgradeHandoff {
+		assertTrialArmed(t, root, efi, store, record.OperationID)
+		return
+	}
 	if calls := strings.Join(toolCalls, "\n"); strings.Contains(calls, "PARTLABEL=") {
 		t.Fatalf("host upgrade discovered mutable partition labels:\n%s", calls)
 	}
@@ -408,9 +437,6 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 	}
 	if sysupdateCall < 0 || flushCall != sysupdateCall+1 {
 		t.Fatalf("host upgrade calls = %#v, want block cache flush immediately after sysupdate", toolCalls)
-	}
-	if oneshoot != "loader/entries/katl-gen1.conf" {
-		t.Fatalf("oneshot entry = %q", oneshoot)
 	}
 	if got, err := os.ReadFile(activeUKI); err != nil || string(got) != "active rollback kernel" {
 		t.Fatalf("active rollback kernel changed: %q, %v", got, err)
@@ -452,31 +478,20 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 	if !bytes.Equal(stagedEndpointAdvertiser, nextEndpointAdvertiserBytes) {
 		t.Fatalf("staged endpoint advertiser = %q", stagedEndpointAdvertiser)
 	}
-	selection, err := generation.ReadBootSelection(root)
+	armed, err := generation.ReadBootSelection(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.TargetBootGenerationID != "gen1" || selection.TrialGenerationID != "gen1" || selection.DefaultGenerationID != "gen0" || !selection.PendingHealthValidation {
-		t.Fatalf("trial selection = %+v", selection)
-	}
-	completed, err := store.Read(record.OperationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !completed.Terminal || completed.Result != operation.ResultSucceeded || !completed.BootHealthPending {
-		t.Fatalf("completed operation = %+v", completed)
-	}
+	assertTrialArmed(t, root, efi, store, record.OperationID)
 
 	t.Run("running boot fails while trial is queued", func(t *testing.T) {
-		health, err := generation.RecordBootHealth(generation.BootHealthRequest{
-			Root: root, CommandLine: commandLine, Result: generation.BootHealthFailure, RequestReboot: true,
-		})
-		if err != nil || !health.KeptKnownGood || health.DefaultGeneration != "gen0" || health.NextBootGeneration != "gen1" || health.RebootRequested {
-			t.Fatalf("boot health = %#v, %v, want kept gen0 with gen1 queued", health, err)
+		health, err := mover.FailTrial("boot health failed")
+		if err != nil || !health.ReportOnly || !health.KnownGood || health.DefaultGeneration != "gen0" || health.NextBootGeneration != "gen1" || health.RebootRequested {
+			t.Fatalf("boot health = %#v, %v, want gen0 reported failed with gen1 still queued", health, err)
 		}
 		after, err := generation.ReadBootSelection(root)
-		if err != nil || after != selection {
-			t.Fatalf("boot selection after recovery = %#v, %v, want original trial %#v", after, err, selection)
+		if err != nil || after != armed {
+			t.Fatalf("boot selection after recovery = %#v, %v, want original trial %#v", after, err, armed)
 		}
 	})
 }
@@ -484,4 +499,31 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 func testSHA(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// assertTrialArmed checks the state a staged upgrade of gen1 leaves on a node
+// that runs gen0: the owner's authority, the published selection and the
+// firmware, each read independently of the owner.
+func assertTrialArmed(t *testing.T, root string, efi *fakeEFI, store operation.Store, operationID string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/boot/move-intent.json")); err != nil {
+		t.Fatalf("no trial authority remains after arming: %v", err)
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.TargetBootGenerationID != "gen1" || selection.TrialGenerationID != "gen1" || selection.DefaultGenerationID != "gen0" || selection.PreviousKnownGoodGenerationID != "gen0" || !selection.PendingHealthValidation {
+		t.Fatalf("trial selection = %+v", selection)
+	}
+	if got, want := efi.observed(), (efiboot.Entries{Default: "katl-gen0.conf", OneShot: "katl-gen1.conf"}); got != want {
+		t.Fatalf("firmware boot variables = %+v, want %+v", got, want)
+	}
+	completed, err := store.Read(operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !completed.Terminal || completed.Result != operation.ResultSucceeded || !completed.BootHealthPending {
+		t.Fatalf("completed operation = %+v", completed)
+	}
 }

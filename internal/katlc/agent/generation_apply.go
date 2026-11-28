@@ -318,7 +318,11 @@ func (s *Server) ListGenerations(ctx context.Context, req *agentapi.ListGenerati
 	}
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
-	items, selection, err := generation.Inspect(s.Root)
+	mover, err := configuredBootMover(s.BootMover)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "inspect generations: %v", err)
+	}
+	items, selection, err := mover.Inspect()
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "inspect generations: %v", err)
 	}
@@ -561,7 +565,7 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	if record.ConfigApplyRequest == nil {
 		return fmt.Errorf("configApplyRequest is required")
 	}
-	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
+	if err := e.validateMutationBase(record.ExpectedCurrentGenerationID); err != nil {
 		_, markErr := e.failRecordPhase(record.OperationID, "base-changed", "render-generation", "render-generation", "complete the pending generation or replan the operation", err)
 		return errorsJoin(err, markErr)
 	}
@@ -1130,7 +1134,7 @@ func (s *Server) validateCandidateGenerationAvailable(generationID string) error
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read candidate generation directory: %w", err)
 	}
-	return generation.ValidateMutationBase(s.Root, "")
+	return s.validateMutationBase("")
 }
 
 func currentGenerationID(root string) (string, error) {

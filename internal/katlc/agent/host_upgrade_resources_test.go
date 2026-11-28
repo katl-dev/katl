@@ -168,6 +168,7 @@ func TestHostUpgradeAcquisitionFailureCleanup(t *testing.T) {
 			}
 			resolveErr := errors.New("resolution failed with retained mount evidence")
 			executor := NewExecutor(root, store, "test")
+			executor.BootMover, _ = newBootMover(t, root, "boot-1", "0")
 			executor.ResolveHostUpgrade = func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error) {
 				if !brokenStore {
 					return katlosimage.Payload{}, resolveErr

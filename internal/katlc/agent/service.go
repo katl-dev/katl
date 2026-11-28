@@ -61,6 +61,7 @@ func serve(ctx context.Context, config ServeConfig, ready func(net.Addr) error) 
 	if dispatcher == nil {
 		executor := NewExecutor(root, store, agentServer.AgentStartID)
 		executor.nodeBootHealth = agentServer.nodeBootHealth
+		executor.BootMover = agentServer.BootMover
 		deferredPromotions, err = executor.recoverLivePromotions(ctx, currentBootID())
 		if err != nil {
 			return err
@@ -70,7 +71,7 @@ func serve(ctx context.Context, config ServeConfig, ready func(net.Addr) error) 
 	if _, err := AuditStartup(store, timeNow(), deferredPromotions...); err != nil {
 		return err
 	}
-	if err := recoverInterruptedConfigApplies(root, store, timeNow()); err != nil {
+	if err := recoverInterruptedConfigApplies(agentServer.BootMover, root, store, timeNow()); err != nil {
 		// Keep management available so an operator can inspect and repair the
 		// interrupted operation; its resource locks still block mutation.
 		log.Printf("recover interrupted configuration apply: %v", err)
