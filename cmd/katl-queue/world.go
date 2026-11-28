@@ -305,7 +305,7 @@ func (g *gh) loadDependencies(ctx context.Context, w *world) error {
 func (g *gh) blockedBy(ctx context.Context, number int) (local []int, external []string, err error) {
 	filter := fmt.Sprintf(`.[] | if (.repository_url | ascii_downcase | endswith(%q)) then (.number | tostring) else ((.repository_url | sub(".*/repos/"; "")) + "#" + (.number | tostring)) end`,
 		strings.ToLower("/repos/"+g.owner+"/"+g.name))
-	out, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/issues/%d/dependencies/blocked_by", g.owner, g.name, number), "--jq", filter)
+	out, err := g.api(ctx, "--paginate", fmt.Sprintf("repos/%s/%s/issues/%d/dependencies/blocked_by", g.owner, g.name, number), "--jq", filter)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -367,7 +367,7 @@ func decodeReferences(raw []byte, numbers []int) (map[int]externalRef, error) {
 
 // milestoneIssues lists the open issues of a milestone with their blockers.
 func (g *gh) milestoneIssues(ctx context.Context, milestone string) ([]issueInfo, map[int]externalRef, error) {
-	args := []string{"issue", "list", "--repo", g.owner + "/" + g.name, "--state", "open", "--limit", "500",
+	args := []string{"issue", "list", "--repo", g.repo(), "--state", "open", "--limit", "500",
 		"--json", "number,title,assignees,labels,createdAt"}
 	if milestone != "" {
 		args = append(args, "--milestone", milestone)

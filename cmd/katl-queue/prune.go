@@ -127,7 +127,7 @@ func (g *gh) repoPath() string { return "repos/" + g.owner + "/" + g.name }
 func (g *gh) ActiveGroupRuns(ctx context.Context) ([]groupRun, error) {
 	var runs []groupRun
 	for _, status := range []string{"queued", "in_progress", "waiting", "pending", "requested"} {
-		raw, err := runGH(ctx, "api", g.repoPath()+"/actions/runs?event=merge_group&per_page=100&status="+status)
+		raw, err := g.api(ctx, g.repoPath()+"/actions/runs?event=merge_group&per_page=100&status="+status)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +160,7 @@ func decodeGroupRuns(raw []byte) ([]groupRun, error) {
 }
 
 func (g *gh) GroupRefs(ctx context.Context) ([]groupRef, error) {
-	raw, err := runGH(ctx, "api", "--paginate", g.repoPath()+"/git/matching-refs/heads/"+groupRefPrefix)
+	raw, err := g.api(ctx, "--paginate", g.repoPath()+"/git/matching-refs/heads/"+groupRefPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -195,14 +195,14 @@ func (g *gh) QueueEntries(ctx context.Context) (int, error) {
 }
 
 func (g *gh) CancelRun(ctx context.Context, id int64) error {
-	_, err := runGH(ctx, "run", "cancel", fmt.Sprint(id), "--repo", g.owner+"/"+g.name)
+	_, err := runGH(ctx, "run", "cancel", fmt.Sprint(id), "--repo", g.repo())
 	if err == nil {
 		return nil
 	}
 
 	// A run can finish between the listing and the cancel, which GitHub
 	// refuses with a 409. Re-read the run rather than match the message.
-	raw, readErr := runGH(ctx, "api", fmt.Sprintf("%s/actions/runs/%d", g.repoPath(), id), "--jq", ".status")
+	raw, readErr := g.api(ctx, fmt.Sprintf("%s/actions/runs/%d", g.repoPath(), id), "--jq", ".status")
 	if readErr == nil && strings.TrimSpace(string(raw)) == "completed" {
 		return errRunCompleted
 	}

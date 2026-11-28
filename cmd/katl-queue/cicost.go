@@ -151,11 +151,7 @@ func ciCostCommand(ctx context.Context, flags *flag.FlagSet, args []string, out 
 		window.Since = date
 	}
 
-	g, err := newGH(ctx)
-	if err != nil {
-		return err
-	}
-	return ciCost(ctx, g, window, *limit, *asJSON, out)
+	return ciCost(ctx, newGH(), window, *limit, *asJSON, out)
 }
 
 // ciJobReaders bounds concurrent job listings, one gh process each, well below

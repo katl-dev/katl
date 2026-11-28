@@ -638,7 +638,7 @@ func watchd(ctx context.Context, interval time.Duration, notify bool, out io.Wri
 
 	// The service runs outside a checkout. PR numbers and persisted watches
 	// always refer to Katl's repository, regardless of the caller's directory.
-	d.query = queryWatchGitHub
+	d.query = newGH().queryWatchGitHub
 	if notify {
 		path, err := exec.LookPath("notify-send")
 		if err != nil {

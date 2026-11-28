@@ -4,9 +4,9 @@ Use `katl-queue` to check whether a pull request fits the GitHub merge queue,
 follow its progress, and diagnose removals. Run it from the Katl checkout in
 the Nix development shell, or run `scripts/katl-queue` from the checkout.
 Authenticate with `gh auth login` and use a login with permission for any
-changes you intend to make. Most commands find the repository through
-`gh repo view`. The `why` command and the background watcher use
-`katl-dev/katl` from any directory when you use the packaged binary.
+changes you intend to make. GitHub requests always target `katl-dev/katl`.
+You can run commands like `ci-cost` and `status` with the packaged binary from
+any directory. Run commands that simulate merges from the Katl checkout.
 
 ## Check and follow a pull request
 
@@ -18,7 +18,7 @@ enabled that are waiting to enter.
 ### `check`
 
 Run `katl-queue check 123` before queueing PR 123. The check fetches the
-current base, queued heads, and PR head from `origin`, then simulates the
+current base, queued heads, and PR head from GitHub, then simulates the
 merges with `git merge-tree` in a temporary object store. It leaves the
 checkout, branches, and refs untouched. It skips entries that already
 conflict with the queue ahead of them and refuses closed or merged PRs.
