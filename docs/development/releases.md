@@ -11,9 +11,11 @@ to cut the branch and track blockers. Triage findings through final
 publication under the
 [release admission rule](../../dev/agents/roles/release.md#release-admission-rule).
 
-1. Merge the intended changes and their required checks. Choose an unused
-   canonical `YYYY.M.PATCH` version, optionally with `-alpha.N`, `-beta.N`, or
-   `-rc.N`. Prerelease versions receive GitHub's prerelease designation.
+1. Confirm that the planned final version is unused and has an open
+   `v<version>` milestone, then merge the intended changes and their
+   required checks. Use canonical `YYYY.M.PATCH` for the final version.
+   Versions with `-alpha.N`, `-beta.N`, or `-rc.N` receive GitHub's
+   prerelease designation.
 2. Add or update `docs/releases/next.md` when operators need upgrade
    instructions, required actions, compatibility notices, known limitations, or
    recovery guidance. The `Release-Note` trailers carried from PR bodies into

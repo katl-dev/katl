@@ -47,6 +47,25 @@ with the candidate ETA.
 Follow the [release lifecycle](../README.md#release-lifecycle) for the
 milestone's initial scope, ownership, and closure.
 
+### Merge an unshipped milestone
+
+When the Coordinator confirms a version will not ship, make sure its
+publication work has stopped and the Planner has opened the following
+version's milestone. Preview the move, then apply it once you have
+reviewed the listed issues and PRs.
+
+```sh
+scripts/katl-release merge-milestone 2026.12.1 2026.12.2
+scripts/katl-release merge-milestone --apply 2026.12.1 2026.12.2
+```
+
+The command moves open items with their labels, keeps closed items in
+the source milestone, comments on its plan issue, and closes the source
+milestone. Run it from one session. If an apply is interrupted, rerun
+it with the same versions to finish. See the
+[`merge-milestone` reference](../../../cmd/katl-release/README.md#merge-milestone)
+for the required plan link and refusal conditions.
+
 ### Release admission rule
 
 After the cut, admit only these findings:
@@ -75,7 +94,7 @@ preserve the first failure's evidence. Keep the scratchpad for small,
 transient files and use the
 [evidence store](../README.md#retain-investigation-evidence) for retained
 evidence over about 100 MB.
-Before the cut, put every flake in **Next release** as priority work. Flakes
-are exempt from the tight-scope rule because they slow development.
-After the cut, put flakes in the next **Next release**. The frozen version
-milestone never admits flakes after the cut.
+Before the cut, put every flake in the current version's milestone as
+priority work. Flakes are exempt from the tight-scope rule because they
+slow development. After the cut, put flakes in the following version's
+milestone. The frozen milestone never admits flakes.

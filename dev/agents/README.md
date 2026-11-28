@@ -129,7 +129,14 @@ blockers, and any explicit maintainer authority with the
 [Release brief template](briefs/release.md). The orchestrator does not take
 the Release role; it keeps delivery and its queue cycle running on `main`.
 
-1. Merge every release blocker into `main`. While the last blockers are in
+Scope each version in its own milestone before work begins. After final
+publication, the Planner creates and scopes the following version's
+milestone if it has not already been opened for post-cut intake. Follow
+the [Planner's milestone rules](roles/planner.md#main-milestones).
+
+1. Confirm that the planned version has an open `v<version>` milestone and
+   record it and its Release agent in the checkpoint. Merge every release
+   blocker into `main`. While the last blockers are in
    the queue, dispatch a non-publishing candidate from `main` and fix what
    it finds, so that the release-only jobs have run on current inputs before
    the cut.
@@ -138,24 +145,24 @@ the Release role; it keeps delivery and its queue cycle running on `main`.
    and [check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
    before dispatching a candidate or final release. Start candidate
    qualification from the branch, never from `main`.
-3. Create milestone `v<version>` and move into it every **Next release**
-   issue whose fix is on the branch. Open issues and open PRs stay in
-   **Next release** unless they block this release. Use the
-   [flake rule](roles/release.md#flakes) for flakes found around the cut.
-   Record the milestone and its Release agent in the checkpoint.
-4. Open two issues in the milestone, `Tag v<version>-rc.1` and `Tag v<version>`.
-5. From then on, the Release agent owns admission to the milestone as release
+3. Open two issues in the milestone, `Tag v<version>-rc.1` and `Tag v<version>`.
+4. From then on, the Release agent owns admission to the milestone as release
    coordinator and admits almost nothing under the
    [release admission rule](roles/release.md#release-admission-rule).
-6. When the final release is published, record the pending washup and its
+5. When the final release is published, record the pending washup and its
    Release agent in the checkpoint, then close the milestone.
-7. The Coordinator runs the [washup](roles/washup.md) with the Release agent
+6. The Coordinator runs the [washup](roles/washup.md) with the Release agent
    and decides how its findings change the plans and the next release before
    the usual hand-off. Keep the washup in the checkpoint until the hand-off
    is complete.
 
-[#777](https://github.com/katl-dev/katl/issues/777) tracks `katl-release cut`
-for the currently manual steps 1–4.
+If a version will not ship, follow the
+[milestone merge procedure](roles/release.md#merge-an-unshipped-milestone).
+
+The cut automation and server-side branch creation must check for the
+existing version milestone and use it for the tag issues.
+[#777](https://github.com/katl-dev/katl/issues/777)
+[#878](https://github.com/katl-dev/katl/issues/878)
 
 Existing series branches such as `release/2026.11.x` remain in use only for
 releases already cut on them.

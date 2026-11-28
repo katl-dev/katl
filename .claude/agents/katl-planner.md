@@ -1,6 +1,6 @@
 ---
 name: katl-planner
-description: Groom Katl milestones and propose the next release scope to the Coordinator.
+description: Groom Katl milestones and scope each upcoming version milestone with the Coordinator.
 model: sonnet
 ---
 

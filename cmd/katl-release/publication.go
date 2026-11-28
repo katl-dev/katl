@@ -92,13 +92,13 @@ func publicationVersion(value string) (releaseversion.Version, error) {
 	return v, nil
 }
 
-func (p publication) listed(ctx context.Context) (published *restRelease, drafts []restRelease, err error) {
-	list, err := p.releaseList(ctx)
+func (r *reader) releasesForTag(ctx context.Context, tag string) (published *restRelease, drafts []restRelease, err error) {
+	list, err := r.releaseList(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, release := range list {
-		if release.TagName != p.version.Tag() {
+		if release.TagName != tag {
 			continue
 		}
 		if release.ID <= 0 {
@@ -119,11 +119,11 @@ func (p publication) listed(ctx context.Context) (published *restRelease, drafts
 func (p publication) listForPublish(ctx context.Context) (*restRelease, []restRelease, error) {
 	ctx, cancel := context.WithTimeout(ctx, publicationTimeout)
 	defer cancel()
-	return p.listed(ctx)
+	return p.releasesForTag(ctx, p.version.Tag())
 }
 
 func (p publication) draft(ctx context.Context, stderr io.Writer) error {
-	published, drafts, err := p.listed(ctx)
+	published, drafts, err := p.releasesForTag(ctx, p.version.Tag())
 	if err != nil {
 		return err
 	}
@@ -384,7 +384,11 @@ func (p publication) matches(release restRelease) bool {
 }
 
 func (p publication) write(ctx context.Context, method, endpoint string, args ...string) ([]byte, error) {
-	data, err := p.call(ctx, "gh", append([]string{"api", "--method", method, endpoint}, args...)...)
+	return writeGitHub(ctx, p.call, method, endpoint, args...)
+}
+
+func writeGitHub(ctx context.Context, call func(context.Context, string, ...string) ([]byte, error), method, endpoint string, args ...string) ([]byte, error) {
+	data, err := call(ctx, "gh", append([]string{"api", "--method", method, endpoint}, args...)...)
 	if err != nil {
 		return nil, ghFailure("gh api "+method+" "+endpoint, err, stderrOf(err))
 	}
