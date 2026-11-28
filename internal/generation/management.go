@@ -196,6 +196,19 @@ func remove(root string, spec GenerationSpec) error {
 	return os.RemoveAll(tombstone)
 }
 
+// loaderEntriesDir holds the loader entries the boot menu offers.
+const loaderEntriesDir = "/efi/loader/entries"
+
+// isLoaderEntryFile reports whether name in loaderEntriesDir is the loader
+// entry at entry, either as written or renamed by boot counting.
+func isLoaderEntryFile(entry, name string) bool {
+	if entry == "" {
+		return false
+	}
+	base := strings.TrimSuffix(filepath.Base(entry), ".conf")
+	return name == base+".conf" || (strings.HasPrefix(name, base+"+") && strings.HasSuffix(name, ".conf"))
+}
+
 func removeEntries(root string, spec GenerationSpec) error {
 	entry := spec.Boot.LoaderEntryPath
 	if entry == "" {
@@ -207,7 +220,7 @@ func removeEntries(root string, spec GenerationSpec) error {
 	if filepath.Dir(entry) != "loader/entries" || filepath.Ext(entry) != ".conf" {
 		return fmt.Errorf("unsupported loader entry %q", entry)
 	}
-	dir := rootedPathUnchecked(root, "/efi/loader/entries")
+	dir := rootedPathUnchecked(root, loaderEntriesDir)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -215,10 +228,9 @@ func removeEntries(root string, spec GenerationSpec) error {
 	if err != nil {
 		return err
 	}
-	base := strings.TrimSuffix(filepath.Base(entry), ".conf")
 	for _, file := range entries {
 		name := file.Name()
-		if name == base+".conf" || (strings.HasPrefix(name, base+"+") && strings.HasSuffix(name, ".conf")) {
+		if isLoaderEntryFile(entry, name) {
 			if err := persistedrecord.RemoveFile(filepath.Join(dir, name)); err != nil {
 				return err
 			}

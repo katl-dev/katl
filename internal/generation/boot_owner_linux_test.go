@@ -274,13 +274,15 @@ func writeReleaseGeneration(t *testing.T, root, id, version string) {
 	}
 }
 
-func TestBootMoveReaderGate(t *testing.T) {
+// A move whose recorded targets include a release without boot-move records
+// publishes the v1 form, which that release decodes, instead of refusing.
+func TestBootMoveReaderForm(t *testing.T) {
 	for _, tc := range []struct {
 		version string
-		refused bool
+		legacy  bool
 	}{
-		{version: "2026.11.5", refused: true},
-		{version: "2026.11.5-rc.1", refused: true},
+		{version: "2026.11.5", legacy: true},
+		{version: "2026.11.5-rc.1", legacy: true},
 		{version: "2026.11.5-dev.0"},
 		{version: "2026.11.6-rc.1"},
 		{version: "2026.11.6"},
@@ -307,28 +309,24 @@ func TestBootMoveReaderGate(t *testing.T) {
 					w := newMoveWorld(t)
 					writeReleaseGeneration(t, w.root, "gen4", tc.version)
 
-					err := move(w)
-					if !tc.refused {
-						if err != nil {
-							t.Fatalf("move error = %v", err)
-						}
-						return
+					if err := move(w); err != nil {
+						t.Fatalf("move error = %v", err)
 					}
-					want := "generation gen4 runs KatlOS " + tc.version + ", which cannot read boot-move records; " +
-						"boot generation gen4 from the boot menu and upgrade it to 2026.11.6 or later, " +
-						"or remove it with 'katlctl node generations remove gen4 <node>', then retry"
-					if err == nil || !strings.Contains(err.Error(), want) {
-						t.Fatalf("move = %v, want the reader refusal %q", err, want)
+
+					if got := w.selection(); (got.Revision == 0) != tc.legacy {
+						t.Fatalf("published revision = %d, want the v1 form %t", got.Revision, tc.legacy)
 					}
-					if intent, err := readBootMoveIntent(w.root); err != nil || intent != nil {
-						t.Fatalf("refused move left intent %#v, %v", intent, err)
+					if tc.legacy {
+						assertReadableBy11_5(t, w.root)
 					}
+					assertNoIntent(t, w.root)
 				})
 			}
 		})
 	}
 
-	// The running generation completes its own moves, whatever its release.
+	// The running generation completes its own moves, whatever its release,
+	// so it never lowers the form.
 	t.Run("running generation", func(t *testing.T) {
 		w := newMoveWorld(t)
 		writeReleaseGeneration(t, w.root, "gen4", "2026.11.5")
@@ -339,9 +337,13 @@ func TestBootMoveReaderGate(t *testing.T) {
 		writeBootHealthSelection(t, w.root, selection)
 		w.efi.entries.Default = "katl-gen4.conf"
 		activate(t, w, "b-2", "gen4")
-		// The old release is the prior default, but it runs this move.
+
 		if err := w.mover(nil).Select(context.Background(), SelectRequest{GenerationID: "gen1"}); err != nil {
 			t.Fatalf("Select() from the running old release error = %v", err)
+		}
+
+		if got := w.selection(); got.Revision == 0 {
+			t.Fatalf("selection = %+v, want a revision", got)
 		}
 	})
 }

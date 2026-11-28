@@ -609,6 +609,8 @@ func efiObservationError(operation, generationID string, err error) error {
 
 // newIntent records the prior targets from the published selection and the
 // observed EFI variables, and validates the intent with the v1 reader's rules.
+// It never refuses for the releases that might read the selection next:
+// publishSelection writes a form they decode.
 func (m *BootMover) newIntent(operationID string, selection, desired BootSelectionRecord, observed efiboot.Entries,
 	running, source, destination, oneShot string, changes []bootStatusChange, reboot bootMoveReboot) (bootMoveIntent, error) {
 	// The running generation is always a recorded target, so activation
@@ -639,9 +641,6 @@ func (m *BootMover) newIntent(operationID string, selection, desired BootSelecti
 		return bootMoveIntent{}, fmt.Errorf("operation %s: %w", operationID, err)
 	}
 	if err := intent.validateBindings(m.root); err != nil {
-		return bootMoveIntent{}, fmt.Errorf("operation %s: %w", operationID, err)
-	}
-	if err := intent.checkReaders(m.root, running); err != nil {
 		return bootMoveIntent{}, fmt.Errorf("operation %s: %w", operationID, err)
 	}
 	return intent, nil
@@ -707,9 +706,9 @@ func (m *BootMover) checkStatusChanges(intent bootMoveIntent) (map[string]Genera
 
 // importLegacyTrial returns a trial armed by a runtime without the move owner
 // as an in-memory trial authority, using the reader's legacy trial
-// classification. It writes nothing: a rollback target may run a reader-only
-// release, which refuses any intent it cannot complete, so the authority
-// becomes durable only in the intent of the move that resolves it.
+// classification. It writes nothing and never refuses: a rollback target may
+// run a reader-only release, which refuses any intent it cannot complete, so
+// the authority becomes durable only in the intent of the move that resolves it.
 func (m *BootMover) importLegacyTrial(running string) (*bootMoveIntent, error) {
 	legacy, err := readLegacyBootState(m.root, running, m.readEFI)
 	if err != nil {
@@ -907,8 +906,8 @@ func (m *BootMover) complete(intent *bootMoveIntent, resolvingTrial bool, mode r
 	if err != nil {
 		return bootMoveResult{}, nil, moveSelectionReadError(running, err)
 	}
-	published := current == intent.DesiredSelection
-	if !published && current.Revision != *intent.ExpectedSelectionRevision {
+	published, awaiting := intent.progress(current)
+	if !published && !awaiting {
 		return bootMoveResult{}, nil, fmt.Errorf("%w: boot selection revision %d does not match operation %s for generation %s, which expects %d. Boot state is unchanged. From the node console, preserve %s and %s for diagnosis",
 			ErrBootMoveBlocked, current.Revision, intent.OperationID, running, *intent.ExpectedSelectionRevision, bootMovePath, bootStateDir+"/selection.json")
 	}
@@ -957,7 +956,7 @@ func (m *BootMover) complete(intent *bootMoveIntent, resolvingTrial bool, mode r
 	}
 
 	if !published {
-		if err := WriteBootSelection(m.root, intent.DesiredSelection); err != nil {
+		if err := publishSelection(m.root, running, intent.DesiredSelection); err != nil {
 			return bootMoveResult{}, nil, err
 		}
 		if err := m.reached(stepPublished); err != nil {
@@ -1139,24 +1138,64 @@ func ReadsBootMoves(runtimeVersion string) bool {
 	return version.Base().Compare(FirstBootMoveReader) >= 0
 }
 
-// checkReaders refuses an intent while a recorded target other than the
-// running generation runs a release that could not read it.
-func (intent bootMoveIntent) checkReaders(root, running string) error {
-	for _, target := range []*bootMoveTarget{intent.PriorDefault, intent.PriorOneShot, intent.DesiredDefault, intent.DesiredOneShot} {
-		id := *target.GenerationID
-		if id == "" || id == running {
+// legacyReaders reports whether a generation other than the running one is
+// bootable, by a loader entry the boot menu offers, and runs a release that
+// cannot decode boot-move fields in the selection. Every doubt counts towards
+// such a reader: an unreadable record is one, and without a readable entries
+// directory every record counts as bootable.
+func legacyReaders(root, running string) bool {
+	records, err := os.ReadDir(rootedPathUnchecked(root, GenerationRecordsDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	entries, entriesErr := os.ReadDir(rootedPathUnchecked(root, loaderEntriesDir))
+	for _, record := range records {
+		id := record.Name()
+		if !record.IsDir() || strings.HasPrefix(id, ".") || id == running {
 			continue
 		}
 		spec, _, err := ReadGeneration(root, id)
 		if err != nil {
-			return fmt.Errorf("read recorded boot target %s: %w", id, err)
+			return true
 		}
-		if !ReadsBootMoves(spec.RuntimeVersion) {
-			return fmt.Errorf("generation %s runs KatlOS %s, which cannot read boot-move records; boot generation %s from the boot menu and upgrade it to %s or later, or remove it with 'katlctl node generations remove %s <node>', then retry",
-				id, spec.RuntimeVersion, id, FirstBootMoveReader, id)
+		if ReadsBootMoves(spec.RuntimeVersion) {
+			continue
+		}
+		if entriesErr != nil || slices.ContainsFunc(entries, func(entry os.DirEntry) bool {
+			return isLoaderEntryFile(spec.Boot.LoaderEntryPath, entry.Name())
+		}) {
+			return true
 		}
 	}
-	return nil
+	return false
+}
+
+// lowerSelection is the v1 form that every released runtime decodes:
+// omitempty drops both fields.
+func lowerSelection(s BootSelectionRecord) BootSelectionRecord {
+	s.Revision, s.SpentRecoveryTrialID = 0, ""
+	return s
+}
+
+// publishSelection writes the selection in the form every generation that
+// could boot next decodes.
+func publishSelection(root, running string, s BootSelectionRecord) error {
+	if legacyReaders(root, running) {
+		s = lowerSelection(s)
+	}
+	return WriteBootSelection(root, s)
+}
+
+// progress reports whether the published selection already holds the
+// intent's desired selection, in either form, or still holds the revision it
+// expects.
+func (intent bootMoveIntent) progress(published BootSelectionRecord) (done, awaiting bool) {
+	desired := intent.DesiredSelection
+	done = published == desired || published == lowerSelection(desired)
+	return done, published.Revision == *intent.ExpectedSelectionRevision
 }
 
 // problem describes the first recorded target the failure rule rejected.
@@ -1283,7 +1322,7 @@ func (m *BootMover) observe(running string, firstActivation bool) (Record, error
 	}
 	observed.Revision = selection.Revision + 1
 	observed.UpdatedAt = m.timestamp()
-	if err := WriteBootSelection(m.root, observed); err != nil {
+	if err := publishSelection(m.root, running, observed); err != nil {
 		return Record{}, fmt.Errorf("record booted generation: %w", err)
 	}
 	return record, nil
@@ -1707,7 +1746,7 @@ func (m *BootMover) moveThen(build func(BootSelectionRecord, *bootMoveIntent) (*
 // publishInitialSelection is the owner's first publication, on the target
 // root of an installation: revision 0 with generation 0 pending health.
 func publishInitialSelection(root string, spec GenerationSpec) error {
-	return WriteBootSelection(root, BootSelectionRecord{
+	return publishSelection(root, spec.GenerationID, BootSelectionRecord{
 		APIVersion: APIVersion, Kind: BootSelectionKind,
 		DefaultGenerationID: spec.GenerationID, DefaultBootEntry: spec.Boot.LoaderEntryPath,
 		TargetBootGenerationID: spec.GenerationID, TargetBootEntry: spec.Boot.LoaderEntryPath,

@@ -128,7 +128,7 @@ var bootTargetAllowlist = []bootTargetAllowance{
 	{"internal/generation/boot_selection.go", "BootSelectionPath: literal names selection.json", "the selection path the owner writes and every reader reads"},
 	{"internal/generation/initialize.go", "Initialize: calls WriteGeneration", "creates generation 0 under the boot-state lock, refusing a root that already has an intent or another initial selection; the owner then publishes the first selection"},
 	{"internal/generation/management.go", "removeEntries: literal names loader/entries", "checks the shape of an entry path before removal"},
-	{"internal/generation/management.go", "removeEntries: literal names loader/entries", "removes a generation's loader entry only after the owner's move that stopped naming it resolved"},
+	{"internal/generation/management.go", "package scope: literal names loader/entries", "names the entries directory; removeEntries removes a generation's loader entry only after the owner's move that stopped naming it resolved, and legacyReaders only reads it"},
 	{"internal/generation/metadata.go", "NewRuntimeConfigRecord: literal names loader/entries", "derives a new generation's entry path; writes nothing"},
 	{"internal/generation/upgrade_handoff.go", "validateUpgradeHandoff: literal names loader/entries", "validates a handoff's entry path; writes nothing"},
 	{"internal/installer/bootstrapruntime/prepare.go", "Prepare: literal names loader/entries", "derives the bootstrap generation's entry path; writes nothing"},

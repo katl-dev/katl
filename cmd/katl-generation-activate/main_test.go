@@ -435,3 +435,56 @@ func assertCommandSymlink(t *testing.T, path string, want string) {
 		t.Fatalf("%s -> %s, want %s", path, got, want)
 	}
 }
+
+// Activation falls through to observation when reconciliation fails. While
+// KatlOS 2026.11.5 runs a bootable fallback, that publish carries no field
+// 2026.11.5 rejects.
+func TestGenerationActivateObservesInLegacyForm(t *testing.T) {
+	root := t.TempDir()
+	writeActivationTrial(t, root)
+	writeActivationGeneration(t, root, "candidate", "known-good", generation.BootStateTrying, generation.HealthStateUnknown, time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
+	spec, status, err := generation.ReadGeneration(root, "known-good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.RuntimeVersion = "2026.11.5"
+	if status.SpecDigest, err = generation.CanonicalSpecDigest(spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"spec.json", "status.json"} {
+		if err := os.Remove(filepath.Join(root, "var/lib/katl/generations/known-good", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	cmdline := filepath.Join(root, "proc-cmdline")
+	writeCommandFile(t, cmdline, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=candidate\n")
+	old := newBootMover
+	newBootMover = func(root string, options generation.BootMoverOptions) (*generation.BootMover, error) {
+		options.BootID = "boot-2"
+		options.ReadEFI = func(string) (efiboot.Entries, error) { return efiboot.Entries{}, errors.New("efivarfs unavailable") }
+		return old(root, options)
+	}
+	t.Cleanup(func() { newBootMover = old })
+	oldArm := armBootTrial
+	armBootTrial = func(context.Context) error { return nil }
+	t.Cleanup(func() { armBootTrial = oldArm })
+
+	var stdout bytes.Buffer
+	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
+		t.Fatalf("run() error = %v (%s)", err, &stdout)
+	}
+
+	if !strings.Contains(stdout.String(), "could not reconcile boot state") {
+		t.Fatalf("stdout = %q, want a reconcile error", &stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/boot/selection.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"bootedGenerationID": "candidate"`) || strings.Contains(string(data), "revision") {
+		t.Fatalf("selection after activation =\n%s\nwant candidate observed without a revision", data)
+	}
+}
