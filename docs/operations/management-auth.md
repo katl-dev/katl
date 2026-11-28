@@ -75,7 +75,9 @@ configuration or applying a generation cannot make that change.
    and rerun. If preflight reports `could not confirm the node accepts the
    replacement authority` or `could not confirm the node uses trusted-network
    management`, check the management address and reachability, then rerun the
-   command shown in the message.
+   command shown in the message. If the trusted-network check adds `the node
+   did not answer`, the node is down or still booting; rerun once `katlctl node
+   status` shows it up.
 
 2. Back up the secrets file as soon as the command reports its path. By default
    the command creates or reuses `management-secrets.yaml` beside `cluster.yaml`.

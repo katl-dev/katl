@@ -76,7 +76,15 @@ connection at once and poll for themselves.
 If verification reports `could not confirm the node answers with the
 configured management credentials`, check that the management address reaches
 the intended node, then rerun the `katlctl context save` command in the message.
-A failed handshake leaves the node's installed trust uncertain.
+The rest of the message says what the check observed:
+
+- `the node did not answer` means no connection reached the node. It is down
+  or still booting, and its trust is unchanged. Rerun once
+  `katlctl node status` shows it up.
+- `the node may still trust a different management authority` or `the node
+  may still trust an mTLS authority` means the node answered with a
+  certificate from another authority, or closed a plaintext connection.
+- Otherwise, the message carries the transport error alone.
 
 Run `katlctl context save` again after a reinstall to record the new
 identities.
@@ -113,8 +121,9 @@ trusted-network management, rebind checks the reported values over plaintext.
 If verification reports `could not confirm the node answers
 at the proposed address with the saved management credentials`, the context
 keeps the previous address. Check the address and node reachability, then rerun
-the `katlctl context rebind` command in the message. If verification timed out,
-you can increase `--timeout`.
+the `katlctl context rebind` command in the message. If it reports `the node
+did not answer`, the node is down or still booting and its trust is unchanged.
+If verification timed out, you can increase `--timeout`.
 
 Remove a context with `katlctl context delete NAME`. Deleting it does not delete
 the referenced secrets, external cluster secrets, or nodes, and does not change

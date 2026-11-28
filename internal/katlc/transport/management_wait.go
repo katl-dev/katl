@@ -41,7 +41,19 @@ const (
 	ManagementInconclusive ManagementEvidence = iota
 	ManagementConfirmed
 	ManagementRefusedExplicitly
+	// ManagementUnreachable means no TCP connection was established within
+	// the call, either by a recorded single dial or by a call that reached
+	// no handshake.
 	ManagementUnreachable
+	// ManagementAuthorityMismatch means the node's certificate was not signed by
+	// the configured management authority (a typed x509.UnknownAuthorityError from
+	// this call's last handshake). It names a cause for diagnostics. It is not a
+	// refusal and does not identify the authority the node trusts.
+	ManagementAuthorityMismatch
+	// ManagementRequiresTLS means a plaintext client sent its preface and the
+	// endpoint closed without a reply, as an mTLS listener does. Any endpoint that
+	// accepts and closes produces it, so use it for diagnostics only.
+	ManagementRequiresTLS
 )
 
 // ClassifyManagementEvidence classifies an RPC result within its budget.
@@ -49,6 +61,9 @@ const (
 // An old-client-CA probe requires issuer-specific evidence. A gRPC
 // authentication refusal does not identify which CA the server trusts.
 func ClassifyManagementEvidence(err error, dial *ManagementDialEvidence, oldAuthorityRefused func(error) bool) ManagementEvidence {
+	var call *managementCallError
+	observed := errors.As(err, &call)
+	code := grpcstatus.Code(err)
 	switch {
 	case err == nil:
 		return ManagementConfirmed
@@ -57,13 +72,55 @@ func ClassifyManagementEvidence(err error, dial *ManagementDialEvidence, oldAuth
 			return ManagementUnreachable
 		}
 		return ManagementInconclusive
+	case observed && call.wire.connections == 0 && (code == codes.Unavailable || code == codes.DeadlineExceeded):
+		return ManagementUnreachable
 	case errors.Is(err, ErrManagementRPCInconclusive):
 		return ManagementInconclusive
-	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused(err):
+	case oldAuthorityRefused != nil && code == codes.Unavailable && oldAuthorityRefused(err):
 		return ManagementRefusedExplicitly
+	case observed && code == codes.Unavailable && call.wire.unknownAuthority:
+		return ManagementAuthorityMismatch
+	case observed && code == codes.Unavailable && call.wire.plaintextClosed:
+		return ManagementRequiresTLS
 	default:
 		return ManagementInconclusive
 	}
+}
+
+// managementWire is what a management connection had observed when a call
+// returned.
+type managementWire struct {
+	connections                       uint32
+	unknownAuthority, plaintextClosed bool
+}
+
+func (o *ManagementObservation) wire() managementWire {
+	return managementWire{
+		connections:      o.attempts.Load(),
+		unknownAuthority: o.unknownAuthority.Load(),
+		plaintextClosed:  o.PlaintextClosed(),
+	}
+}
+
+// managementCallError carries what the connection had observed when a unary
+// management call failed.
+type managementCallError struct {
+	err  error
+	wire managementWire
+}
+
+func (e *managementCallError) Error() string { return e.err.Error() }
+func (e *managementCallError) Unwrap() error { return e.err }
+
+// GRPCStatus keeps the inner status, including its message, as the call's
+// status; grpcstatus.FromError would otherwise rewrite the message of a
+// wrapped status to the full error text.
+func (e *managementCallError) GRPCStatus() *grpcstatus.Status {
+	s, ok := grpcstatus.FromError(e.err)
+	if !ok {
+		return nil
+	}
+	return s
 }
 
 type managementDialEvidenceKey struct{}
@@ -169,7 +226,21 @@ func WithManagementProgress(ctx context.Context, w io.Writer) context.Context {
 // also retry a refused connection for at most ManagementReadyWait, reporting
 // progress, and then fail with guidance.
 func ManagementDialOptions(ctx context.Context, node, endpoint string, creds credentials.TransportCredentials) []grpc.DialOption {
-	var options []grpc.DialOption
+	observation, inspectTLS := ctx.Value(managementObservationKey{}).(*ManagementObservation)
+	if !inspectTLS {
+		observation = new(ManagementObservation)
+	}
+	// The first interceptor is outermost, so the snapshot is taken after the
+	// readiness wait and the budget check have produced the final error.
+	// Streams are not wrapped because callers compare their io.EOF directly.
+	options := []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			if err := invoker(ctx, method, req, reply, cc, opts...); err != nil {
+				return &managementCallError{err: err, wire: observation.wire()}
+			}
+			return nil
+		}),
+	}
 	if probe, ok := creds.(*clientCertificateProbe); ok {
 		options = append(options, grpc.WithContextDialer(probe.dialContext))
 	} else if dial, ok := ctx.Value(managementDialEvidenceKey{}).(*ManagementDialEvidence); ok {
@@ -180,9 +251,7 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 	if wrapped, ok := creds.(*clientCredentials); noAdvice && ok {
 		creds = wrapped.TransportCredentials
 	}
-	if observation, ok := ctx.Value(managementObservationKey{}).(*ManagementObservation); ok {
-		creds = &observedCredentials{TransportCredentials: creds, observation: observation, plaintext: plaintext}
-	}
+	creds = &observedCredentials{TransportCredentials: creds, observation: observation, plaintext: plaintext, inspectTLS: inspectTLS}
 	options = append(options, grpc.WithTransportCredentials(creds))
 	if plaintext && !noAdvice {
 		options = append(

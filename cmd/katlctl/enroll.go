@@ -249,7 +249,7 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, rerun string) 
 	}
 	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, func(err error) error {
 		return fmt.Errorf("%w; check the address and node reachability, then rerun %s",
-			managementConfirmationError("the node answers with the configured management credentials", contextPossibleTrust(&management), err), rerun)
+			managementReadError("the node answers with the configured management credentials", err), rerun)
 	})
 }
 
@@ -326,7 +326,7 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		_, overridden := opts.endpoints[node.Name]
 		configured := node.ManagementEndpoint()
 		switch {
-		case !managementUnreachable(err):
+		case !addressHintApplies(err):
 		case !overridden && node.SystemRole == inventory.RoleWorker:
 			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, clusterName, node.Name))
 		case overridden && !configured.IsZero() && !configured.Equal(endpoint):
@@ -441,14 +441,10 @@ func contextEndpointStatus(ctx context.Context, endpoint inventory.HostPort) (*a
 	return status, closeErr
 }
 
-func contextPossibleTrust(credentials *managementidentity.ClientCredentials) string {
-	if credentials != nil && credentials.Authentication == managementidentity.TrustedNetwork {
-		return "an mTLS authority"
-	}
-	return "a different management authority"
-}
-
-func managementUnreachable(err error) bool {
+// addressHintApplies reports a failure for which a stale-address hint is worth
+// offering; it does not establish that the node is unreachable, which
+// transport.ClassifyManagementEvidence owns.
+func addressHintApplies(err error) bool {
 	return managementVerificationTimedOut(err) || grpcstatus.Code(err) == codes.Unavailable
 }
 
@@ -580,7 +576,7 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 			err = fmt.Errorf("%w; try to increase --timeout", err)
 		}
 		return fmt.Errorf("verify proposed address %s: %w; check the address and node reachability, then rerun %s", endpoint,
-			managementConfirmationError("the node answers at the proposed address with the saved management credentials", contextPossibleTrust(target.credentials), err), rerun)
+			managementReadError("the node answers at the proposed address with the saved management credentials", err), rerun)
 	}
 	if err := verifyPlannedStatus(target, status); err != nil {
 		return fmt.Errorf("verify proposed address %s: %w", endpoint, err)
