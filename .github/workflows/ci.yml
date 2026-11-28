@@ -301,7 +301,7 @@ jobs:
     with:
       flavour: ${{ matrix.flavour }}
       version: ${{ needs.plan.outputs.production-version }}
-      publication: false
+      retention-days: 1
 
   # Production VM qualifies each flavour's assembled bytes as the release does,
   # without the test agent. It starts when both production builds end, well

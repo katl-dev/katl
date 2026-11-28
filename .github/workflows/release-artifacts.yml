@@ -154,6 +154,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       previous-tag: ${{ steps.previous.outputs.tag }}
       regression: ${{ steps.regression.outputs.decision }}
+      retention-days: ${{ github.event_name == 'schedule' && 7 || 30 }}
 
     steps:
       - name: Check out repository
@@ -221,7 +222,7 @@ jobs:
     with:
       flavour: standard
       version: ${{ needs.identity.outputs.version }}
-      publication: true
+      retention-days: ${{ fromJSON(needs.identity.outputs.retention-days) }}
 
   build-lts:
     name: Build lts
@@ -232,7 +233,7 @@ jobs:
     with:
       flavour: lts
       version: ${{ needs.identity.outputs.version }}
-      publication: true
+      retention-days: ${{ fromJSON(needs.identity.outputs.retention-days) }}
 
   bundle:
     name: Bundle Kernel Flavours
@@ -266,7 +267,7 @@ jobs:
           name: ${{ needs.identity.outputs.artifact-name }}
           path: dist/
           if-no-files-found: error
-          retention-days: ${{ github.event_name == 'schedule' && 7 || 30 }}
+          retention-days: ${{ needs.identity.outputs.retention-days }}
           compression-level: 0
 
 
