@@ -251,28 +251,42 @@ func TestReleaseDispatchURL(t *testing.T) {
 		{"wrong run ID", "id", 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := readerWorld(t)
-			f.pages[followTags] = []any{[]any{}}
-			f.pages[followQuery] = []any{runList(listedRun(5, readerHead))}
-			latestRun(f, 9, 1, "completed", "cancelled")
-			listJobs(f, 9, 1)
-			if tc.field != "" {
-				f.responses[repoPrefix+"actions/runs/9"].(map[string]any)[tc.field] = tc.value
-			}
+			synctest.Test(t, func(t *testing.T) {
+				f := readerWorld(t)
+				f.pages[followTags] = []any{[]any{}}
+				f.pages[followQuery] = []any{runList(listedRun(5, readerHead))}
+				latestRun(f, 9, 1, "completed", "cancelled")
+				listJobs(f, 9, 1)
+				if tc.field != "" {
+					f.responses[repoPrefix+"actions/runs/9"].(map[string]any)[tc.field] = tc.value
+				}
+				r := newTestReader(f)
+				reads := 0
+				r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
+					if endpoint == repoPrefix+"actions/runs/9" {
+						reads++
+					}
+					return f.read(ctx, endpoint, page, accept)
+				}
 
-			var out strings.Builder
-			err := release(t.Context(), []string{followVersion}, &out, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
-				f.pages[followQuery] = []any{runList(listedRun(9, readerHead), listedRun(10, readerHead))}
-				return []byte(followURL + "9\n"), nil
+				var out strings.Builder
+				err := release(t.Context(), []string{followVersion}, &out, io.Discard, r, func(string, ...string) ([]byte, error) {
+					f.pages[followQuery] = []any{runList(listedRun(9, readerHead), listedRun(10, readerHead))}
+					return []byte(followURL + "9\n"), nil
+				})
+				if tc.field == "" {
+					assertErrorContains(t, err, "was cancelled ("+followURL+"9)")
+					return
+				}
+				// These fields are fixed when GitHub creates the run.
+				assertErrorContains(t, err, "The dispatched run "+followURL+"9", fmt.Sprint(tc.value), "Run scripts/katl-release wait "+followVersion)
+				if reads != 1 {
+					t.Fatalf("refused after %d reads; want 1", reads)
+				}
+				if strings.Contains(out.String(), followURL+"9") {
+					t.Fatalf("followed a mismatched run: %s", out.String())
+				}
 			})
-			if tc.field == "" {
-				assertErrorContains(t, err, "was cancelled ("+followURL+"9)")
-				return
-			}
-			assertErrorContains(t, err, "The dispatched run "+followURL+"9", fmt.Sprint(tc.value), "Run scripts/katl-release wait "+followVersion)
-			if strings.Contains(out.String(), followURL+"9") {
-				t.Fatalf("followed a mismatched run: %s", out.String())
-			}
 		})
 	}
 }

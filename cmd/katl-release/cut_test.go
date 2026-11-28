@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,8 +11,11 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/katl-dev/katl/internal/releaseversion"
 )
 
 const (
@@ -252,15 +256,21 @@ func TestCutRunOutcome(t *testing.T) {
 func TestCutRunTitle(t *testing.T) {
 	// The cut follows only a run whose title the workflow renders from the
 	// same inputs, so a changed run-name would leave every cut unfollowed.
+	// Until GitHub renders it, the title is the workflow name, which the cut
+	// must recognise to wait rather than refuse.
 	data, err := os.ReadFile(filepath.Join("..", "..", cutWorkflow))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var workflow struct {
+		Name    string `yaml:"name"`
 		RunName string `yaml:"run-name"`
 	}
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		t.Fatal(err)
+	}
+	if target := cutDispatch(releaseversion.Version{}, cutCommit); workflow.Name != target.name {
+		t.Fatalf("workflow name %q, want %q", workflow.Name, target.name)
 	}
 	title := strings.NewReplacer("${{ inputs.version }}", cutVersion, "${{ inputs.revision }}", cutCommit).Replace(workflow.RunName)
 	if title == "" || strings.Contains(title, "${{") {
@@ -278,5 +288,75 @@ func TestCutRunTitle(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("cut did not follow the run titled %q: %v", title, err)
+	}
+}
+
+func TestCutDispatchedRun(t *testing.T) {
+	// GitHub titles a run with the workflow name until it evaluates
+	// run-name, so a single read can refuse a correct run. Waiting on a
+	// field fixed at creation would only delay refusing another run.
+	const always = 1000
+	for _, tc := range []struct {
+		name    string
+		pending int
+		field   string
+		value   any
+		want    []string
+	}{
+		{name: "title converges", pending: 2},
+		{name: "title never converges", pending: always,
+			want: []string{cutRunURL, `still has the workflow name "Cut release" as its title`, "Check the Cut release runs"}},
+		{name: "wrong run ID", pending: always, field: "id", value: 12},
+		{name: "wrong branch", pending: always, field: "head_branch", value: "release/2026.12.1"},
+		{name: "wrong workflow", pending: always, field: "path", value: ".github/workflows/other.yml"},
+		{name: "wrong event", pending: always, field: "event", value: "push"},
+		{name: "another cut's title", field: "display_title", value: "Cut release 2026.12.2 at " + cutCommit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := cutWorld(t)
+				run := cutRunAt(9, "success")
+				f.responses[cutRun] = run
+				listJobs(f, 9, 1, listedJob(1, "Create release branch", "completed", "success"))
+				r := newTestReader(f)
+				reads := 0
+				r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
+					if endpoint == cutRun {
+						reads++
+						run["display_title"] = "Cut release 2026.12.1 at " + cutCommit
+						if reads <= tc.pending {
+							run["display_title"] = "Cut release"
+						}
+						if tc.field != "" {
+							run[tc.field] = tc.value
+						}
+					}
+					return f.read(ctx, endpoint, page, accept)
+				}
+
+				start := time.Now()
+				var out strings.Builder
+				err := cut(t.Context(), []string{"cut", cutVersion, cutCommit}, &out, io.Discard, r, func(string, ...string) ([]byte, error) {
+					f.cutBranch(cutCommit)
+					return []byte(cutRunURL), nil
+				})
+				elapsed := time.Since(start)
+
+				switch {
+				case tc.field != "":
+					assertErrorContains(t, err, "The dispatched run "+cutRunURL, fmt.Sprint(tc.value), "Check the Cut release runs")
+					if reads != 1 {
+						t.Fatalf("refused after %d reads; want 1", reads)
+					}
+				case tc.want != nil:
+					assertErrorContains(t, err, tc.want...)
+					if elapsed < dispatchWait || elapsed > dispatchWait+time.Second {
+						t.Fatalf("refused after %s; want the %s deadline", elapsed, dispatchWait)
+					}
+				case err != nil || !strings.Contains(out.String(), "release/2026.12.1 exists at "+cutCommit):
+					t.Fatalf("cut = %q, %v after %d reads", out.String(), err, reads)
+				}
+			})
+		})
 	}
 }

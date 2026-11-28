@@ -150,8 +150,18 @@ func (r *reader) newestDispatch(ctx context.Context, target workflowDispatch) (r
 }
 
 func (target workflowDispatch) matchesDispatch(run restRun) bool {
-	return run.ID > 0 && run.Branch == target.ref && run.Path == target.file && run.Event == releaseEvent &&
-		(target.title == "" || run.DisplayTitle == target.title)
+	return target.hasIdentity(run) && (target.title == "" || run.DisplayTitle == target.title)
+}
+
+// hasIdentity checks the fields GitHub fixes when it creates the run.
+func (target workflowDispatch) hasIdentity(run restRun) bool {
+	return run.ID > 0 && run.Branch == target.ref && run.Path == target.file && run.Event == releaseEvent
+}
+
+// titlePending reports a run whose title is still the workflow name because
+// GitHub has not yet evaluated the workflow's run-name.
+func (target workflowDispatch) titlePending(run restRun) bool {
+	return target.title != "" && run.DisplayTitle != target.title && run.DisplayTitle == target.name
 }
 
 func dispatchedRun(ctx context.Context, r *reader, target workflowDispatch, after int64, output string) (restRun, error) {
@@ -167,25 +177,55 @@ func dispatchedRun(ctx context.Context, r *reader, target workflowDispatch, afte
 		if !ok || err != nil || id <= 0 || strconv.FormatInt(id, 10) != number {
 			return restRun{}, fmt.Errorf("gh returned an invalid %s run URL %q", target.name, line)
 		}
+		return awaitDispatch(ctx, r, target, id, line)
+	}
 
+	found, err := findDispatch(ctx, r, target, after)
+	if err != nil {
+		return restRun{}, err
+	}
+	return awaitDispatch(ctx, r, target, found.ID, found.HTMLURL)
+}
+
+// dispatchWait bounds each wait for a dispatched run to appear or converge.
+const dispatchWait = 2 * time.Minute
+
+// awaitDispatch reads the dispatched run until its eventually consistent
+// display title converges. A mismatch in the fields GitHub fixes at creation,
+// or a title that settled on another value, is refused without waiting.
+func awaitDispatch(ctx context.Context, r *reader, target workflowDispatch, id int64, url string) (restRun, error) {
+	deadline, cancel := context.WithTimeout(ctx, dispatchWait)
+	defer cancel()
+	backoff := retry.NewBackoff(2*time.Second, 15*time.Second)
+	run, err := retry.Await(deadline, &backoff, func(ctx context.Context) (restRun, bool, error) {
 		var run restRun
 		if err := r.decode(ctx, r.repo(fmt.Sprintf("actions/runs/%d", id)), &run); err != nil {
-			return restRun{}, fmt.Errorf("read dispatched %s run %s: %w", target.name, line, err)
+			return run, false, fmt.Errorf("read dispatched %s run %s: %w", target.name, url, err)
 		}
-		if run.ID != id || !target.matchesDispatch(run) || (target.head != "" && run.SHA != target.head) {
-			expected := fmt.Sprintf("%s on %s", target.name, target.ref)
-			if target.head != "" {
-				expected += " at " + target.head
+		if run.ID == id && target.hasIdentity(run) && (target.head == "" || run.SHA == target.head) {
+			if target.matchesDispatch(run) {
+				return run, true, nil
 			}
-			if target.title != "" {
-				expected += fmt.Sprintf(" with title %q", target.title)
+			if target.titlePending(run) {
+				return run, false, nil
 			}
-			return restRun{}, fmt.Errorf("The dispatched run %s reported ID %d, branch %s, workflow %s, event %s, commit %s and title %q. Expected %s",
-				line, run.ID, run.Branch, run.Path, run.Event, run.SHA, run.DisplayTitle, expected)
 		}
-		return run, nil
+
+		expected := fmt.Sprintf("%s on %s", target.name, target.ref)
+		if target.head != "" {
+			expected += " at " + target.head
+		}
+		if target.title != "" {
+			expected += fmt.Sprintf(" with title %q", target.title)
+		}
+		return run, false, fmt.Errorf("The dispatched run %s reported ID %d, branch %s, workflow %s, event %s, commit %s and title %q. Expected %s",
+			url, run.ID, run.Branch, run.Path, run.Event, run.SHA, run.DisplayTitle, expected)
+	}, nil)
+	if errors.Is(err, context.DeadlineExceeded) && target.titlePending(run) {
+		return restRun{}, fmt.Errorf("The dispatched run %s still has the workflow name %q as its title after %s. Expected title %q",
+			url, run.DisplayTitle, dispatchWait, target.title)
 	}
-	return findDispatch(ctx, r, target, after)
+	return run, err
 }
 
 func resumeWait(version releaseversion.Version, err error) error {
@@ -197,7 +237,7 @@ func waitHint(version releaseversion.Version) string {
 }
 
 func findDispatch(ctx context.Context, r *reader, target workflowDispatch, after int64) (restRun, error) {
-	deadline, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	deadline, cancel := context.WithTimeout(ctx, dispatchWait)
 	defer cancel()
 	backoff := retry.NewBackoff(2*time.Second, 15*time.Second)
 	var moved restRun

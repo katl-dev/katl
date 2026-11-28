@@ -123,9 +123,15 @@ func createReleaseBranch(ctx context.Context, r *reader, call command, version r
 	return err
 }
 
-func dispatchCut(ctx context.Context, r *reader, call command, version releaseversion.Version, commit string, stdout, stderr io.Writer) error {
-	target := workflowDispatch{name: "Cut release", file: cutWorkflow, ref: "main",
+// cutDispatch names the workflow as GitHub does, which is the title of a run
+// until GitHub evaluates its run-name.
+func cutDispatch(version releaseversion.Version, commit string) workflowDispatch {
+	return workflowDispatch{name: "Cut release", file: cutWorkflow, ref: "main",
 		title: fmt.Sprintf("Cut release %s at %s", version, commit)}
+}
+
+func dispatchCut(ctx context.Context, r *reader, call command, version releaseversion.Version, commit string, stdout, stderr io.Writer) error {
+	target := cutDispatch(version, commit)
 	inputs := []string{"-f", "version=" + version.String(), "-f", "revision=" + commit}
 	const recovery = "Check the Cut release runs in GitHub Actions before dispatching again."
 	selected, err := dispatchWorkflow(ctx, r, call, target, inputs, recovery, recovery)
