@@ -86,8 +86,21 @@ func TestJourneys(t *testing.T) {
 		},
 		gapList: {[]any{openPR}, []any{fix}},
 	}}
+	// pin is scripts/production-upgrade-baseline.txt at the branch head; nil
+	// means the file is missing there.
+	pin := []byte("v2026.11.7\n")
 	r := newTestReader(f)
 	r.read = func(ctx context.Context, endpoint string, paginate bool, accept string) ([]byte, error) {
+		if file, ok := strings.CutPrefix(endpoint, repoPrefix+"contents/"); ok {
+			if file != "scripts/production-upgrade-baseline.txt?ref="+head || accept != "application/vnd.github.raw" {
+				t.Errorf("unexpected contents read %q as %q", endpoint, accept)
+				return nil, &apiError{status: 404, text: "not found"}
+			}
+			if pin == nil {
+				return nil, &apiError{status: 404, text: "gh: Not Found (HTTP 404)"}
+			}
+			return pin, nil
+		}
 		path, ok := strings.CutPrefix(endpoint, repoPrefix+"compare/")
 		if !ok {
 			return f.read(ctx, endpoint, paginate, accept)
@@ -110,7 +123,7 @@ func TestJourneys(t *testing.T) {
 		}
 		return json.Marshal(map[string]string{"status": status})
 	}
-	args := []string{"2026.11.8", "v2026.11.7"}
+	args := []string{"2026.11.8"}
 	var out bytes.Buffer
 	const header = "Outstanding journeys for release/2026.11.8 since v2026.11.7\n"
 	const gap = "  Gap fix #21 Open PR with both labels (https://github.com/katl-dev/katl/pull/21)\n" +
@@ -139,4 +152,48 @@ func TestJourneys(t *testing.T) {
 	if err := journeys(t.Context(), args, &out, r); !errors.Is(err, readErr) || out.Len() != 0 {
 		t.Fatalf("journeys after a read failure = %q, %v", out.String(), err)
 	}
+
+	f.failures = nil
+
+	// GitHub has no v2026.11.6 tag.
+	f.pages[repoPrefix+"git/matching-refs/tags/v2026.11.6?per_page=100"] = []any{[]any{}}
+
+	// Each refusal names the pin, the branch it was read on and the offending
+	// value, and says to correct the pin on that branch.
+	refused := []struct {
+		name      string
+		pin       []byte
+		offending string
+	}{
+		{"missing", nil, ""},
+		{"candidate", []byte("v2026.11.7-rc.1\n"), "v2026.11.7-rc.1"},
+		{"not a tag", []byte("2026.11.7\n"), `"2026.11.7"`},
+		{"same release", []byte("v2026.11.8\n"), "v2026.11.8"},
+		{"later release", []byte("v2026.12.0\n"), "v2026.12.0"},
+		{"untagged earlier release", []byte("v2026.11.6\n"), "v2026.11.6"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			pin = tc.pin
+			out.Reset()
+			err := journeys(t.Context(), args, &out, r)
+			if err == nil || out.Len() != 0 {
+				t.Fatalf("journeys = %q, %v, want a refusal", out.String(), err)
+			}
+			for _, part := range []string{"scripts/production-upgrade-baseline.txt", "release/2026.11.8", tc.offending, "Update the pin on release/2026.11.8 through a pull request"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("journeys error %q does not contain %q", err, part)
+				}
+			}
+		})
+	}
+
+	t.Run("previous tag argument", func(t *testing.T) {
+		pin = []byte("v2026.11.7\n")
+		out.Reset()
+		err := journeys(t.Context(), []string{"2026.11.8", "v2026.11.7"}, &out, r)
+		if err == nil || err.Error() != "usage: scripts/katl-release journeys VERSION" || out.Len() != 0 {
+			t.Fatalf("journeys with a previous tag = %q, %v", out.String(), err)
+		}
+	})
 }

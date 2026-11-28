@@ -1155,17 +1155,26 @@ func writeReleaseScriptFixture(t *testing.T, dir, baseline string) {
 }
 
 func TestKatlReleaseArtifactBaselineRejectsPrerelease(t *testing.T) {
-	dir := t.TempDir()
-	writeReleaseScriptFixture(t, dir, "v2026.11.5-rc.1")
-	runGit(t, dir, "init", "--quiet")
-	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "release candidate")
-	runGit(t, dir, "tag", "v2026.11.5-rc.1")
+	// The trailing blank line checks that the script applies katl-release's
+	// one-line rule rather than trimming the content itself.
+	for _, tc := range []struct{ name, baseline, tag string }{
+		{name: "candidate", baseline: "v2026.11.5-rc.1", tag: "v2026.11.5-rc.1"},
+		{name: "trailing blank line", baseline: "v2026.11.5\n", tag: "v2026.11.5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeReleaseScriptFixture(t, dir, tc.baseline)
+			runGit(t, dir, "init", "--quiet")
+			runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "release")
+			runGit(t, dir, "tag", tc.tag)
 
-	command := exec.Command(filepath.Join(dir, "scripts/katl-release-artifacts"), "upgrade-baseline")
-	command.Dir = dir
-	command.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir)
-	if output, err := command.CombinedOutput(); err == nil || !strings.Contains(string(output), productionBaselineFile+" must contain a stable KatlOS release tag") {
-		t.Fatalf("prerelease pin should fail: %v: %s", err, output)
+			command := exec.Command(filepath.Join(dir, "scripts/katl-release-artifacts"), "upgrade-baseline")
+			command.Dir = dir
+			command.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir)
+			if output, err := command.CombinedOutput(); err == nil || !strings.Contains(string(output), productionBaselineFile+" must contain one line with a final KatlOS release tag") {
+				t.Fatalf("pin %q should fail: %v: %s", tc.baseline, err, output)
+			}
+		})
 	}
 }
 

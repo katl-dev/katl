@@ -47,15 +47,15 @@ reads it back. Use `cut` to start the workflow from a checkout.
 ### `journeys`
 
 ```sh
-scripts/katl-release journeys 2026.12.1 v2026.12.0
+scripts/katl-release journeys 2026.12.1
 ```
 
-Run this after pushing the release branch, with the final version and the
-previous final release tag, which `scripts/production-upgrade-baseline.txt`
-names at the release branch's cut commit
-(`scripts/katl-release-artifacts upgrade-baseline`). The command lists
-outstanding journey PRs in the release and open gap fixes, and exits nonzero
-if work remains or GitHub cannot complete the check.
+Run this after pushing the release branch, with the final version. The
+previous final release is the tag in `scripts/production-upgrade-baseline.txt`
+at the release branch head (`scripts/katl-release-artifacts upgrade-baseline`
+prints it). The command lists outstanding journey PRs in the release and open
+gap fixes, and exits nonzero if work remains or GitHub cannot complete the
+check.
 
 ## Retrieve a bundle
 
@@ -364,6 +364,16 @@ scripts/katl-release stable-tags v2026.12.1 v2026.12.1-rc.1 nightly
 ```
 
 Prints the arguments that are final release tags, in their order.
+
+### `baseline-tag`
+
+```sh
+scripts/katl-release baseline-tag < scripts/production-upgrade-baseline.txt
+```
+
+Prints the final release tag that the pin content on stdin names, or fails
+with the error `journeys` reports for the same content. The pin is exactly
+one line holding a final release tag, with an optional trailing newline.
 
 ### `bundle-name`
 
