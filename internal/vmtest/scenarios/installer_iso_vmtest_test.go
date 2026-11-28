@@ -170,9 +170,12 @@ spec:
 						command = exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-i", privateKey,
 							"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
 							"-o", "UserKnownHostsFile=/dev/null", "root@"+endpoint.Hostname(),
-							`systemctl is-active --quiet systemd-logind.service && test ! -e /run/nologin && test -S /run/dbus/system_bus_socket && busctl --system list >/dev/null`)
-						if output, err := command.CombinedOutput(); err != nil {
-							return fmt.Errorf("installer host services were not ready: %w: %s", err, output)
+							installerHostReadinessCheck)
+						var stderr bytes.Buffer
+						command.Stderr = &stderr
+						if output, err := command.Output(); err != nil {
+							details := strings.TrimSpace(stderr.String() + "\n" + installerHostServiceStatus(string(output)))
+							return fmt.Errorf("installer host services were not ready: %w: %s", err, details)
 						}
 						return nil
 					},
@@ -197,6 +200,102 @@ spec:
 	}
 	if err := worldScenario.WriteResult(vmtest.WorldStatusPassed, ""); err != nil {
 		t.Fatalf("write passed world result: %v", err)
+	}
+}
+
+// Collect the service state on the same SSH connection, and preserve failure
+// even when the diagnostic command succeeds.
+const installerHostReadinessCheck = `
+unit=systemd-logind.service
+if ! systemctl is-active --quiet "$unit"; then
+    printf '%s is not active\n' "$unit" >&2
+elif test -e /run/nologin; then
+    echo '/run/nologin is present' >&2
+elif ! test -S /run/dbus/system_bus_socket; then
+    echo '/run/dbus/system_bus_socket is missing or is not a socket' >&2
+elif ! busctl --system list >/dev/null; then
+    echo 'cannot list the D-Bus system bus' >&2
+else
+    exit 0
+fi
+systemctl show --all --property=Id,ActiveState,SubState,Result,ExecMainStartTimestampMonotonic "$unit"
+exit 1
+`
+
+func installerHostServiceStatus(output string) string {
+	properties := make(map[string]string)
+	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			properties[key] = value
+		}
+	}
+	unit := properties["Id"]
+	if unit == "" {
+		return strings.TrimSpace(output)
+	}
+	state := properties["ActiveState"]
+	result := properties["Result"]
+	startedAt, hasStartTimestamp := properties["ExecMainStartTimestampMonotonic"]
+	status := state
+	if state == "inactive" && hasStartTimestamp && (startedAt == "0" || startedAt == "") {
+		status = "never started"
+	}
+	return fmt.Sprintf("%s: %s (Id=%s ActiveState=%s SubState=%s Result=%s ExecMainStartTimestampMonotonic=%s)",
+		unit, status, unit, state, properties["SubState"], result, startedAt)
+}
+
+func TestInstallerHostServiceStatus(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name: "never started",
+			output: `Result=success
+ExecMainStartTimestampMonotonic=0
+Id=systemd-logind.service
+ActiveState=inactive
+SubState=dead
+`,
+			want: "systemd-logind.service: never started (Id=systemd-logind.service ActiveState=inactive SubState=dead Result=success ExecMainStartTimestampMonotonic=0)",
+		},
+		{
+			name: "failed before main process",
+			output: `Result=exit-code
+ExecMainStartTimestampMonotonic=0
+Id=systemd-logind.service
+ActiveState=failed
+SubState=failed
+`,
+			want: "systemd-logind.service: failed (Id=systemd-logind.service ActiveState=failed SubState=failed Result=exit-code ExecMainStartTimestampMonotonic=0)",
+		},
+		{
+			name: "inactive after starting",
+			output: `Result=success
+ExecMainStartTimestampMonotonic=2194614
+Id=systemd-logind.service
+ActiveState=inactive
+SubState=dead
+`,
+			want: "systemd-logind.service: inactive (Id=systemd-logind.service ActiveState=inactive SubState=dead Result=success ExecMainStartTimestampMonotonic=2194614)",
+		},
+		{
+			name: "active",
+			output: `Result=success
+ExecMainStartTimestampMonotonic=2194614
+Id=systemd-logind.service
+ActiveState=active
+SubState=running
+`,
+			want: "systemd-logind.service: active (Id=systemd-logind.service ActiveState=active SubState=running Result=success ExecMainStartTimestampMonotonic=2194614)",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := installerHostServiceStatus(tt.output); got != tt.want {
+				t.Errorf("service status = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
