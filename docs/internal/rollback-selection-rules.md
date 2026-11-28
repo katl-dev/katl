@@ -39,13 +39,16 @@ bootState: good
 healthState: healthy
 ```
 
-The previous known-good generation is the newest generation with
+When a failed or tried generation must fall back, the previous known-good
+generation is the newest generation with
 valid `status.json.specDigest`, `healthState: healthy`, `bootState: good`, and
 `commitState: committed` or `commitState: superseded` that is not the currently
 failed or currently tried generation. Superseded means a healthy generation is
 no longer the active default, not that it is unsafe for rollback.
 `config-apply-status.json`, a client summary, or any workflow-specific status
 view is not sufficient for known-good rollback selection.
+
+A live promotion records the previous known-good generation in the boot selection from the boot that is running where it can, rather than from the generation it replaces as default. When the running generation is not the generation being promoted, is known-good, and has a loader entry, that generation and its entry are recorded, because it still boots from the boot menu after any number of live promotions in the same boot. Otherwise, such as after a menu boot of a generation that has not passed boot health, the replaced default is recorded. Promoting the generation that already is the default records nothing new, and a repeat of an already published promotion changes nothing.
 
 ## Failed Boot Rollback
 

@@ -646,14 +646,14 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect control-plane boot selection evidence: %v", err)
 	}
-	assertPostBootstrapSelection(t, cpSelection, cpRecord.CandidateGenerationID, bootstrapSources["cp-1"].GetCurrentGenerationId())
+	assertPostBootstrapSelection(t, cpSelection, cpRecord.CandidateGenerationID)
 	workerSelectionPath, workerSelection, err := collectBootSelectionEvidence(ctx, workerNode, workerEvidenceDir)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect worker boot selection evidence: %v", err)
 	}
-	assertPostBootstrapSelection(t, workerSelection, workerRecord.CandidateGenerationID, bootstrapSources["worker-1"].GetCurrentGenerationId())
+	assertPostBootstrapSelection(t, workerSelection, workerRecord.CandidateGenerationID)
 	nodeStatus := collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
 	if !proveUpgrade {
 		assertNodeAPIProxyAccess(t, ctx, cpNode, canonicalEndpoint, cpAddress+":6443", true)
@@ -3664,12 +3664,19 @@ func collectNodeStatusDiagnostics(ctx context.Context, evidenceDir string, nodes
 	return paths
 }
 
-func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelectionRecord, candidate, sourceGeneration string) {
+// assertPostBootstrapSelection checks the selection after bootstrap promoted
+// candidate live. The node booted generation 0 and bootstrap does not reboot
+// it, so generation 0 is the previous known-good, with its own entry: live
+// promotion records the running known-good generation, which the boot menu can
+// return to, even when a live apply before bootstrap made another generation
+// the default.
+func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelectionRecord, candidate string) {
 	t.Helper()
 	if selection.DefaultGenerationID != candidate ||
 		selection.TargetBootGenerationID != "" ||
 		selection.TrialGenerationID != "" ||
-		selection.PreviousKnownGoodGenerationID != sourceGeneration ||
+		selection.PreviousKnownGoodGenerationID != "0" ||
+		selection.PreviousKnownGoodBootEntry != "loader/entries/katl-0.conf" ||
 		selection.Generation0FallbackID != "0" ||
 		selection.ActiveGenerationID != candidate ||
 		selection.BootedGenerationID != "0" ||
