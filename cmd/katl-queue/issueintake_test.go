@@ -310,3 +310,64 @@ func TestIssueIntakeInputs(t *testing.T) {
 		}
 	}
 }
+
+func TestIssueIntakeRefusesClosedTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		closed  int
+		options intakeOptions
+		wantErr string
+	}{
+		{"parent", 618, intakeOptions{parent: 618, distinct: []int{805}}, "--parent issue #618 is closed; reopen it, or file without --parent"},
+		{"duplicate", 805, intakeOptions{duplicate: 805}, "--duplicate-of issue #805 is closed; reopen it, or file without --duplicate-of"},
+		{"supersedes", 805, intakeOptions{supersedes: 805}, "--supersedes issue #805 is closed; reopen it, or file without --supersedes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newIssueMemory(t)
+			g.issues = slices.DeleteFunc(g.issues, func(i intakeIssue) bool { return i.Number == 862 })
+			found := false
+			for idx := range g.issues {
+				if g.issues[idx].Number == tc.closed {
+					g.issues[idx].Closed = true
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("fixture #%d is missing", tc.closed)
+			}
+			opt := tc.options
+			opt.draft = issueFixtureDraft(newIssueIntake(issueFixtures(t)).issues[862].issueText, "enhancement")
+
+			err := fileIssue(t.Context(), g, opt, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("file issue = %v, want %q", err, tc.wantErr)
+			}
+			if len(g.created) != 0 || len(g.comments) != 0 {
+				t.Fatalf("closed target changed GitHub: created %+v, comments %v", g.created, g.comments)
+			}
+		})
+	}
+}
+
+func TestIssueRecurrenceRefusesClosedAudit(t *testing.T) {
+	g := newIssueMemory(t)
+	g.issues = append(g.issues, intakeIssue{
+		Number: 1001, Closed: true, Labels: []string{"enhancement"},
+		issueText: issueText{"audit: two owners of GitHub repository identity", "## Acceptance criteria\n- Verify ownership.\n\nAudits: #994, #995"},
+	})
+	opt := intakeOptions{
+		recurrence: []int{994, 995},
+		draft: issueFixtureDraft(issueText{
+			"bootstrap: resolve GitHub repository identity once",
+			"Bootstrap resolves repository identity independently. A fixed repository and a remote lookup disagree outside the checkout. Bind one repository once and reuse the selection for every request.",
+		}, "bug"),
+	}
+
+	err := fileIssue(t.Context(), g, opt, io.Discard)
+	if want := "recurrence audit #1001 is closed; reopen it, or file without --recurrence-of"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("file issue = %v, want %q", err, want)
+	}
+	if len(g.created) != 0 || len(g.comments) != 0 {
+		t.Fatalf("closed audit changed GitHub: created %+v, comments %v", g.created, g.comments)
+	}
+}

@@ -98,6 +98,9 @@ func (in issueIntake) findAudit(earlier []int) (int, error) {
 	case 0:
 		return 0, nil
 	case 1:
+		if in.issues[found[0]].Closed {
+			return 0, fmt.Errorf("recurrence audit #%d is closed; reopen it, or file without --recurrence-of", found[0])
+		}
 		if in.issues[found[0]].Locked {
 			return 0, fmt.Errorf("audit #%d is locked; unlock it before attaching a recurrence", found[0])
 		}

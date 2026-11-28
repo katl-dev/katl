@@ -329,12 +329,19 @@ func checkIntakeLabels(d issueDraft, labels []string) error {
 }
 
 func (in issueIntake) validateDecisions(draft intakeIssue, opt intakeOptions, matches []issueMatch) error {
-	for _, n := range []int{opt.parent, opt.duplicate, opt.supersedes} {
-		if n == 0 {
+	for _, link := range []struct {
+		flag string
+		n    int
+	}{{"parent", opt.parent}, {"duplicate-of", opt.duplicate}, {"supersedes", opt.supersedes}} {
+		if link.n == 0 {
 			continue
 		}
-		if _, ok := in.issues[n]; !ok {
-			return fmt.Errorf("issue #%d was not found in the repository", n)
+		target, ok := in.issues[link.n]
+		if !ok {
+			return fmt.Errorf("issue #%d was not found in the repository", link.n)
+		}
+		if target.Closed {
+			return fmt.Errorf("--%s issue #%d is closed; reopen it, or file without --%s", link.flag, link.n, link.flag)
 		}
 	}
 	for _, n := range []int{opt.duplicate, opt.supersedes} {
