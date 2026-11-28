@@ -19,6 +19,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 	"github.com/katl-dev/katl/internal/kernelmodule"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (
@@ -351,10 +352,7 @@ func WriteRecord(path string, record Record) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create generation metadata directory: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := persistedrecord.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("write generation metadata: %w", err)
 	}
 	return nil

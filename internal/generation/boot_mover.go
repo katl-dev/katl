@@ -2,15 +2,14 @@ package generation
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/efiboot"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 // legacyImportBootID records that the boot which armed an imported legacy
@@ -886,7 +885,7 @@ func writeBootMoveIntent(root string, intent bootMoveIntent) error {
 	if err != nil {
 		return fmt.Errorf("marshal boot move intent: %w", err)
 	}
-	if err := writeFileAtomic(rootedPathUnchecked(root, bootMovePath), data, 0o600); err != nil {
+	if err := persistedrecord.WriteFileAtomic(rootedPathUnchecked(root, bootMovePath), data, 0o600); err != nil {
 		return fmt.Errorf("write boot move intent: %w", err)
 	}
 	return nil
@@ -895,16 +894,7 @@ func writeBootMoveIntent(root string, intent bootMoveIntent) error {
 // removeBootMoveIntent resolves the intent. The directory sync makes the
 // removal durable before the caller may overwrite a slot or reboot.
 func removeBootMoveIntent(root string) error {
-	path := rootedPathUnchecked(root, bootMovePath)
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("resolve boot move intent: %w", err)
-	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return fmt.Errorf("resolve boot move intent: %w", err)
-	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil {
+	if err := persistedrecord.RemoveFile(rootedPathUnchecked(root, bootMovePath)); err != nil {
 		return fmt.Errorf("resolve boot move intent: %w", err)
 	}
 	return nil

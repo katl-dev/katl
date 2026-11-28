@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/efiboot"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (
@@ -141,7 +142,7 @@ func writeCurrentBoot(root string, boot currentBoot) error {
 	if err != nil {
 		return fmt.Errorf("marshal current boot record: %w", err)
 	}
-	if err := writeFileAtomic(rootedPathUnchecked(root, currentBootPath), append(data, '\n'), 0o644); err != nil {
+	if err := persistedrecord.WriteFileAtomic(rootedPathUnchecked(root, currentBootPath), append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write current boot record: %w", err)
 	}
 	return nil

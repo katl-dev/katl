@@ -15,6 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/kernelcmdline"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 // preparedUpgrade is a private snapshot and a candidate produced by the target
@@ -377,43 +378,13 @@ func publishPreparedUpgrade(root string, prepared preparedUpgrade, candidate str
 	if digest != prepared.result.CandidateSHA256 {
 		return fmt.Errorf("copied candidate digest mismatch")
 	}
-	if err := syncUpgradeTree(stage); err != nil {
+	if err := persistedrecord.SyncTree(stage); err != nil {
 		return err
 	}
 	if err := os.Rename(stage, destination); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(destination))
-}
-
-func syncUpgradeTree(root string) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		syncErr := file.Sync()
-		closeErr := file.Close()
-		if syncErr != nil {
-			return syncErr
-		}
-		return closeErr
-	})
-}
-
-func syncDirectory(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.Sync()
+	return persistedrecord.SyncDir(filepath.Dir(destination))
 }
 
 func upgradeTreeBytes(root string) (uint64, error) {

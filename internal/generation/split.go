@@ -15,6 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/flavour"
 
 	"github.com/katl-dev/katl/internal/kernelcmdline"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (
@@ -296,11 +297,21 @@ func WriteSplitRecords(dir string, spec GenerationSpec, status GenerationStatus)
 			} else if !os.IsNotExist(err) {
 				return err
 			}
+			// The spec publishes the generation, and every later reference
+			// (status, selection, loader entry) follows it, so the content
+			// materialized into the directory must be durable first.
+			if err := persistedrecord.SyncTree(dir); err != nil {
+				return fmt.Errorf("make generation content durable: %w", err)
+			}
 			data, err := marshalRecordEnvelope(GenerationSpecRecordType, spec)
 			if err != nil {
 				return err
 			}
-			if err := writeFileAtomic(specPath, data, 0o644); err != nil {
+			if err := persistedrecord.WriteFileAtomic(specPath, data, 0o644); err != nil {
+				return err
+			}
+			// A new generation directory is itself an entry of the records directory.
+			if err := persistedrecord.SyncDir(filepath.Dir(dir)); err != nil {
 				return err
 			}
 		}
@@ -315,7 +326,7 @@ func WriteSplitRecords(dir string, spec GenerationSpec, status GenerationStatus)
 		if err != nil {
 			return err
 		}
-		return writeFileAtomic(filepath.Join(dir, "status.json"), data, 0o644)
+		return persistedrecord.WriteFileAtomic(filepath.Join(dir, "status.json"), data, 0o644)
 	})
 }
 
@@ -357,7 +368,7 @@ func writeStatusRecord(dir string, spec GenerationSpec, status GenerationStatus)
 	if err != nil {
 		return fmt.Errorf("marshal generation status: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, "status.json"), statusData, 0o644); err != nil {
+	if err := persistedrecord.WriteFileAtomic(filepath.Join(dir, "status.json"), statusData, 0o644); err != nil {
 		return fmt.Errorf("write generation status: %w", err)
 	}
 	return nil

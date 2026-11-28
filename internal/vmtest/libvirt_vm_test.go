@@ -1740,3 +1740,118 @@ func TestSerialTail(t *testing.T) {
 		})
 	}
 }
+
+func TestLibvirtVMExecutorSurvivesPowerCycle(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATL_FAKE_DOMAIN", tmp)
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|undefine)
+        exit 0
+        ;;
+    start)
+        rm -f "$KATL_FAKE_DOMAIN/stopped"
+        echo start >>"$KATL_FAKE_DOMAIN/calls"
+        exit 0
+        ;;
+    destroy)
+        touch "$KATL_FAKE_DOMAIN/stopped"
+        echo destroy >>"$KATL_FAKE_DOMAIN/calls"
+        # The domain stays off long enough for the executor to poll it.
+        sleep 0.3
+        exit 0
+        ;;
+    console)
+        echo console >>"$KATL_FAKE_DOMAIN/calls"
+        while [[ ! -e "$KATL_FAKE_DOMAIN/stopped" ]]; do sleep 0.01; done
+        exit 1
+        ;;
+    domstate)
+        if [[ -e "$KATL_FAKE_DOMAIN/stopped" ]]; then printf 'shut off\n'; else printf 'running\n'; fi
+        exit 0
+        ;;
+    dumpxml)
+        printf "<domain><devices><vsock model='virtio'><cid auto='yes' address='%s'/></vsock></devices></domain>\n" "$(( 100 + $(grep -c '^start$' "$KATL_FAKE_DOMAIN/calls") ))"
+        exit 0
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+	executor := LibvirtVMExecutor{
+		VirshPath:     virsh,
+		DomainName:    "katl-run-1",
+		DomainXMLFile: xmlPath,
+		PollInterval:  time.Millisecond,
+		cycle:         newDomainCycle(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- executor.Run(ctx, "", nil, io.Discard) }()
+	waitForCalls := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if data, _ := os.ReadFile(filepath.Join(tmp, "calls")); strings.Count(string(data), "\n") > 0 && strings.Contains(string(data), want) {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("virsh calls never reached %q", want)
+	}
+	waitForCalls("console")
+
+	cid, err := executor.powerCycle(ctx)
+	if err != nil {
+		t.Fatalf("powerCycle() error = %v", err)
+	}
+	if cid != 102 {
+		t.Fatalf("powerCycle() CID = %d, want the CID of the second start", cid)
+	}
+
+	// Run must keep owning the domain after the cycle, with a fresh console.
+	select {
+	case err := <-done:
+		t.Fatalf("Run() returned after a power cycle: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "console\n"); got != 2 {
+		t.Fatalf("console sessions = %d, want one per boot\n%s", got, data)
+	}
+
+	// A stop that no one requested still ends the run.
+	if err := os.WriteFile(filepath.Join(tmp, "stopped"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not return after the domain shut off")
+	}
+}
+
+func TestLibvirtVMExecutorWithoutCycleRefusesPowerCycle(t *testing.T) {
+	if _, err := (LibvirtVMExecutor{DomainName: "katl-run-1"}).powerCycle(context.Background()); err == nil {
+		t.Fatal("powerCycle() error = nil, want refusal")
+	}
+}

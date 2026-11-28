@@ -2,13 +2,13 @@ package generation
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/flavour"
 
 	"github.com/katl-dev/katl/internal/nodeidentity"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 // UKIDirectory keeps generation-parameterized images outside systemd-boot's
@@ -86,10 +86,9 @@ func WriteEntry(root string, request LoaderRequest) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(root, "loader", "entries", entry.Name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("create loader entry directory: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(entry.Content), 0o644); err != nil {
+	// The entry must be durable before any EFI variable or selection names it;
+	// otherwise a power loss leaves firmware pointing at a missing entry.
+	if err := persistedrecord.WriteFileAtomic(path, []byte(entry.Content), 0o644); err != nil {
 		return "", fmt.Errorf("write loader entry: %w", err)
 	}
 	return path, nil

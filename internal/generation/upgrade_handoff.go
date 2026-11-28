@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const UpgradeHandoffVersion = 1
@@ -55,7 +57,7 @@ func WriteUpgradeHandoff(root string, record UpgradeHandoff) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, append(data, '\n'), 0o600)
+	return persistedrecord.WriteFileAtomic(path, append(data, '\n'), 0o600)
 }
 
 func ReadUpgradeHandoff(root, candidate string) (UpgradeHandoff, error) {

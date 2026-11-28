@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/persistedrecord"
 	"github.com/katl-dev/katl/internal/redact"
 )
 
@@ -179,7 +180,7 @@ func WriteConfigApplyStatus(path string, status ConfigApplyStatus) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(path, data, 0o644); err != nil {
+	if err := persistedrecord.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("write config apply status: %w", err)
 	}
 	return nil

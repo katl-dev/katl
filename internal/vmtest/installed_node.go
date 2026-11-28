@@ -253,6 +253,21 @@ func (n RunningInstalledRuntimeNode) StopFailure(failure string) error {
 	return err
 }
 
+// PowerCycle cuts power to the node and starts it again, then returns the node
+// as it is addressed on its new boot. Copies of the node taken earlier keep the
+// previous vsock CID and must be replaced by the returned value.
+func (n RunningInstalledRuntimeNode) PowerCycle(ctx context.Context) (RunningInstalledRuntimeNode, error) {
+	if n.handle == nil {
+		return n, fmt.Errorf("installed runtime node %q has no running VM", n.Name)
+	}
+	if err := n.handle.PowerCycle(ctx); err != nil {
+		return n, err
+	}
+	n.VSock = n.handle.Plan.VSock
+	n.Result.VSock = n.VSock
+	return n, nil
+}
+
 func (n RunningInstalledRuntimeNode) WaitForPoweroff(ctx context.Context) error {
 	if n.handle == nil || n.handle.done == nil {
 		return nil

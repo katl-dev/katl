@@ -19,7 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, contextPath string, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle) error {
+func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, contextPath string, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle, powerCutNode *vmtest.RunningInstalledRuntimeNode) error {
 	t.Helper()
 	dir := filepath.Join(smoke.Result.RunDir, "pre-cni-apply")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -278,7 +278,13 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 		return fmt.Errorf("kubelet failure/repair changed the desired API server pod")
 	}
 	planning := configbundle.PlanningInputs{KubernetesBundle: bundle.Ref, ManagementIdentities: management}
-	return runPreCNIApplyAfterReboot(ctx, katlctl, dir, source, planning, configPath, smoke.Inputs.SSHPrivateKey, addresses["cp-1"], kubeconfig)
+	if err := runPreCNIApplyAfterReboot(ctx, katlctl, dir, source, planning, configPath, smoke.Inputs.SSHPrivateKey, addresses["cp-1"], kubeconfig); err != nil {
+		return err
+	}
+	if powerCutNode == nil {
+		return nil
+	}
+	return runPowerCutJourney(ctx, katlctl, dir, source, planning, configPath, powerCutNode, addresses["cp-1"])
 }
 
 // Boot health does not cover kubelet, so management can answer before kubelet

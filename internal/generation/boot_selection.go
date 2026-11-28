@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (
@@ -94,7 +96,7 @@ func WriteBootSelection(root string, selection BootSelectionRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal boot selection: %w", err)
 	}
-	if err := writeFileAtomic(path, data, 0o644); err != nil {
+	if err := persistedrecord.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("write boot selection: %w", err)
 	}
 	return nil
@@ -191,52 +193,6 @@ func validateBootEntryPath(name string, value string) error {
 	cleaned := filepath.ToSlash(filepath.Clean(value))
 	if cleaned == "." || strings.HasPrefix(cleaned, "../") || cleaned != value {
 		return fmt.Errorf("%s must be a clean $BOOT-relative path", name)
-	}
-	return nil
-}
-
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	cleanup = false
-	dirHandle, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer dirHandle.Close()
-	if err := dirHandle.Sync(); err != nil {
-		return err
 	}
 	return nil
 }

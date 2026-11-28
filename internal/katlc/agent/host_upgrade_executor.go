@@ -22,6 +22,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 	"github.com/katl-dev/katl/internal/systemdisk"
 )
 
@@ -437,8 +438,14 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if err := verifyUpgradePrefix(inactiveDevice, payload.Runtime.SHA256, payload.Runtime.SizeBytes); err != nil {
 		return fmt.Errorf("verify staged runtime root: %w", err)
 	}
-	if err := verifyUpgradeFile(filepath.Join(root, strings.TrimPrefix(ukiPath, "/")), payload.Boot.SHA256); err != nil {
+	stagedUKI := filepath.Join(root, strings.TrimPrefix(ukiPath, "/"))
+	if err := verifyUpgradeFile(stagedUKI, payload.Boot.SHA256); err != nil {
 		return fmt.Errorf("verify staged runtime UKI: %w", err)
+	}
+	// The loader entry written next names this UKI, so it must be durable on
+	// the ESP first, whatever sysupdate itself guarantees.
+	if err := persistedrecord.SyncFile(stagedUKI); err != nil {
+		return fmt.Errorf("sync staged runtime UKI: %w", err)
 	}
 	return nil
 }
