@@ -120,7 +120,7 @@ jobs:
           persist-credentials: false
       - name: Set up tools
         uses: ./.github/actions/setup-tools
-        timeout-minutes: 10
+        timeout-minutes: 14
       - name: Allow Bubblewrap user namespaces
         timeout-minutes: 2
         run: nix develop --option builders '' .#ci -c .github/scripts/hosted-hermetic-setup

@@ -191,14 +191,18 @@ exponential backoff, announces each retry as a workflow warning and the final
 failure, with its reason, as a workflow error, and reports a malformed attempt,
 timeout, kill-after or backoff override as a usage error before the first
 attempt.
-`.github/scripts/hosted-download` and `scripts/mkosi-builder` call it.
+`.github/scripts/hosted-download`, `scripts/mkosi-builder` and the
+`.github/actions/setup-tools` action, which realises the flake's ci shell,
+call it.
 
-The shell owner exists because those scripts cannot rely on a Go module. When
-a VM workflow tests an explicit source ref, it runs them from a sparse checkout
-of the workflow's own revision that holds only its actions and scripts and
-none of the repository's Go packages, so a script there cannot call
-`internal/retry`. That checkout must therefore include `scripts/` wherever it
-runs either script.
+The shell owner exists because those callers cannot rely on a Go module. When
+a VM workflow tests an explicit source ref, it runs its scripts from a sparse
+checkout of the workflow's own revision that holds only its actions and
+scripts and none of the repository's Go packages, so a script there cannot
+call `internal/retry`. That checkout must therefore include `scripts/`
+wherever it runs a caller. The setup-tools action runs before the ci shell
+provides Go, so it cannot call `internal/retry` either; its callers use full
+checkouts.
 
 ## Build caches
 

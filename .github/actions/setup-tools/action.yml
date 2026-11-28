@@ -3,9 +3,11 @@ description: >-
   Install Nix, realise the flake's ci shell and restore the host Go cache
   for the shell's Go. Later steps run their commands through
   `nix develop --option builders '' .#ci -c`. Composite steps cannot carry
-  timeout-minutes, so the calling step gives this action its budget: the
-  shell realisation is limited to 300 s, and 10 minutes covers it with the
-  Nix install and the cache restore.
+  timeout-minutes, so the calling step gives this action its budget of 14
+  minutes. The shell realisation makes at most 3 attempts of 120 s, each
+  killed 10 s after its limit, with backoffs below 20 s and 40 s between
+  them, so it gives up within 450 s. The Go cache restore may use its own 5-minute
+  segment download limit, which leaves the Nix install about a minute.
 outputs:
   module-cache:
     description: Go module cache path
@@ -24,20 +26,35 @@ runs:
   steps:
     # The installer verifies the Nix release tarball it downloads. The shell
     # substitutes only from cache.nixos.org, so no binary cache credential is
-    # needed, and no step needs KVM.
+    # needed, and no step needs KVM. Nix's default stalled-download-timeout of
+    # 300 s outlasts a realisation attempt; at 30 s Nix abandons a stalled
+    # substitution and retries it within the attempt.
     - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       with:
         enable_kvm: false
         extra_nix_config: |
           substituters = https://cache.nixos.org/
+          stalled-download-timeout = 30
+          connect-timeout = 10
     - name: Realise the ci shell
       id: shell
       shell: bash
       run: |
         # The first entry downloads the shell's closure, so it carries the
-        # time limit; Nix retries individual substitutions within it.
-        go_env="$(timeout --kill-after=30s 300s nix develop --option builders '' .#ci -c go env GOVERSION GOMODCACHE GOCACHE)"
+        # retry. Substituted paths persist in the store, so a later attempt
+        # resumes where an earlier one stopped. scripts/retry passes every
+        # attempt's stdout through, but only go env writes to stdout and it
+        # runs only once an attempt has realised the shell; the line count
+        # check rejects anything else.
+        go_env="$(scripts/retry --attempts 3 --timeout 120 --kill-after 10 --backoff 10 \
+          --title 'ci shell' --what 'Realising the ci shell' \
+          --hint 'cache.nixos.org substitution failed or stalled; rerun the job, and check https://status.nixos.org if it persists' \
+          -- nix develop --option builders '' .#ci -c go env GOVERSION GOMODCACHE GOCACHE)"
         mapfile -t go_env <<< "$go_env"
+        if [[ ${#go_env[@]} != 3 ]]; then
+          echo "::error title=ci shell::go env printed ${#go_env[@]} lines, not 3: ${go_env[*]}"
+          exit 1
+        fi
         {
           echo "version=${go_env[0]#go}"
           echo "module=${go_env[1]}"
