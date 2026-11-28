@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,36 +113,40 @@ func TestReferenceAfterTargetCrash(t *testing.T) {
 }
 
 // crashEachStep runs operation once per filesystem step, losing power at
-// that step, and checks the state that survives. The last run completes
-// without a crash and then loses power, so check also sees what a successful
-// return leaves durable.
+// that step, and checks the state that survives, under each filesystem model.
+// The last run completes without a crash and then loses power, so check also
+// sees what a successful return leaves durable.
 func crashEachStep(t *testing.T, seed func(*crashFS), operation func() error, check func(t *testing.T, fs *crashFS, returned bool)) {
 	t.Helper()
-	for step := 1; ; step++ {
-		fs := newCrashFS(step)
-		seed(fs)
-		previous := fsys
-		fsys = fs
-		err := operation()
-		fsys = previous
+	for _, model := range []crashModel{journaled, fat} {
+		t.Run(model.String(), func(t *testing.T) {
+			for step := 1; ; step++ {
+				fs := newCrashFS(model, step)
+				seed(fs)
+				previous := fsys
+				fsys = fs
+				err := operation()
+				fsys = previous
 
-		completed := !fs.crashed
-		if completed && err != nil {
-			t.Fatalf("step %d: operation failed without a crash: %v", step, err)
-		}
-		if !completed && !errors.Is(err, errPowerLoss) {
-			t.Fatalf("step %d: operation error = %v, want power loss", step, err)
-		}
-		fs.powerLoss()
-		t.Run(fmt.Sprintf("crash at step %d", step), func(t *testing.T) {
-			check(t, fs, completed)
-		})
-		if completed {
-			if step < 3 {
-				t.Fatalf("operation finished after %d steps; the crash model is not exercised", step)
+				completed := !fs.crashed
+				if completed && err != nil {
+					t.Fatalf("step %d: operation failed without a crash: %v", step, err)
+				}
+				if !completed && !errors.Is(err, errPowerLoss) {
+					t.Fatalf("step %d: operation error = %v, want power loss", step, err)
+				}
+				fs.powerLoss()
+				t.Run(fmt.Sprintf("crash at step %d", step), func(t *testing.T) {
+					check(t, fs, completed)
+				})
+				if completed {
+					if step < 3 {
+						t.Fatalf("operation finished after %d steps; the crash model is not exercised", step)
+					}
+					return
+				}
 			}
-			return
-		}
+		})
 	}
 }
 
@@ -159,10 +164,31 @@ func assertOnlyHiddenTemporaries(t *testing.T, fs *crashFS, dir string, name str
 
 var errPowerLoss = errors.New("power lost")
 
-// crashFS models what survives a power loss: file content only after the file
-// is synced, and directory entries only after the directory is synced.
+type crashModel int
+
+const (
+	// journaled models ext4: content survives once the file is synced, and a
+	// name, including a rename, once its directory is synced.
+	journaled crashModel = iota
+	// fat models vfat, which holds the ESP. A file's size and first cluster
+	// live in its directory slot, which a file sync writes. A rename gives the
+	// new name a fresh slot (size 0) or keeps the replaced file's slot, and the
+	// moved file's metadata reaches that slot only when the file is written
+	// back again. A directory sync writes the slots as they are.
+	fat
+)
+
+func (m crashModel) String() string {
+	if m == fat {
+		return "vfat"
+	}
+	return "ext4"
+}
+
+// crashFS models what survives a power loss under one crashModel.
 // Directories themselves are durable once created.
 type crashFS struct {
+	model   crashModel
 	crashAt int
 	steps   int
 	crashed bool
@@ -171,17 +197,30 @@ type crashFS struct {
 }
 
 type crashDir struct {
-	entries map[string]*crashInode
+	// names is the live namespace.
+	names map[string]*crashInode
+	// durable is the journaled model's on-disk namespace.
 	durable map[string]*crashInode
+	// slots and durableSlots are the fat model's directory slots.
+	slots        map[string]crashSlot
+	durableSlots map[string]crashSlot
+}
+
+// crashSlot is a vfat directory slot: the file its cluster chain points at and
+// the size it records. A nil inode is a slot with no clusters.
+type crashSlot struct {
+	inode *crashInode
+	size  int
 }
 
 type crashInode struct {
 	data    []byte
 	durable []byte
+	path    string
 }
 
-func newCrashFS(crashAt int) *crashFS {
-	return &crashFS{crashAt: crashAt, dirs: map[string]*crashDir{}}
+func newCrashFS(model crashModel, crashAt int) *crashFS {
+	return &crashFS{model: model, crashAt: crashAt, dirs: map[string]*crashDir{}}
 }
 
 func (fs *crashFS) step() error {
@@ -199,7 +238,12 @@ func (fs *crashFS) step() error {
 func (fs *crashFS) dir(path string) *crashDir {
 	dir, ok := fs.dirs[path]
 	if !ok {
-		dir = &crashDir{entries: map[string]*crashInode{}, durable: map[string]*crashInode{}}
+		dir = &crashDir{
+			names:        map[string]*crashInode{},
+			durable:      map[string]*crashInode{},
+			slots:        map[string]crashSlot{},
+			durableSlots: map[string]crashSlot{},
+		}
 		fs.dirs[path] = dir
 	}
 	return dir
@@ -207,23 +251,40 @@ func (fs *crashFS) dir(path string) *crashDir {
 
 // seedVolatile adds a file another program wrote without syncing it.
 func (fs *crashFS) seedVolatile(path string, data []byte) {
-	fs.dir(filepath.Dir(path)).entries[filepath.Base(path)] = &crashInode{data: bytes.Clone(data)}
+	inode := &crashInode{data: bytes.Clone(data), path: path}
+	dir := fs.dir(filepath.Dir(path))
+	dir.names[filepath.Base(path)] = inode
+	dir.slots[filepath.Base(path)] = crashSlot{inode: inode, size: len(data)}
 }
 
 func (fs *crashFS) seed(path string, data []byte) {
-	inode := &crashInode{data: bytes.Clone(data), durable: bytes.Clone(data)}
+	inode := &crashInode{data: bytes.Clone(data), durable: bytes.Clone(data), path: path}
 	dir := fs.dir(filepath.Dir(path))
-	dir.entries[filepath.Base(path)] = inode
-	dir.durable[filepath.Base(path)] = inode
+	base := filepath.Base(path)
+	dir.names[base] = inode
+	dir.durable[base] = inode
+	dir.slots[base] = crashSlot{inode: inode, size: len(data)}
+	dir.durableSlots[base] = dir.slots[base]
 }
 
 func (fs *crashFS) powerLoss() {
-	for _, dir := range fs.dirs {
-		dir.entries = map[string]*crashInode{}
-		for name, inode := range dir.durable {
-			inode.data = bytes.Clone(inode.durable)
-			dir.entries[name] = inode
+	for path, dir := range fs.dirs {
+		names := map[string]*crashInode{}
+		if fs.model == fat {
+			for name, slot := range dir.durableSlots {
+				var content []byte
+				if slot.inode != nil {
+					content = bytes.Clone(slot.inode.durable[:min(slot.size, len(slot.inode.durable))])
+				}
+				names[name] = &crashInode{data: content, durable: bytes.Clone(content), path: filepath.Join(path, name)}
+			}
+		} else {
+			for name, inode := range dir.durable {
+				inode.data = bytes.Clone(inode.durable)
+				names[name] = inode
+			}
 		}
+		dir.names = names
 	}
 }
 
@@ -232,7 +293,7 @@ func (fs *crashFS) read(path string) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	inode, ok := dir.entries[filepath.Base(path)]
+	inode, ok := dir.names[filepath.Base(path)]
 	if !ok {
 		return nil, false
 	}
@@ -241,7 +302,7 @@ func (fs *crashFS) read(path string) ([]byte, bool) {
 
 func (fs *crashFS) list(path string) []string {
 	var names []string
-	for name := range fs.dir(path).entries {
+	for name := range fs.dir(path).names {
 		names = append(names, name)
 	}
 	return names
@@ -255,34 +316,36 @@ func (fs *crashFS) MkdirAll(path string, _ os.FileMode) error {
 	return nil
 }
 
+func (fs *crashFS) create(path string) *crashFile {
+	inode := &crashInode{path: path}
+	dir := fs.dir(filepath.Dir(path))
+	dir.names[filepath.Base(path)] = inode
+	dir.slots[filepath.Base(path)] = crashSlot{}
+	return &crashFile{fs: fs, inode: inode}
+}
+
 func (fs *crashFS) CreateTemp(dir, pattern string) (file, error) {
 	if err := fs.step(); err != nil {
 		return nil, err
 	}
 	fs.temps++
-	name := filepath.Join(dir, fmt.Sprintf("%s%d", pattern, fs.temps))
-	inode := &crashInode{}
-	fs.dir(dir).entries[filepath.Base(name)] = inode
-	return &crashFile{fs: fs, name: name, inode: inode}, nil
+	return fs.create(filepath.Join(dir, fmt.Sprintf("%s%d", pattern, fs.temps))), nil
 }
 
 func (fs *crashFS) OpenFile(name string, flag int, _ os.FileMode) (file, error) {
 	if err := fs.step(); err != nil {
 		return nil, err
 	}
-	dir := fs.dir(filepath.Dir(name))
-	existing, ok := dir.entries[filepath.Base(name)]
+	existing, ok := fs.dir(filepath.Dir(name)).names[filepath.Base(name)]
 	switch {
 	case ok && flag&os.O_EXCL != 0:
 		return nil, os.ErrExist
 	case ok && flag&os.O_CREATE == 0:
-		return &crashFile{fs: fs, name: name, inode: existing}, nil
+		return &crashFile{fs: fs, inode: existing}, nil
 	case !ok && flag&os.O_CREATE == 0:
 		return nil, os.ErrNotExist
 	}
-	inode := &crashInode{}
-	dir.entries[filepath.Base(name)] = inode
-	return &crashFile{fs: fs, name: name, inode: inode}, nil
+	return fs.create(name), nil
 }
 
 func (fs *crashFS) Rename(oldpath, newpath string) error {
@@ -290,12 +353,18 @@ func (fs *crashFS) Rename(oldpath, newpath string) error {
 		return err
 	}
 	from := fs.dir(filepath.Dir(oldpath))
-	inode, ok := from.entries[filepath.Base(oldpath)]
+	inode, ok := from.names[filepath.Base(oldpath)]
 	if !ok {
 		return os.ErrNotExist
 	}
-	delete(from.entries, filepath.Base(oldpath))
-	fs.dir(filepath.Dir(newpath)).entries[filepath.Base(newpath)] = inode
+	to := fs.dir(filepath.Dir(newpath))
+	delete(from.names, filepath.Base(oldpath))
+	to.names[filepath.Base(newpath)] = inode
+	delete(from.slots, filepath.Base(oldpath))
+	if _, replaced := to.slots[filepath.Base(newpath)]; !replaced {
+		to.slots[filepath.Base(newpath)] = crashSlot{}
+	}
+	inode.path = newpath
 	return nil
 }
 
@@ -304,10 +373,11 @@ func (fs *crashFS) Remove(name string) error {
 		return err
 	}
 	dir := fs.dir(filepath.Dir(name))
-	if _, ok := dir.entries[filepath.Base(name)]; !ok {
+	if _, ok := dir.names[filepath.Base(name)]; !ok {
 		return os.ErrNotExist
 	}
-	delete(dir.entries, filepath.Base(name))
+	delete(dir.names, filepath.Base(name))
+	delete(dir.slots, filepath.Base(name))
 	return nil
 }
 
@@ -316,20 +386,17 @@ func (fs *crashFS) SyncDir(path string) error {
 		return err
 	}
 	dir := fs.dir(path)
-	dir.durable = map[string]*crashInode{}
-	for name, inode := range dir.entries {
-		dir.durable[name] = inode
-	}
+	dir.durable = maps.Clone(dir.names)
+	dir.durableSlots = maps.Clone(dir.slots)
 	return nil
 }
 
 type crashFile struct {
 	fs    *crashFS
-	name  string
 	inode *crashInode
 }
 
-func (f *crashFile) Name() string { return f.name }
+func (f *crashFile) Name() string { return f.inode.path }
 
 func (f *crashFile) Write(data []byte) (int, error) {
 	if err := f.fs.step(); err != nil {
@@ -341,11 +408,17 @@ func (f *crashFile) Write(data []byte) (int, error) {
 
 func (f *crashFile) Chmod(os.FileMode) error { return f.fs.step() }
 
+// Sync makes the content durable and, on vfat, writes the file's metadata
+// into the slot at its current name.
 func (f *crashFile) Sync() error {
 	if err := f.fs.step(); err != nil {
 		return err
 	}
 	f.inode.durable = bytes.Clone(f.inode.data)
+	dir := f.fs.dir(filepath.Dir(f.inode.path))
+	slot := crashSlot{inode: f.inode, size: len(f.inode.data)}
+	dir.slots[filepath.Base(f.inode.path)] = slot
+	dir.durableSlots[filepath.Base(f.inode.path)] = slot
 	return nil
 }
 

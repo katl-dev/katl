@@ -18,14 +18,20 @@ import (
 // call returns.
 //
 // A replacement writes a temporary file in the destination directory, fsyncs
-// it, renames it over the destination and fsyncs the directory. On ext4 the
-// rename is atomic, so a crash leaves the old or the new file. vfat, which
-// holds the ESP, does not promise an atomic rename over an existing file on
-// every crash path, but the content is already durable before the rename, so
-// a crash leaves the old file, the new file, or the complete new content
-// under its temporary name. Temporary names start with "." and end in
-// ".tmp-<random>", so they never match systemd-boot's "*.conf" entry glob,
-// the "*.efi" UKI names or Katl's own record names, and readers ignore them.
+// it, renames it to the destination, fsyncs the file again at that name and
+// fsyncs the directory. On ext4 the rename is atomic, so a crash leaves the
+// old or the new file. vfat, which holds the ESP, records a file's size and
+// first cluster in its directory slot and updates the slot of a renamed file
+// only when the file is written back. Without the second fsync a crash after
+// the directory sync leaves the new name as an empty file, which is how
+// #1070's loader entries were lost. A crash before the write completes leaves
+// the old file (or no file) at the name, and possibly the complete new content
+// under its temporary name. vfat does not promise that replacing an existing
+// file is atomic on every crash path, so boot references name new files
+// rather than rewriting the file they already name. Temporary names start
+// with "." and end in ".tmp-<random>", so they never match systemd-boot's
+// "*.conf" entry glob, the "*.efi" UKI names or Katl's own record names, and
+// readers ignore them.
 
 const tempInfix = ".tmp-"
 
@@ -73,6 +79,13 @@ func WriteReaderAtomic(path string, source io.Reader, mode os.FileMode) error {
 		return fmt.Errorf("replace persisted record: %w", err)
 	}
 	cleanup = false
+	// vfat keeps a file's size and first cluster in its directory slot. A rename
+	// leaves the new slot empty, or still describing the replaced file, until
+	// the moved file is written back, and a directory sync alone persists the
+	// slot as it is. Syncing the file at its final name writes the slot.
+	if err := syncContent(path); err != nil {
+		return err
+	}
 	return SyncDir(dir)
 }
 
