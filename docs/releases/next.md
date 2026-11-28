@@ -13,6 +13,19 @@ KatlOS 2026.11.8 writes each boot entry to disk before the firmware is told
 to boot it. Upgrade `katlctl` and every node to 2026.11.8 with the
 [host upgrade procedure](https://github.com/katl-dev/katl/blob/main/docs/operations/upgrade-host.md).
 
+Nodes on 2026.11.4 or 2026.11.6 can upgrade straight to 2026.11.8, and a
+cluster whose nodes run different releases can be upgraded one node at a time.
+For nodes installed before 2026.11.5, first follow the
+[2026.11.5 guidance](https://github.com/katl-dev/katl/blob/main/docs/releases/2026.11.5.md):
+
+- If your configuration has neither `spec.managementAuthentication` nor
+  `spec.managementIdentity`, add `managementAuthentication: trusted-network`
+  under `spec`.
+- Repair any node whose earlier host upgrade failed while staging before you
+  upgrade it.
+- Run `katlctl management enable-mtls` only after every node runs 2026.11.5
+  or later.
+
 ### Recover a node that lost its network
 
 A node in this state cannot be reached to upgrade it, so recover it first,
