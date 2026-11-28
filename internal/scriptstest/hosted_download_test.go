@@ -3,6 +3,7 @@ package scriptstest
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -466,104 +467,198 @@ jobs:
 	})
 }
 
-func TestHostedDownload(t *testing.T) {
-	script := filepath.Join(repoRoot(t), ".github", "scripts", "hosted-download")
+// fakeArtifact is one artifact of the fake run that downloadWorld serves.
+type fakeArtifact struct {
+	ID      int
+	Name    string
+	Created string
+	Expired bool
+	Files   map[string]string
+}
 
-	// The fake gh behaves per attempt as listed in its plan file: "ok" writes a
-	// complete payload, "partial" writes a fragment and fails, "stall" hangs,
-	// and "deaf" writes a fragment and hangs ignoring SIGTERM, so only SIGKILL
-	// ends it.
-	runIn := func(t *testing.T, dir string, plan []string, args ...string) (string, string, error) {
-		t.Helper()
-		bin := filepath.Join(dir, "bin")
-		if err := os.Mkdir(bin, 0o755); err != nil {
+// downloadWorld is a directory holding a fake gh and the run it serves:
+// listing.json lists the artifacts in the given order, meta-<id>.json and
+// zip-<id>.zip describe each one. Every download operation, a release
+// download or an archive fetch, behaves as the next line of its plan says:
+// "ok" completes, "partial" sends a fragment and fails, "truncated" sends a
+// fragment and succeeds, "stall" hangs, "deaf" sends a fragment and hangs
+// ignoring SIGTERM, so only SIGKILL ends it, and "gone" answers HTTP 410.
+type downloadWorld struct {
+	dir string
+}
+
+func newDownloadWorld(t *testing.T, run int, artifacts ...fakeArtifact) downloadWorld {
+	t.Helper()
+	dir := t.TempDir()
+	bin := mkdirAll(t, filepath.Join(dir, "bin"))
+	var listing []map[string]any
+	for _, a := range artifacts {
+		created := a.Created
+		if created == "" {
+			created = "2026-11-28T00:00:00Z"
+		}
+		entry := map[string]any{"id": a.ID, "name": a.Name, "created_at": created, "expired": a.Expired, "workflow_run": map[string]any{"id": run}}
+		listing = append(listing, entry)
+		metadata, err := json.Marshal(entry)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "plan"), []byte(strings.Join(plan, "\n")+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		writeFakeExecutable(t, bin, "gh", `state=`+dir+`
+		writeArtifact(t, dir, fmt.Sprintf("meta-%d.json", a.ID), string(metadata))
+		writeZip(t, filepath.Join(dir, fmt.Sprintf("zip-%d.zip", a.ID)), a.Files)
+	}
+	data, err := json.Marshal(map[string]any{"total_count": len(listing), "artifacts": listing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeArtifact(t, dir, "listing.json", string(data))
+	writeFakeExecutable(t, bin, "gh", `state=`+dir+`
 printf '%s\n' "$*" >> "$state/calls"
-n=$(wc -l < "$state/calls")
-mode=$(sed -n "${n}p" "$state/plan")
-out=${!#}
-case "$mode" in
-    ok) printf complete > "$out/payload"; mkdir -p "$out/sub"; printf new > "$out/sub/new" ;;
-    partial) printf frag > "$out/fragment"; exit 1 ;;
-    stall) exec sleep 60 ;;
-    deaf) trap '' TERM; printf frag > "$out/fragment"; sleep 60 ;;
+step() {
+    n=$(grep -cE '/zip$|^release download' "$state/calls")
+    sed -n "${n}p" "$state/plan"
+}
+if [[ "$1" == release ]]; then
+    out=${!#}
+    case "$(step)" in
+        ok) printf complete > "$out/payload"; mkdir -p "$out/sub"; printf new > "$out/sub/new" ;;
+        partial) printf frag > "$out/fragment"; exit 1 ;;
+        stall) exec sleep 60 ;;
+        deaf) trap '' TERM; printf frag > "$out/fragment"; sleep 60 ;;
+    esac
+    exit 0
+fi
+endpoint=${!#}
+case "$endpoint" in
+    */runs/*/artifacts*) cat "$state/listing.json" ;;
+    */zip)
+        id=${endpoint%/zip}
+        id=${id##*/}
+        case "$(step)" in
+            ok) cat "$state/zip-$id.zip" ;;
+            partial) head -c 20 "$state/zip-$id.zip"; exit 1 ;;
+            truncated) head -c 20 "$state/zip-$id.zip" ;;
+            stall) exec sleep 60 ;;
+            deaf) trap '' TERM; head -c 20 "$state/zip-$id.zip"; sleep 60 ;;
+            gone) echo 'gh: Gone (HTTP 410)' >&2; exit 1 ;;
+        esac ;;
+    *)
+        id=${endpoint##*/}
+        if [[ ! -e "$state/meta-$id.json" ]]; then
+            echo 'gh: Not Found (HTTP 404)' >&2
+            exit 1
+        fi
+        cat "$state/meta-$id.json" ;;
 esac
 `)
-		cmd := exec.Command(script, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"PATH="+bin+":"+os.Getenv("PATH"),
-			"GITHUB_ACTIONS=true",
-			"GITHUB_REPOSITORY=katl-dev/katl",
-			"GITHUB_RUN_ID=42",
-			"KATL_DOWNLOAD_ATTEMPTS=2",
-			"KATL_DOWNLOAD_ATTEMPT_SECONDS=1",
-			"KATL_DOWNLOAD_KILL_AFTER_SECONDS=1",
-			"KATL_DOWNLOAD_BACKOFF_SECONDS=0",
-		)
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
-		err := cmd.Run()
-		return dir, stderr.String(), err
+	return downloadWorld{dir: dir}
+}
+
+// run executes hosted-download in the world with two 1-second attempts.
+func (w downloadWorld) run(t *testing.T, plan []string, args ...string) (string, error) {
+	t.Helper()
+	writeArtifact(t, w.dir, "plan", strings.Join(plan, "\n")+"\n")
+	cmd := exec.Command(filepath.Join(repoRoot(t), ".github", "scripts", "hosted-download"), args...)
+	cmd.Dir = w.dir
+	cmd.Env = append(os.Environ(),
+		"PATH="+filepath.Join(w.dir, "bin")+":"+os.Getenv("PATH"),
+		"GITHUB_ACTIONS=true",
+		"GITHUB_REPOSITORY=katl-dev/katl",
+		"GITHUB_RUN_ID=42",
+		"KATL_DOWNLOAD_ATTEMPTS=2",
+		"KATL_DOWNLOAD_ATTEMPT_SECONDS=1",
+		"KATL_DOWNLOAD_KILL_AFTER_SECONDS=1",
+		"KATL_DOWNLOAD_BACKOFF_SECONDS=0",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
+}
+
+func (w downloadWorld) calls(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(w.dir, "calls"))
+	if os.IsNotExist(err) {
+		return ""
 	}
-	run := func(t *testing.T, plan []string, args ...string) (string, string, error) {
-		t.Helper()
-		return runIn(t, t.TempDir(), plan, args...)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return string(data)
+}
+
+// fetches counts the archive downloads gh was asked for.
+func (w downloadWorld) fetches(t *testing.T) int {
+	t.Helper()
+	return strings.Count(w.calls(t), "/zip\n")
+}
+
+// delivered checks the files under DEST and that no staging is left.
+func (w downloadWorld) delivered(t *testing.T, dest string, want map[string]string) {
+	t.Helper()
+	for path, content := range want {
+		if got := string(mustReadFile(t, filepath.Join(w.dir, dest, path))); got != content {
+			t.Errorf("%s/%s = %q, want %q", dest, path, got, content)
+		}
+	}
+	if siblings, _ := filepath.Glob(filepath.Join(w.dir, dest+".*")); len(siblings) != 0 {
+		t.Errorf("staging directories left behind: %v", siblings)
+	}
+}
+
+// undelivered checks that a failed download left neither DEST nor staging.
+func (w downloadWorld) undelivered(t *testing.T, dest string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(w.dir, dest)); !os.IsNotExist(err) {
+		t.Errorf("failed download left a destination: %v", err)
+	}
+	if siblings, _ := filepath.Glob(filepath.Join(w.dir, dest+".*")); len(siblings) != 0 {
+		t.Errorf("staging directories left behind: %v", siblings)
+	}
+}
+
+var completeFiles = map[string]string{"payload": "complete", "sub/new": "new"}
+
+func TestHostedDownload(t *testing.T) {
+	inputs := fakeArtifact{ID: 99, Name: "inputs-abc", Files: completeFiles}
 
 	t.Run("retries a stalled attempt", func(t *testing.T) {
-		dir, stderr, err := run(t, []string{"stall", "ok"}, "artifact", "inputs-abc", "out")
+		w := newDownloadWorld(t, 42, inputs)
+		stderr, err := w.run(t, []string{"stall", "ok"}, "artifact", "inputs-abc", "out")
 		if err != nil {
 			t.Fatalf("download failed: %v\n%s", err, stderr)
 		}
-		if got := string(mustReadFile(t, filepath.Join(dir, "out", "payload"))); got != "complete" {
-			t.Errorf("payload = %q", got)
-		}
+		w.delivered(t, "out", completeFiles)
 		if !strings.Contains(stderr, "timed out") {
 			t.Errorf("stalled attempt not reported as a timeout:\n%s", stderr)
 		}
 	})
 
 	t.Run("discards a partial attempt", func(t *testing.T) {
-		dir, stderr, err := run(t, []string{"partial", "ok"}, "release", "v1.0.0", "previous")
+		w := newDownloadWorld(t, 42)
+		stderr, err := w.run(t, []string{"partial", "ok"}, "release", "v1.0.0", "previous")
 		if err != nil {
 			t.Fatalf("download failed: %v\n%s", err, stderr)
 		}
-		entries, err := os.ReadDir(filepath.Join(dir, "previous"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "previous", "fragment")); !os.IsNotExist(err) {
-			t.Errorf("destination holds %v; want only the complete attempt's files", entries)
-		}
-		siblings, _ := filepath.Glob(filepath.Join(dir, "previous.*"))
-		if len(siblings) != 0 {
-			t.Errorf("staging directories left behind: %v", siblings)
+		w.delivered(t, "previous", completeFiles)
+		if _, err := os.Stat(filepath.Join(w.dir, "previous", "fragment")); !os.IsNotExist(err) {
+			t.Error("destination holds the partial attempt's fragment")
 		}
 	})
 
 	t.Run("removes a killed attempt's staging", func(t *testing.T) {
-		dir, stderr, err := run(t, []string{"deaf", "ok"}, "artifact", "inputs-abc", "out")
+		w := newDownloadWorld(t, 42, inputs)
+		stderr, err := w.run(t, []string{"deaf", "ok"}, "artifact", "inputs-abc", "out")
 		if err != nil {
 			t.Fatalf("download failed: %v\n%s", err, stderr)
 		}
-		if got := string(mustReadFile(t, filepath.Join(dir, "out", "payload"))); got != "complete" {
-			t.Errorf("payload = %q", got)
-		}
-		siblings, _ := filepath.Glob(filepath.Join(dir, "out.*"))
-		if len(siblings) != 0 {
-			t.Errorf("killed attempt left staging behind: %v", siblings)
-		}
+		w.delivered(t, "out", completeFiles)
 	})
 
 	t.Run("gives up within its attempt budget", func(t *testing.T) {
+		w := newDownloadWorld(t, 7, inputs)
 		started := time.Now()
-		dir, stderr, err := run(t, []string{"stall", "stall", "ok"}, "artifact", "inputs-abc", "out", "7")
+		stderr, err := w.run(t, []string{"stall", "stall", "ok"}, "artifact", "inputs-abc", "out", "7")
 		if err == nil {
 			t.Fatalf("download succeeded after exhausting its attempts:\n%s", stderr)
 		}
@@ -573,47 +668,49 @@ esac
 		if !strings.Contains(stderr, "::error title=Download::hosted-download: artifact inputs-abc from run 7: attempt 2/2 timed out after 1s; giving up") {
 			t.Errorf("failure does not name the artifact and the reason in an error annotation:\n%s", stderr)
 		}
-		if _, err := os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
-			t.Errorf("failed download left a destination: %v", err)
+		w.undelivered(t, "out")
+		if n := w.fetches(t); n != 2 {
+			t.Errorf("fetched the archive %d times; want KATL_DOWNLOAD_ATTEMPTS=2", n)
 		}
-		calls := strings.Count(string(mustReadFile(t, filepath.Join(dir, "calls"))), "\n")
-		if calls != 2 {
-			t.Errorf("gh ran %d times; want KATL_DOWNLOAD_ATTEMPTS=2", calls)
+	})
+
+	t.Run("rejects a truncated archive", func(t *testing.T) {
+		w := newDownloadWorld(t, 42, inputs)
+		stderr, err := w.run(t, []string{"truncated", "truncated"}, "artifact", "inputs-abc", "out")
+		if err == nil {
+			t.Fatalf("download accepted a truncated archive:\n%s", stderr)
+		}
+		w.undelivered(t, "out")
+		if n := w.fetches(t); n != 2 {
+			t.Errorf("fetched the archive %d times; a truncated archive is retried", n)
 		}
 	})
 
 	t.Run("merges into an existing destination", func(t *testing.T) {
-		dir := t.TempDir()
-		writeArtifact(t, mkdirAll(t, filepath.Join(dir, "out", "sub")), "old", "kept")
-		writeArtifact(t, filepath.Join(dir, "out"), "earlier", "kept")
-		_, stderr, err := runIn(t, dir, []string{"ok"}, "artifact", "inputs-abc", "out")
+		w := newDownloadWorld(t, 42, inputs)
+		writeArtifact(t, mkdirAll(t, filepath.Join(w.dir, "out", "sub")), "old", "kept")
+		writeArtifact(t, filepath.Join(w.dir, "out"), "earlier", "kept")
+		stderr, err := w.run(t, []string{"ok"}, "artifact", "inputs-abc", "out")
 		if err != nil {
 			t.Fatalf("download failed: %v\n%s", err, stderr)
 		}
-		for path, want := range map[string]string{"earlier": "kept", "sub/old": "kept", "payload": "complete", "sub/new": "new"} {
-			if got := string(mustReadFile(t, filepath.Join(dir, "out", path))); got != want {
-				t.Errorf("%s = %q, want %q", path, got, want)
-			}
-		}
-		if siblings, _ := filepath.Glob(filepath.Join(dir, "out.*")); len(siblings) != 0 {
-			t.Errorf("staging directories left behind: %v", siblings)
-		}
+		w.delivered(t, "out", map[string]string{"earlier": "kept", "sub/old": "kept", "payload": "complete", "sub/new": "new"})
 	})
 
 	t.Run("refuses to replace an existing file", func(t *testing.T) {
-		dir := t.TempDir()
-		writeArtifact(t, mkdirAll(t, filepath.Join(dir, "out")), "payload", "earlier")
-		_, stderr, err := runIn(t, dir, []string{"ok"}, "artifact", "inputs-abc", "out")
+		w := newDownloadWorld(t, 42, inputs)
+		writeArtifact(t, mkdirAll(t, filepath.Join(w.dir, "out")), "payload", "earlier")
+		stderr, err := w.run(t, []string{"ok"}, "artifact", "inputs-abc", "out")
 		if err == nil {
 			t.Fatalf("download replaced an existing file:\n%s", stderr)
 		}
 		if !strings.Contains(stderr, "::error") || !strings.Contains(stderr, "out/payload") {
 			t.Errorf("failure does not name the colliding path in an error annotation:\n%s", stderr)
 		}
-		if got := string(mustReadFile(t, filepath.Join(dir, "out", "payload"))); got != "earlier" {
+		if got := string(mustReadFile(t, filepath.Join(w.dir, "out", "payload"))); got != "earlier" {
 			t.Errorf("payload = %q, want the earlier file", got)
 		}
-		if _, err := os.Stat(filepath.Join(dir, "out", "sub")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(w.dir, "out", "sub")); !os.IsNotExist(err) {
 			t.Errorf("a refused download merged part of its files: %v", err)
 		}
 	})
@@ -621,20 +718,87 @@ esac
 	t.Run("asks gh for the named subject", func(t *testing.T) {
 		for _, tc := range []struct {
 			args []string
-			want string
+			want []string
 		}{
-			{[]string{"artifact", "inputs-abc", "out"}, "run download 42 --repo katl-dev/katl --name inputs-abc --dir "},
-			{[]string{"artifact", "inputs-abc", "out", "7"}, "run download 7 --repo katl-dev/katl --name inputs-abc --dir "},
-			{[]string{"artifacts", "katl-qualified-*", "out"}, "run download 42 --repo katl-dev/katl --pattern katl-qualified-* --dir "},
-			{[]string{"release", "v1.0.0", "out"}, "release download v1.0.0 --repo katl-dev/katl --dir "},
-			{[]string{"release", "v1.0.0", "out", "SHA256SUMS"}, "release download v1.0.0 --repo katl-dev/katl --pattern SHA256SUMS --dir "},
+			{[]string{"artifact", "inputs-abc", "out"}, []string{"api --paginate repos/katl-dev/katl/actions/runs/42/artifacts?per_page=100", "api repos/katl-dev/katl/actions/artifacts/99/zip"}},
+			{[]string{"artifact", "inputs-abc", "out", "7"}, []string{"api --paginate repos/katl-dev/katl/actions/runs/7/artifacts?per_page=100", "api repos/katl-dev/katl/actions/artifacts/99/zip"}},
+			{[]string{"release", "v1.0.0", "out"}, []string{"release download v1.0.0 --repo katl-dev/katl --dir "}},
+			{[]string{"release", "v1.0.0", "out", "SHA256SUMS"}, []string{"release download v1.0.0 --repo katl-dev/katl --pattern SHA256SUMS --dir "}},
 		} {
-			dir, stderr, err := run(t, []string{"ok"}, tc.args...)
+			w := newDownloadWorld(t, 42, inputs)
+			stderr, err := w.run(t, []string{"ok"}, tc.args...)
 			if err != nil {
 				t.Fatalf("%v: %v\n%s", tc.args, err, stderr)
 			}
-			if calls := string(mustReadFile(t, filepath.Join(dir, "calls"))); !strings.HasPrefix(calls, tc.want) {
-				t.Errorf("%v: gh %q; want prefix %q", tc.args, calls, tc.want)
+			for _, want := range tc.want {
+				if calls := w.calls(t); !strings.Contains(calls, want) {
+					t.Errorf("%v: gh %q; want a call %q", tc.args, calls, want)
+				}
+			}
+		}
+	})
+
+	t.Run("fails when no artifact matches", func(t *testing.T) {
+		w := newDownloadWorld(t, 42, fakeArtifact{ID: 5, Name: "other", Files: completeFiles})
+		stderr, err := w.run(t, []string{"ok", "ok"}, "artifact", "inputs-abc", "out")
+		if err == nil {
+			t.Fatalf("download succeeded without the artifact:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "no unexpired artifact matching inputs-abc") {
+			t.Errorf("failure does not say the artifact is missing:\n%s", stderr)
+		}
+		w.undelivered(t, "out")
+	})
+}
+
+// TestHostedDownloadSelection holds name and pattern downloads to
+// actions/download-artifact's rule: each name selects its newest unexpired
+// artifact in the run, whatever order the run lists them in, so a re-run
+// attempt gets its own artifact rather than an earlier attempt's.
+func TestHostedDownloadSelection(t *testing.T) {
+	earlier := fakeArtifact{ID: 10, Name: "inputs-abc", Created: "2026-11-28T01:00:00Z", Files: map[string]string{"payload": "earlier attempt"}}
+	newest := fakeArtifact{ID: 11, Name: "inputs-abc", Created: "2026-11-28T02:00:00Z", Files: map[string]string{"payload": "newest attempt"}}
+
+	t.Run("by name", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			artifacts []fakeArtifact
+			want      string
+		}{
+			{"earlier listed first", []fakeArtifact{earlier, newest}, "newest attempt"},
+			{"newest listed first", []fakeArtifact{newest, earlier}, "newest attempt"},
+			{"same time, higher ID wins", []fakeArtifact{
+				{ID: 21, Name: "inputs-abc", Created: "2026-11-28T03:00:00Z", Files: map[string]string{"payload": "higher ID"}},
+				{ID: 20, Name: "inputs-abc", Created: "2026-11-28T03:00:00Z", Files: map[string]string{"payload": "lower ID"}},
+			}, "higher ID"},
+			{"newest expired", []fakeArtifact{earlier, newest, {ID: 12, Name: "inputs-abc", Created: "2026-11-28T04:00:00Z", Expired: true, Files: map[string]string{"payload": "expired"}}}, "newest attempt"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				w := newDownloadWorld(t, 42, tc.artifacts...)
+				stderr, err := w.run(t, []string{"ok"}, "artifact", "inputs-abc", "out")
+				if err != nil {
+					t.Fatalf("download failed: %v\n%s", err, stderr)
+				}
+				w.delivered(t, "out", map[string]string{"payload": tc.want})
+			})
+		}
+	})
+
+	t.Run("by pattern", func(t *testing.T) {
+		lts := fakeArtifact{ID: 30, Name: "inputs-lts", Created: "2026-11-28T01:30:00Z", Files: map[string]string{"payload": "lts"}}
+		unmatched := fakeArtifact{ID: 40, Name: "other", Files: map[string]string{"payload": "other"}}
+		for _, order := range [][]fakeArtifact{{earlier, lts, newest, unmatched}, {newest, unmatched, lts, earlier}} {
+			w := newDownloadWorld(t, 42, order...)
+			stderr, err := w.run(t, []string{"ok", "ok"}, "artifacts", "inputs-*", "out")
+			if err != nil {
+				t.Fatalf("download failed: %v\n%s", err, stderr)
+			}
+			w.delivered(t, "out", map[string]string{"inputs-abc/payload": "newest attempt", "inputs-lts/payload": "lts"})
+			if _, err := os.Stat(filepath.Join(w.dir, "out", "other")); !os.IsNotExist(err) {
+				t.Errorf("delivered an artifact the pattern does not match: %v", err)
+			}
+			if n := w.fetches(t); n != 2 {
+				t.Errorf("fetched %d archives; want one per matching name", n)
 			}
 		}
 	})
@@ -643,111 +807,40 @@ esac
 // TestHostedDownloadByID covers --id, which binds a download to one artifact
 // of one run and checks that the artifact is the one the caller named.
 func TestHostedDownloadByID(t *testing.T) {
-	script := filepath.Join(repoRoot(t), ".github", "scripts", "hosted-download")
 	if _, err := exec.LookPath("unzip"); err != nil {
 		t.Fatal("unzip is required: run the tests in the development shell")
 	}
-
-	// The fake gh answers metadata requests with artifact.json and behaves per
-	// zip request as listed in its plan file: "ok" sends the whole archive,
-	// "partial" sends a fragment and fails, and "deaf" sends a fragment and
-	// hangs ignoring SIGTERM, so only SIGKILL ends it.
-	run := func(t *testing.T, metadata string, plan []string, args ...string) (string, string, error) {
-		t.Helper()
-		dir := t.TempDir()
-		bin := mkdirAll(t, filepath.Join(dir, "bin"))
-		writeArtifact(t, dir, "plan", strings.Join(plan, "\n")+"\n")
-		writeArtifact(t, dir, "artifact.json", metadata)
-		writeZip(t, filepath.Join(dir, "artifact.zip"), map[string]string{"payload": "complete", "sub/new": "new"})
-		writeFakeExecutable(t, bin, "gh", `state=`+dir+`
-printf '%s\n' "$*" >> "$state/calls"
-case "$2" in
-    */zip)
-        n=$(grep -c '/zip$' "$state/calls")
-        case "$(sed -n "${n}p" "$state/plan")" in
-            ok) cat "$state/artifact.zip" ;;
-            partial) head -c 20 "$state/artifact.zip"; exit 1 ;;
-            deaf) trap '' TERM; head -c 20 "$state/artifact.zip"; sleep 60 ;;
-        esac ;;
-    *) cat "$state/artifact.json" ;;
-esac
-`)
-		cmd := exec.Command(script, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"PATH="+bin+":"+os.Getenv("PATH"),
-			"GITHUB_ACTIONS=true",
-			"GITHUB_REPOSITORY=katl-dev/katl",
-			"GITHUB_RUN_ID=42",
-			"KATL_DOWNLOAD_ATTEMPTS=2",
-			"KATL_DOWNLOAD_ATTEMPT_SECONDS=1",
-			"KATL_DOWNLOAD_KILL_AFTER_SECONDS=1",
-			"KATL_DOWNLOAD_BACKOFF_SECONDS=0",
-		)
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
-		err := cmd.Run()
-		return dir, stderr.String(), err
-	}
-	const metadata = `{"id": 99, "name": "inputs-abc", "workflow_run": {"id": 7}}`
+	inputs := fakeArtifact{ID: 99, Name: "inputs-abc", Files: completeFiles}
 	args := []string{"--id", "99", "artifact", "inputs-abc", "out", "7"}
-	calls := func(t *testing.T, dir string) string {
-		t.Helper()
-		data, err := os.ReadFile(filepath.Join(dir, "calls"))
-		if os.IsNotExist(err) {
-			return ""
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(data)
-	}
-	delivered := func(t *testing.T, dir string) {
-		t.Helper()
-		for path, want := range map[string]string{"payload": "complete", "sub/new": "new"} {
-			if got := string(mustReadFile(t, filepath.Join(dir, "out", path))); got != want {
-				t.Errorf("%s = %q, want %q", path, got, want)
-			}
-		}
-		if siblings, _ := filepath.Glob(filepath.Join(dir, "out.*")); len(siblings) != 0 {
-			t.Errorf("staging directories left behind: %v", siblings)
-		}
-	}
-	undelivered := func(t *testing.T, dir string) {
-		t.Helper()
-		if _, err := os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
-			t.Errorf("failed download left a destination: %v", err)
-		}
-		if siblings, _ := filepath.Glob(filepath.Join(dir, "out.*")); len(siblings) != 0 {
-			t.Errorf("staging directories left behind: %v", siblings)
-		}
-	}
 
 	t.Run("delivers the artifact with that ID", func(t *testing.T) {
-		dir, stderr, err := run(t, metadata, []string{"ok"}, args...)
+		w := newDownloadWorld(t, 7, inputs)
+		stderr, err := w.run(t, []string{"ok"}, args...)
 		if err != nil {
 			t.Fatalf("download failed: %v\n%s", err, stderr)
 		}
-		delivered(t, dir)
-		if got := calls(t, dir); !strings.Contains(got, "api repos/katl-dev/katl/actions/artifacts/99/zip\n") {
+		w.delivered(t, "out", completeFiles)
+		if got := w.calls(t); !strings.Contains(got, "api repos/katl-dev/katl/actions/artifacts/99/zip\n") {
 			t.Errorf("gh calls %q do not fetch artifact 99", got)
 		}
 	})
 
 	t.Run("retries a failed attempt", func(t *testing.T) {
-		dir, stderr, err := run(t, metadata, []string{"partial", "ok"}, args...)
+		w := newDownloadWorld(t, 7, inputs)
+		stderr, err := w.run(t, []string{"partial", "ok"}, args...)
 		if err != nil {
 			t.Fatalf("download failed: %v\n%s", err, stderr)
 		}
-		delivered(t, dir)
+		w.delivered(t, "out", completeFiles)
 		if !strings.Contains(stderr, "attempt 1/2 exited") {
 			t.Errorf("failed attempt not reported:\n%s", stderr)
 		}
 	})
 
 	t.Run("delivers nothing from killed attempts", func(t *testing.T) {
+		w := newDownloadWorld(t, 7, inputs)
 		started := time.Now()
-		dir, stderr, err := run(t, metadata, []string{"deaf", "deaf"}, args...)
+		stderr, err := w.run(t, []string{"deaf", "deaf"}, args...)
 		if err == nil {
 			t.Fatalf("download succeeded after its attempts were killed:\n%s", stderr)
 		}
@@ -757,28 +850,39 @@ esac
 		if !strings.Contains(stderr, "hosted-download: artifact 99 (inputs-abc) from run 7: attempt 2/2 timed out") {
 			t.Errorf("failure does not name the artifact and the timeout:\n%s", stderr)
 		}
-		undelivered(t, dir)
+		w.undelivered(t, "out")
 	})
 
-	t.Run("refuses an artifact the caller did not name", func(t *testing.T) {
+	t.Run("fails once on an artifact it cannot have", func(t *testing.T) {
 		for _, tc := range []struct {
-			name, metadata, want string
+			name, id, want string
+			run            int
+			artifact       fakeArtifact
+			plan           []string
+			fetches        int
 		}{
-			{"other name", `{"name": "inputs-def", "workflow_run": {"id": 7}}`, "the ID names inputs-def from run 7"},
-			{"other run", `{"name": "inputs-abc", "workflow_run": {"id": 8}}`, "the ID names inputs-abc from run 8"},
+			{"other name", "99", "the ID names inputs-def from run 7", 7, fakeArtifact{ID: 99, Name: "inputs-def", Files: completeFiles}, []string{"ok", "ok"}, 0},
+			{"other run", "99", "the ID names inputs-abc from run 8", 8, inputs, []string{"ok", "ok"}, 0},
+			{"expired", "99", "artifact 99 has expired", 7, fakeArtifact{ID: 99, Name: "inputs-abc", Expired: true, Files: completeFiles}, []string{"ok", "ok"}, 0},
+			{"missing", "98", "artifact 98 does not exist", 7, inputs, []string{"ok", "ok"}, 0},
+			{"archive gone", "99", "artifact 99 is missing or has expired", 7, inputs, []string{"gone", "ok"}, 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				dir, stderr, err := run(t, tc.metadata, []string{"ok", "ok"}, args...)
+				w := newDownloadWorld(t, tc.run, tc.artifact)
+				stderr, err := w.run(t, tc.plan, "--id", tc.id, "artifact", "inputs-abc", "out", "7")
 				if err == nil {
-					t.Fatalf("download accepted %s:\n%s", tc.metadata, stderr)
+					t.Fatalf("download succeeded:\n%s", stderr)
 				}
 				if !strings.Contains(stderr, "::error") || !strings.Contains(stderr, tc.want) {
 					t.Errorf("failure does not report %q in an error annotation:\n%s", tc.want, stderr)
 				}
-				if n := strings.Count(calls(t, dir), "/zip\n"); n != 1 {
-					t.Errorf("fetched the archive %d times; a wrong ID is not retried", n)
+				if strings.Contains(stderr, "attempt 2/2") {
+					t.Errorf("a permanent failure was retried:\n%s", stderr)
 				}
-				undelivered(t, dir)
+				if n := w.fetches(t); n != tc.fetches {
+					t.Errorf("fetched the archive %d times; want %d", n, tc.fetches)
+				}
+				w.undelivered(t, "out")
 			})
 		}
 	})
@@ -791,12 +895,13 @@ esac
 			{"--id", "inputs-abc", "artifact", "inputs-abc", "out", "7"},
 			{"--id", "99", "artifact", "inputs-abc", "out", "7", "extra"},
 		} {
-			dir, stderr, err := run(t, metadata, []string{"ok"}, tc...)
+			w := newDownloadWorld(t, 7, inputs)
+			stderr, err := w.run(t, []string{"ok"}, tc...)
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != 2 {
 				t.Errorf("%v: err %v; want usage error (exit 2)\n%s", tc, err, stderr)
 			}
-			if got := calls(t, dir); got != "" {
+			if got := w.calls(t); got != "" {
 				t.Errorf("%v: called gh %q", tc, got)
 			}
 		}

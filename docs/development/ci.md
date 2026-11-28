@@ -204,6 +204,21 @@ wherever it runs a caller. The setup-tools action runs before the ci shell
 provides Go, so it cannot call `internal/retry` either; its callers use full
 checkouts.
 
+### Artifact and release downloads
+
+Every workflow downloads artifacts and release assets through
+`.github/scripts/hosted-download`, never `actions/download-artifact` or a direct
+`gh run download` or `gh release download`, so each download has a bounded
+attempt, retries and fits its step's budget; `TestWorkflowBudgets` enforces
+this. By name or pattern, each name selects its newest unexpired artifact in
+the run, ties going to the higher ID, which is the rule
+`actions/download-artifact` applies, so a re-run attempt downloads its own
+artifacts rather than an earlier attempt's. A caller that must use a specific
+earlier attempt's artifact, such as a resumed release candidate, passes the
+artifact's ID with `--id`; the artifact must carry the expected name and
+belong to the given run. An ID that does not exist, has expired or names
+another artifact fails once, without retrying.
+
 ## Nix setup
 
 Every job that installs Nix does so through the

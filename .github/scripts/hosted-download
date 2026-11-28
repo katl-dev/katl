@@ -7,17 +7,22 @@
 #   hosted-download artifacts PATTERN DEST [RUN_ID]
 #   hosted-download release TAG DEST [PATTERN]
 #
-# An artifact's files land directly in DEST. With --id, the artifact is the
-# one with that ID, which must be named NAME and belong to run RUN_ID: names
-# can recur across the attempts of one run, IDs cannot. Every artifact
+# RUN_ID defaults to this run. By name or pattern, each name selects its
+# newest unexpired artifact in the run, as actions/download-artifact does, so
+# a re-run attempt gets its own artifacts rather than an earlier attempt's.
+# With --id, the artifact is the one with that ID, which must be named NAME
+# and belong to run RUN_ID: callers that bind an earlier attempt's artifacts
+# pass their IDs. An artifact's files land directly in DEST; every artifact
 # matching PATTERN lands in DEST/<artifact name>, as actions/download-artifact
 # places them. DEST may already exist: a completed download is merged into
 # it, and the owner fails rather than replace a path that is already there.
 #
-# scripts/retry bounds each attempt and allows five seconds by default
-# before SIGKILL. The default backoff starts at 1/24 of the attempt limit.
-# The three-attempt step budgets are 20 minutes for 360-second attempts,
-# 10 for 180 and 5 for 60.
+# scripts/retry bounds each attempt, which selects and downloads everything
+# the call asks for, and allows five seconds by default before SIGKILL. The
+# default backoff starts at 1/24 of the attempt limit. The three-attempt step
+# budgets are 20 minutes for 360-second attempts, 10 for 180 and 5 for 60.
+# An ID that does not exist, has expired or names another artifact fails
+# once, without retrying.
 set -euo pipefail
 
 usage() {
@@ -40,21 +45,84 @@ if [[ "${1:-}" == --attempt ]]; then
     exec "$@" --dir "$staging"
 fi
 
-# One attempt of an --id download: the artifact's metadata goes to META for
-# the parent to check once the attempt succeeds, and its files to STAGING.
-if [[ "${1:-}" == --attempt-id ]]; then
-    staging=$2 meta=$3 repo=$4 id=$5
+# One attempt of an artifact download: --attempt-artifacts STAGING PERMANENT
+# REPO RUN_ID (id ID NAME | name NAME | pattern PATTERN). A failure that a
+# retry cannot change is written to PERMANENT and the attempt succeeds, so
+# the parent fails once instead of retrying.
+if [[ "${1:-}" == --attempt-artifacts ]]; then
+    staging=$2 permanent=$3 repo=$4 run_id=$5 selector=$6 subject=$7
     # Bash runs this trap only after the running command exits, so the
     # attempt outlives a gh that ignores SIGTERM and timeout's SIGKILL still
     # reaches both; exiting at once would orphan gh past the attempt limit.
     trap 'exit 143' TERM
-    rm -rf -- "$staging" "$meta" "$staging.zip"
+    rm -rf -- "$staging" "$permanent" "$staging.err" "$staging.status" "$staging.zip"
     mkdir -- "$staging"
-    gh api "repos/$repo/actions/artifacts/$id" > "$meta"
-    gh api "repos/$repo/actions/artifacts/$id/zip" > "$staging.zip"
-    unzip -q -d "$staging" "$staging.zip"
-    rm -f -- "$staging.zip"
-    exit
+
+    permanently() {
+        printf '%s\n' "$*" > "$permanent"
+        exit 0
+    }
+    # gh api reports the HTTP status as "(HTTP 404)" on stderr.
+    api() {
+        local status=0
+        gh api "$@" 2> "$staging.err" || status=$?
+        if ((status != 0)); then
+            cat -- "$staging.err" >&2
+            grep -Eo 'HTTP [0-9]{3}' "$staging.err" | tail -n 1 > "$staging.status" || true
+        fi
+        return "$status"
+    }
+    fetch() {
+        local id=$1 into=$2 status=0
+        api "repos/$repo/actions/artifacts/$id/zip" > "$staging.zip" || status=$?
+        if ((status != 0)); then
+            case "$(cat -- "$staging.status" 2> /dev/null)" in
+                'HTTP 404' | 'HTTP 410') permanently "artifact $id is missing or has expired" ;;
+            esac
+            exit "$status"
+        fi
+        mkdir -p -- "$into"
+        unzip -q -d "$into" "$staging.zip"
+        rm -f -- "$staging.zip"
+    }
+
+    if [[ "$selector" == id ]]; then
+        id=$subject name=$8 status=0
+        metadata="$(api "repos/$repo/actions/artifacts/$id")" || status=$?
+        if ((status != 0)); then
+            [[ "$(cat -- "$staging.status" 2> /dev/null)" != 'HTTP 404' ]] || permanently "artifact $id does not exist"
+            exit "$status"
+        fi
+        found="$(jq -r '"\(.name) from run \(.workflow_run.id)"' <<< "$metadata")"
+        [[ "$found" == "$name from run $run_id" ]] || permanently "the ID names $found"
+        [[ "$(jq -r '.expired' <<< "$metadata")" != true ]] || permanently "artifact $id has expired"
+        fetch "$id" "$staging"
+        exit 0
+    fi
+
+    # The newest unexpired artifact of each name wins, ties going to the
+    # higher ID, which is how actions/download-artifact selects within a run.
+    listing="$(api --paginate "repos/$repo/actions/runs/$run_id/artifacts?per_page=100")"
+    chosen=()
+    while IFS=$'\t' read -r name _ id; do
+        # shellcheck disable=SC2053 # A pattern matches as a glob.
+        if [[ "$selector" == name && "$name" == "$subject" || "$selector" == pattern && "$name" == $subject ]]; then
+            chosen+=("$id" "$name")
+        fi
+    done < <(jq -rs '.[].artifacts[] | select(.expired | not) | [.name, .created_at, .id] | @tsv' <<< "$listing" |
+        sort -t $'\t' -k1,1 -k2,2r -k3,3nr | sort -t $'\t' -k1,1 -u -s)
+    if ((${#chosen[@]} == 0)); then
+        echo "run $run_id has no unexpired artifact matching $subject" >&2
+        exit 1
+    fi
+    if [[ "$selector" == name ]]; then
+        fetch "${chosen[0]}" "$staging"
+    else
+        for ((i = 0; i < ${#chosen[@]}; i += 2)); do
+            fetch "${chosen[i]}" "$staging/${chosen[i + 1]}"
+        done
+    fi
+    exit 0
 fi
 
 artifact_id=""
@@ -75,12 +143,13 @@ case "$kind" in
         run_id=${4:-${GITHUB_RUN_ID:?}}
         if [[ -n "$artifact_id" ]]; then
             what="artifact $artifact_id ($subject) from run $run_id"
+            select=(id "$artifact_id" "$subject")
         elif [[ "$kind" == artifact ]]; then
             what="artifact $subject from run $run_id"
-            select=(--name "$subject")
+            select=(name "$subject")
         else
             what="artifacts matching $subject from run $run_id"
-            select=(--pattern "$subject")
+            select=(pattern "$subject")
         fi
         ;;
     release)
@@ -132,13 +201,13 @@ deliver() {
 
 scratch=$(mktemp -d "$dest.attempt-XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
-if [[ -n "$artifact_id" ]]; then
-    command -v unzip >/dev/null || fail 'unzip is not installed on this runner'
-    attempt=("${BASH_SOURCE[0]}" --attempt-id "$scratch/download" "$scratch/artifact.json" "$repo" "$artifact_id")
-elif [[ "$kind" == release ]]; then
+if [[ "$kind" == release ]]; then
     attempt=("${BASH_SOURCE[0]}" --attempt "$scratch/download" gh release download "$subject" --repo "$repo" "${select[@]}")
 else
-    attempt=("${BASH_SOURCE[0]}" --attempt "$scratch/download" gh run download "$run_id" --repo "$repo" "${select[@]}")
+    for tool in jq unzip; do
+        command -v "$tool" >/dev/null || fail "$tool is not installed on this runner"
+    done
+    attempt=("${BASH_SOURCE[0]}" --attempt-artifacts "$scratch/download" "$scratch/permanent" "$repo" "$run_id" "${select[@]}")
 fi
 
 "$(dirname -- "${BASH_SOURCE[0]}")/../../scripts/retry" \
@@ -148,11 +217,7 @@ fi
     --backoff "$backoff" \
     --title 'Download' --what "hosted-download: $what" \
     -- "${attempt[@]}"
-# A wrong ID is the caller's error, not a transient one, so it is checked
-# once after the download rather than retried, and nothing is delivered.
-if [[ -n "$artifact_id" ]]; then
-    found="$(jq -r '"\(.name) from run \(.workflow_run.id)"' "$scratch/artifact.json")" ||
-        fail 'the artifact metadata is unreadable'
-    [[ "$found" == "$subject from run $run_id" ]] || fail "the ID names $found"
+if [[ -e "$scratch/permanent" ]]; then
+    fail "$(cat -- "$scratch/permanent")"
 fi
 deliver "$scratch/download"
