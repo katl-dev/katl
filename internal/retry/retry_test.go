@@ -137,3 +137,44 @@ func TestAwaitLastObservation(t *testing.T) {
 		})
 	}
 }
+
+func TestAwaitConverges(t *testing.T) {
+	// A read after a write can miss the new state, then see an old value,
+	// before it sees the write. Only a matching observation ends the wait,
+	// and only a transient error is read again.
+	notFound := errors.New("not found")
+	permanent := errors.New("forbidden")
+	for _, tc := range []struct {
+		name         string
+		observations []any
+		want         string
+		err          error
+		attempts     int
+	}{
+		{name: "missing then stale then fresh", observations: []any{notFound, "stale", "fresh"}, want: "fresh", attempts: 3},
+		{name: "permanent error", observations: []any{permanent, "fresh"}, err: permanent, attempts: 1},
+		{name: "permanent after stale", observations: []any{"stale", permanent, "fresh"}, want: "stale", err: permanent, attempts: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				b := NewBackoff(time.Second, 2*time.Second)
+				attempts := 0
+
+				got, err := Await(ctx, &b, func(context.Context) (string, bool, error) {
+					observation := tc.observations[attempts]
+					attempts++
+					if err, ok := observation.(error); ok {
+						return "", false, err
+					}
+					return observation.(string), observation == "fresh", nil
+				}, func(err error) bool { return errors.Is(err, notFound) })
+
+				if got != tc.want || err != tc.err || attempts != tc.attempts {
+					t.Fatalf("Await = (%q, %v) after %d observations, want (%q, %v) after %d", got, err, attempts, tc.want, tc.err, tc.attempts)
+				}
+			})
+		})
+	}
+}
