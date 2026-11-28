@@ -1712,3 +1712,31 @@ func TestVMPlanGraphicsAddsLocalVNCDisplay(t *testing.T) {
 		t.Errorf("domain without graphics has a display:\n%s", without)
 	}
 }
+
+func TestSerialTail(t *testing.T) {
+	serialLog := filepath.Join(t.TempDir(), "runtime-serial.log")
+	if err := os.WriteFile(serialLog, []byte("first line\nsecond line\nthird line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	note := "(serial tail truncated; full serial log: " + serialLog + ")"
+
+	tests := []struct {
+		name     string
+		maxLines int
+		maxBytes int
+		want     string
+	}{
+		{"whole log", 10, 4000, "first line\nsecond line\nthird line"},
+		{"line limit", 2, 4000, note + "\nsecond line\nthird line"},
+		{"byte limit mid-line", 10, 15, note + "\nthird line"},
+		{"byte limit at line start", 10, 10, note + "\nthird line"},
+		{"byte limit inside the last line", 10, 5, note},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serialTail(serialLog, tc.maxLines, tc.maxBytes); got != tc.want {
+				t.Errorf("serialTail() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

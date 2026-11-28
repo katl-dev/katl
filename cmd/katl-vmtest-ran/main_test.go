@@ -110,3 +110,51 @@ func TestParseOutcomesAfterUnterminatedOutput(t *testing.T) {
 		t.Errorf("outcomes = %v, want TestA to pass", got)
 	}
 }
+
+func TestWriteSummary(t *testing.T) {
+	tests := []struct {
+		name string
+		log  string
+		want string
+	}{
+		{
+			name: "json events",
+			log: `{"Action":"run","Test":"TestWorkerReaddress"}
+{"Action":"output","Test":"TestWorkerReaddress/drain","Output":"    --- PASS: TestWorkerReaddress/drain (12.30s)\n"}
+{"Action":"pass","Test":"TestWorkerReaddress/drain","Elapsed":12.3}
+{"Action":"output","Test":"TestWorkerReaddress","Output":"--- FAIL: TestWorkerReaddress (438.02s)\n"}
+{"Action":"fail","Test":"TestWorkerReaddress","Elapsed":438.02}
+{"Action":"skip","Test":"TestOther","Elapsed":0}
+{"Action":"fail","Package":"example/pkg","Elapsed":440}
+`,
+			want: "    --- PASS: TestWorkerReaddress/drain (12.30s)\n--- FAIL: TestWorkerReaddress (438.02s)\n--- SKIP: TestOther (0.00s)\n",
+		},
+		{
+			name: "text output",
+			log:  "=== RUN   TestA\n    --- PASS: TestA/sub (0.50s)\nsshd-session[335]: Recei--- FAIL: TestA (1.25s)\nFAIL\n",
+			want: "    --- PASS: TestA/sub (0.50s)\n--- FAIL: TestA (1.25s)\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got strings.Builder
+			if err := writeSummary(&got, strings.NewReader(tc.log)); err != nil {
+				t.Fatal(err)
+			}
+			if got.String() != tc.want {
+				t.Errorf("summary =\n%s\nwant\n%s", got.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestParseOutcomesIgnoresQuotedResults(t *testing.T) {
+	// TestA prints a header for a test that never ran.
+	log := `{"Action":"output","Test":"TestA","Output":"--- PASS: TestGone (1.00s)\n"}` + "\n" +
+		`{"Action":"fail","Test":"TestA","Elapsed":1}` + "\n"
+
+	got := parseOutcomes(strings.NewReader(log))
+	if len(got) != 1 || got["TestA"] != "fail" {
+		t.Errorf("outcomes = %v, want only TestA failing", got)
+	}
+}
