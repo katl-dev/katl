@@ -217,6 +217,27 @@ adds these recommended Bash allow rules.
 
 [tmpfiles.d reference](https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html)
 
+## Check runtime build reproducibility
+
+From the checkout you want to verify, run the comparison with the regular
+mkosi builder and development shell.
+
+```sh
+nix develop --option builders '' -c scripts/check-runtime-reproducibility
+```
+
+The check uses the HEAD commit time as `SOURCE_DATE_EPOCH` unless you set it.
+It clears the incremental image cache in a dedicated directory under `_build`,
+builds the runtime root twice with identical arguments, and verifies that the
+second build reuses the first build's cache. A difference in file contents,
+paths, modes, numeric owners, modification times, or link targets fails the
+check and prints a diff. The printed directory holds both manifests, both build
+logs, and the build outputs.
+
+The wrapper uses `image-cache` for its default incremental cache. If you set
+`KATL_MKOSI_CACHE_DIR` to a cache used by an older wrapper, use a fresh directory
+or run `scripts/mkosi runtime -f clean` before rebuilding the runtime there.
+
 ## `vmtest-run`
 
 Run enabled installer, installed-runtime, and Kubernetes scenarios through

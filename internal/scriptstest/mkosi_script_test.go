@@ -34,6 +34,71 @@ func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 	}
 }
 
+func TestMkosiPreservesCachedTreeModes(t *testing.T) {
+	repo := scriptRepoFixture(t)
+	bin := t.TempDir()
+	buildDir := filepath.Join(repo, "_build", "mkosi")
+	writeFakeExecutable(t, bin, "podman", `
+if [[ "$1" == image ]]; then exit 0; fi
+while [[ "$1" != bash ]]; do
+  if [[ "$1" == --volume ]]; then
+    case "$2" in
+      *:/mkosi-cache) export cache="${2%:/mkosi-cache}" ;;
+      *:/mkosi-package-cache) package_cache="${2%:/mkosi-package-cache}" ;;
+    esac
+    shift
+  fi
+  shift
+done
+# Run the wrapper's real container body against the fixture's host paths.
+program="$3"
+program="${program//\/mkosi-build/$build}"
+program="${program//\/mkosi-cache/$cache}"
+program="${program//\/mkosi-package-cache/$package_cache}"
+program="${program//\/work\//$PWD/}"
+exec bash -c "$program" bash "${@:4}"
+`)
+	writeFakeExecutable(t, bin, "mkosi", `
+tree="$cache/runtime.cache"
+if [[ ! -d "$tree" ]]; then
+  mkdir -p "$tree/usr/lib64" "$tree/root"
+  chmod 0555 "$tree/usr/lib64"
+  chmod 0700 "$tree/root"
+fi
+cp -a "$tree" "$build/katl-runtime-root"
+`)
+	// The fake builder does not need modules or the package installation.
+	writeFakeExecutable(t, bin, "go", `exit 0`)
+	env := append(gittest.Env(os.Environ(), repo),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_IMAGE=fixture",
+		"KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_MKOSI_CACHE_DIR=", "KATL_MKOSI_PACKAGE_CACHE_DIR=",
+		"KATL_BUILD_RUNTIME_RPMS=0", "KATL_MKOSI_LOCK_FD=", "build="+buildDir)
+
+	for _, phase := range []string{"fresh", "cached"} {
+		// Use the generic build path to exercise the same post-build permission pass.
+		cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "-f", "build")
+		cmd.Dir, cmd.Env = repo, env
+		output, err := runInGroup(t, cmd, scriptTimeout)
+		if err != nil {
+			t.Fatalf("%s build: %v\n%s", phase, err, output)
+		}
+		root := filepath.Join(buildDir, "katl-runtime-root")
+		for path, mode := range map[string]os.FileMode{"usr/lib64": 0o555, "root": 0o700} {
+			info, err := os.Stat(filepath.Join(root, path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != mode {
+				t.Errorf("%s /%s mode = %04o, want %04o", phase, path, got, mode)
+			}
+		}
+		if err := os.Rename(root, filepath.Join(buildDir, phase)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestMkosiRuntimeCacheUsesIncludedBinaryIdentity(t *testing.T) {
 	repo := scriptRepoFixture(t)
 	tmp := t.TempDir()
@@ -467,7 +532,7 @@ printf '%s\n' "$@" >> "$KATL_FAKE_PODMAN_ARGS.detail"
 		t.Fatalf("workspace configuration change did not rebuild: calls=%d", got)
 	}
 	invocations := string(mustReadFile(t, calls+".detail"))
-	if !strings.Contains(invocations, "KATL_FLAVOUR=lts") || !strings.Contains(invocations, "cache-lts:/mkosi-cache") {
+	if !strings.Contains(invocations, "KATL_FLAVOUR=lts") || !strings.Contains(invocations, "image-cache-lts:/mkosi-cache") {
 		t.Fatalf("LTS kernel selection/cache was not passed to builder: %s", invocations)
 	}
 }

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+manifest=katl-runtime.tree
+if [[ "${KATL_RUNTIME_TREE_MANIFEST:-}" == 1 ]]; then
+    # Snapshot inside the builder so private files and numeric image owners are visible.
+    output="$(jq -er '.Output' "${MKOSI_CONFIG:?}")"
+    cd "${OUTPUTDIR:?}/$output"
+    python3 - >"$OUTPUTDIR/$manifest" <<'PY'
+import hashlib
+import json
+import os
+import stat
+from pathlib import Path
+
+hardlinks = {}
+
+
+def record(path):
+    info = path.lstat()
+    entry = {
+        "path": str(path),
+        "mode": f"{info.st_mode:06o}",
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "mtime_ns": info.st_mtime_ns,
+    }
+    if stat.S_ISREG(info.st_mode):
+        if info.st_nlink > 1:
+            first = hardlinks.setdefault((info.st_dev, info.st_ino), str(path))
+            if first != str(path):
+                entry["hardlink"] = first
+        if "hardlink" not in entry:
+            with path.open("rb") as file:
+                entry["sha256"] = hashlib.file_digest(file, "sha256").hexdigest()
+    elif stat.S_ISLNK(info.st_mode):
+        entry["target"] = os.readlink(path)
+    elif stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode):
+        entry["device"] = [os.major(info.st_rdev), os.minor(info.st_rdev)]
+
+    print(json.dumps(entry))
+    if stat.S_ISDIR(info.st_mode):
+        for child in sorted(path.iterdir()):
+            record(child)
+
+
+record(Path("."))
+PY
+    exit
+fi
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$repo_root"
+mkdir -p _build
+export KATL_MKOSI_BUILD_DIR
+KATL_MKOSI_BUILD_DIR="$(mktemp -d "$repo_root/_build/runtime-reproducibility.XXXXXX")"
+unset KATL_MKOSI_CACHE_DIR
+export SOURCE_DATE_EPOCH
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}"
+echo "Runtime reproducibility evidence in $KATL_MKOSI_BUILD_DIR"
+
+# Clear the incremental image with mkosi's forced clean. Use identical build
+# arguments for both runs because scripts/mkosi derives the seed from them.
+scripts/mkosi runtime -f clean
+build=(scripts/mkosi runtime -f --environment KATL_RUNTIME_TREE_MANIFEST=1
+    --postoutput-script /work/scripts/check-runtime-reproducibility build)
+"${build[@]}" 2>&1 | tee "$KATL_MKOSI_BUILD_DIR/fresh.log"
+mv "$KATL_MKOSI_BUILD_DIR/$manifest" "$KATL_MKOSI_BUILD_DIR/fresh.tree"
+"${build[@]}" 2>&1 | tee "$KATL_MKOSI_BUILD_DIR/cached.log"
+mv "$KATL_MKOSI_BUILD_DIR/$manifest" "$KATL_MKOSI_BUILD_DIR/cached.tree"
+
+# On a fresh build mkosi saves the image cache and then copies it back, so
+# seeing a cache-copy message alone does not establish that a build used it.
+if ! grep -Fq 'Installing cache copies' "$KATL_MKOSI_BUILD_DIR/fresh.log" ||
+    grep -Fq 'Installing cache copies' "$KATL_MKOSI_BUILD_DIR/cached.log" ||
+    ! grep -Fq 'Copying cached trees' "$KATL_MKOSI_BUILD_DIR/cached.log"; then
+    echo 'error: expected one fresh package installation followed by a cached build' >&2
+    exit 1
+fi
+
+diff -u "$KATL_MKOSI_BUILD_DIR/fresh.tree" "$KATL_MKOSI_BUILD_DIR/cached.tree"
+echo "Fresh and cached runtime trees match at SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
