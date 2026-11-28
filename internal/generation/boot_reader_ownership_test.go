@@ -87,9 +87,7 @@ func TestBootSelectionWriteHasOneOwner(t *testing.T) {
 func TestBootMoveReaderRuleHasOneOwner(t *testing.T) {
 	allowlist := []bootTargetAllowance{
 		{"internal/generation/boot_mover.go", "legacyReaders: uses ReadsBootMoves", "the node chooses the selection form"},
-		{"cmd/katlctl/main.go", "checkBootMoveSource: uses ReadsBootMoves", "katlctl refuses a direct upgrade from a release before the first reader"},
 		{"internal/generation/boot_mover.go", "ReadsBootMoves: uses FirstBootMoveReader", "the reader rule"},
-		{"cmd/katlctl/main.go", "checkBootMoveSource: uses FirstBootMoveReader", "names the intermediate release"},
 	}
 	names := []string{"ReadsBootMoves", "FirstBootMoveReader"}
 	for _, problem := range ownershipProblems(t, nil, referenceViolations(names, []string{"checkReaders"}), allowlist) {

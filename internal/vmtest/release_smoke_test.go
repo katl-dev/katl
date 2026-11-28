@@ -63,17 +63,11 @@ type releaseJourney struct {
 	public  string
 	// installed is the ClusterConfig the node was installed from.
 	installed string
-	// katlctl runs the journey's primary CLI; runner gives another binary the
-	// same workstation config.
-	katlctl katlctlRunner
+	katlctl   katlctlRunner
 }
 
 func (j *releaseJourney) observe(command string) (string, error) {
 	return releaseSSH(j.ctx, j.key, j.address, command)
-}
-
-func (j *releaseJourney) runner(bin Katlctl) katlctlRunner {
-	return katlctlRunner{bin: bin, config: j.katlctl.config}
 }
 
 func (j *releaseJourney) cli(label string, args ...string) {
@@ -362,10 +356,9 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 }
 
 // TestReleaseNonReaderUpgrade upgrades a node from a published release that
-// predates boot-move records. The candidate katlctl refuses the direct
-// upgrade, and the old release's katlctl, which no check stops, upgrades it:
-// a failed upgrade returns to a manageable old release, and a promoted one
-// can roll back to it.
+// predates boot-move records straight to the candidate with the candidate
+// katlctl: a failed upgrade returns to a manageable old release, and a
+// promoted one can roll back to it.
 func TestReleaseNonReaderUpgrade(t *testing.T) {
 	if !DefaultOptions().Enabled {
 		t.Skip("run with scripts/vmtest-run")
@@ -383,9 +376,8 @@ func TestReleaseNonReaderUpgrade(t *testing.T) {
 		t.Fatalf("KATL_VMTEST_NONREADER_RELEASE_DIR holds %s, which reads boot-move records", metadata.Version)
 	}
 	target, targetMetadata := releaseImage(t, candidate, katlosimage.RoleUpgrade, "upgrade")
-	candidateKatlctl := releaseKatlctl(t, candidate)
 
-	runReleaseJourney(t, "release-nonreader-upgrade", source, releaseKatlctl(t, source), func(j *releaseJourney) error {
+	runReleaseJourney(t, "release-nonreader-upgrade", source, releaseKatlctl(t, candidate), func(j *releaseJourney) error {
 		config := filepath.Join(j.result.RunDir, "katlctl", "enrollment", "cluster.yaml")
 		flavour := first(targetMetadata.Flavour, "standard")
 		original, err := j.selection()
@@ -393,46 +385,8 @@ func TestReleaseNonReaderUpgrade(t *testing.T) {
 			return err
 		}
 		gen0 := original.BootedGenerationID
-		unchanged := func(stage, selection, generations string) error {
-			gotSelection, err := j.rawSelection()
-			if err != nil || gotSelection != selection {
-				return fmt.Errorf("%s changed the boot selection: %v", stage, err)
-			}
-			gotGenerations := runKatlctl(t, j.ctx, j.result, j.katlctl, stage+"-generations", "node", "generations", "list", "cp-1")
-			if string(gotGenerations) != generations {
-				return fmt.Errorf("%s changed the generations list:\n%s\nwant:\n%s", stage, gotGenerations, generations)
-			}
-			return nil
-		}
-		selectionBefore, err := j.rawSelection()
-		if err != nil {
-			return err
-		}
-		generationsBefore := string(runKatlctl(t, j.ctx, j.result, j.katlctl, "initial-generations", "node", "generations", "list", "cp-1"))
 
-		// The candidate katlctl refuses the direct upgrade and names the
-		// intermediate release.
-		refused, err := runKatlctlOutcome(t, j.ctx, j.result, j.runner(candidateKatlctl), "upgrade-refused",
-			"node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", flavour, "--timeout", "10m")
-		if err == nil {
-			return fmt.Errorf("candidate katlctl upgraded a %s node directly:\n%s", metadata.Version, refused)
-		}
-		// The command keeps the node's flavour, which a non-standard node
-		// must name.
-		sourceFlags := ""
-		if flavour != "standard" {
-			sourceFlags = " --flavour " + flavour
-		}
-		want := "First run 'katlctl node upgrade cp-1 --config " + config + sourceFlags + " --version " + generation.FirstBootMoveReader.String() + "', then retry this upgrade"
-		if refusal := err.Error(); !strings.Contains(refusal, "which predates boot-move records") || !strings.Contains(refusal, want) {
-			return fmt.Errorf("candidate katlctl refusal = %q, want %q", refusal, want)
-		}
-		if err := unchanged("refused-upgrade", selectionBefore, generationsBefore); err != nil {
-			return err
-		}
-
-		// The old katlctl is not stopped. A failed upgrade returns to the old
-		// release with management intact.
+		// A failed upgrade returns to the old release with management intact.
 		fault := filepath.Join(filepath.Dir(config), "cluster.fault.yaml")
 		if err := writeNonReaderFaultConfig(j.installed, j.address, fault); err != nil {
 			return err
@@ -478,9 +432,8 @@ func TestReleaseNonReaderUpgrade(t *testing.T) {
 		if err != nil || promoted.BootedGenerationID == gen0 {
 			return fmt.Errorf("upgrade did not promote a new generation: %v", err)
 		}
-		candidateCLI := j.runner(candidateKatlctl)
-		runKatlctl(t, j.ctx, j.result, candidateCLI, "rollback-select", "node", "generations", "select", gen0, "cp-1")
-		runKatlctl(t, j.ctx, j.result, candidateCLI, "rollback-reboot", "node", "reboot", "cp-1", "--timeout", "5m")
+		j.cli("rollback-select", "node", "generations", "select", gen0, "cp-1")
+		j.cli("rollback-reboot", "node", "reboot", "cp-1", "--timeout", "5m")
 		if err := j.healthy(metadata); err != nil {
 			return err
 		}

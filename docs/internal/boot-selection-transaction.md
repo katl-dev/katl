@@ -226,12 +226,9 @@ the release tags reachable on the built branch. The rule therefore does not
 protect a development build made from code older than 2026.11.6, nor the
 published 2026.7.0-dev.0 to 2026.7.0-dev.4 development releases, which
 predate the reader; development builds are unsupported outside testing.
-`katlctl node upgrade` applies the same
-predicate before it starts, refusing a source below 2026.11.6 when the target is
-at or after its own release, and prints the `katlctl node upgrade` command for
-2026.11.6. An older `katlctl`, or a request sent straight to the agent, is not
-stopped; the node then writes the v1 form, so a failed upgrade returns to the
-old release with management intact. An arm is also refused when
+A node below 2026.11.6 upgrades directly to any later release: the node
+writes the v1 form, so a failed upgrade returns to the old release with
+management intact. An arm is also refused when
 the running generation is not the published default, because the fallback is
 always the published default and must complete the records a failed trial
 leaves. It succeeds only when the default has run a release with the owner,
