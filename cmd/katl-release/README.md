@@ -53,7 +53,9 @@ scripts/katl-release journeys 2026.12.1 v2026.12.0
 ```
 
 Run this after pushing the release branch, with the final version and the
-previous final release tag. The command lists outstanding journey PRs in the
+previous final release tag, which `scripts/production-upgrade-baseline.txt`
+names at the release branch's cut commit
+(`scripts/katl-release-artifacts upgrade-baseline`). The command lists outstanding journey PRs in the
 release and open gap fixes, and exits nonzero if work remains or GitHub
 cannot complete the check.
 
