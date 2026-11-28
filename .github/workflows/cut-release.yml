@@ -25,33 +25,40 @@ jobs:
     name: Create release branch
     runs-on: ubuntu-24.04
     environment: release-cut
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - name: Require main
+        timeout-minutes: 2
         run: |
           if [[ "$GITHUB_REF" != refs/heads/main ]]; then
             echo "To cut a release, dispatch it on main."
             exit 1
           fi
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           persist-credentials: false
       # This job holds the release App token, so it restores no cache and
       # runs only a katl-release built here from the checked-out source.
       - uses: actions/setup-go@v6
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
           cache: false
       - name: Build katl-release
+        timeout-minutes: 5
         run: go build -o "$RUNNER_TEMP/katl-release" ./cmd/katl-release
       - name: Select the branch creation credential
         id: credential
+        timeout-minutes: 2
         uses: ./.github/actions/release-credential
         with:
           app-id: ${{ vars.KATL_RELEASE_APP_ID }}
           private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
       - name: Cut the branch
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ steps.credential.outputs.token }}
           VERSION: ${{ inputs.version }}
