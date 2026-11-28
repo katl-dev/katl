@@ -51,8 +51,10 @@ milestone's initial scope, ownership, and closure.
 
 When the Coordinator confirms a version will not ship, make sure its
 publication work has stopped and the Planner has opened the following
-version's milestone. Preview the move, then apply it once you have
-reviewed the listed issues and PRs.
+version's milestone. Close the source version's plan issue and its
+`Tag v<version>-rc.N` and `Tag v<version>` issues as not planned, so
+they do not move with the open work. Preview the move, then apply it
+once you have reviewed the listed issues and PRs.
 
 ```sh
 scripts/katl-release merge-milestone 2026.12.1 2026.12.2

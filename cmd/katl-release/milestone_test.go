@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMergeMilestone(t *testing.T) {
@@ -35,6 +36,11 @@ func TestMergeMilestone(t *testing.T) {
 			t.Errorf("#%d = %+v, want milestone %d and original labels", number, item, want)
 		}
 	}
+	for _, number := range []int{45, 46} {
+		if got := f.moves[number]; len(got) != 1 || !slices.Equal(got[0], []string{"-F", "milestone=21"}) {
+			t.Errorf("#%d moves = %q, want one PATCH of only the milestone", number, got)
+		}
+	}
 	if f.sourceState != "closed" || len(f.comments) != 1 || !strings.Contains(f.comments[0], "(https://github.com/example/katl/milestone/21)") {
 		t.Fatalf("source = %s, comments = %v", f.sourceState, f.comments)
 	}
@@ -54,6 +60,7 @@ func TestMergeMilestoneRefusals(t *testing.T) {
 		{"closed following milestone", "following milestone v2026.12.10 must be open", func(f *milestoneFixture) { f.targetState = "closed" }},
 		{"published", "v2026.12.9 is already published", func(f *milestoneFixture) { f.published = true }},
 		{"missing plan link", "link the plan issue", func(f *milestoneFixture) { f.description = "" }},
+		{"open plan issue", `issue #44 "plan: v2026.12.9 scope and priorities"; close each as not planned, then rerun`, func(f *milestoneFixture) { f.items[44].state = "open" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newMilestoneFixture(t)
@@ -67,23 +74,50 @@ func TestMergeMilestoneRefusals(t *testing.T) {
 	}
 }
 
+func TestMergeMilestoneResumesAfterFailedMove(t *testing.T) {
+	f := newMilestoneFixture(t)
+	f.moveFailures = map[int][]error{46: {ghExit("gh: Validation Failed (HTTP 422)")}}
+
+	_, err := f.run("--apply", "2026.12.9", "2026.12.10")
+	if err == nil || !strings.Contains(err.Error(), "move PR #46") || !strings.Contains(err.Error(), "merge-milestone --apply 2026.12.9 2026.12.10 to resume") {
+		t.Fatalf("apply = %v, want the failed move and resume instructions", err)
+	}
+	if f.sourceState != "open" || len(f.comments) != 0 || f.items[45].milestone != 21 || f.items[46].milestone != 17 {
+		t.Fatalf("source = %s, comments = %d, milestones #45 = %d, #46 = %d", f.sourceState, len(f.comments), f.items[45].milestone, f.items[46].milestone)
+	}
+
+	out, err := f.run("--apply", "2026.12.9", "2026.12.10")
+	want := "Moved PR #46 to v2026.12.10.\nCommented on plan issue #44.\nClosed v2026.12.9.\n"
+	if err != nil || out != want || len(f.moves[45]) != 1 || len(f.comments) != 1 || f.sourceState != "closed" {
+		t.Fatalf("resume = %q, %v, #45 moves = %d, comments = %d, source = %s", out, err, len(f.moves[45]), len(f.comments), f.sourceState)
+	}
+}
+
+func TestMergeMilestoneRetriesTransientMove(t *testing.T) {
+	f := newMilestoneFixture(t)
+	f.moveFailures = map[int][]error{45: {ghExit("gh: Bad Gateway (HTTP 502)")}}
+
+	_, err := f.run("--apply", "2026.12.9", "2026.12.10")
+	if err != nil || len(f.moves[45]) != 2 || f.items[45].milestone != 21 || f.sourceState != "closed" {
+		t.Fatalf("apply = %v, #45 moves = %d, milestone = %d, source = %s", err, len(f.moves[45]), f.items[45].milestone, f.sourceState)
+	}
+}
+
 func TestMergeMilestoneResumesAfterLostCommentResponse(t *testing.T) {
 	f := newMilestoneFixture(t)
+	// A transient failure shows that the comment is not retried in-process.
 	f.loseCommentResponse = true
-	// An open plan issue moves with the rest of the open work. Its link in
-	// the source milestone still identifies it on the retry.
-	f.items[44].state = "open"
 
 	_, err := f.run("--apply", "2026.12.9", "2026.12.10")
 	if err == nil || !strings.Contains(err.Error(), "merge-milestone --apply 2026.12.9 2026.12.10 to resume") {
 		t.Fatalf("apply = %v, want resume instructions", err)
 	}
-	if f.sourceState != "open" || f.items[44].milestone != 21 || len(f.comments) != 1 {
-		t.Fatalf("source = %s, plan milestone = %d, comments = %d", f.sourceState, f.items[44].milestone, len(f.comments))
+	if f.sourceState != "open" || len(f.comments) != 1 {
+		t.Fatalf("source = %s, comments = %d", f.sourceState, len(f.comments))
 	}
 
 	out, err := f.run("--apply", "2026.12.9", "2026.12.10")
-	if err != nil || out != "Closed v2026.12.9.\n" || len(f.comments) != 1 || f.writes != 5 {
+	if err != nil || out != "Closed v2026.12.9.\n" || len(f.comments) != 1 || f.writes != 4 {
 		t.Fatalf("resume = %q, %v, %d comments, %d total writes", out, err, len(f.comments), f.writes)
 	}
 }
@@ -110,6 +144,10 @@ type milestoneFixture struct {
 	published, loseCommentResponse        bool
 	writes                                int
 	comments                              []string
+	// moves records the fields of every issue PATCH attempt.
+	moves map[int][][]string
+	// moveFailures holds the errors that the next moves of an issue return.
+	moveFailures map[int][]error
 }
 
 func newMilestoneFixture(t *testing.T) *milestoneFixture {
@@ -125,13 +163,13 @@ func newMilestoneFixture(t *testing.T) *milestoneFixture {
 		item.labels = []string{"keep", "area: release"}
 	}
 	return &milestoneFixture{
-		t: t, items: items, sourceState: "open", targetState: "open",
+		t: t, items: items, sourceState: "open", targetState: "open", moves: map[int][][]string{},
 		description: "Scope (#947). [Plan](https://github.com/example/katl/issues/44)",
 	}
 }
 
 func (f *milestoneFixture) run(args ...string) (string, error) {
-	r := &reader{server: "https://github.com", repository: "example/katl", read: f.read}
+	r := &reader{server: "https://github.com", repository: "example/katl", read: f.read, delay: time.Millisecond}
 	var stdout, stderr bytes.Buffer
 	err := mergeMilestone(context.Background(), args, &stdout, &stderr, r, f.write)
 	return stdout.String(), err
@@ -180,21 +218,55 @@ func (f *milestoneFixture) read(_ context.Context, endpoint string, paginate boo
 	}
 }
 
+// requireMoved fails the test if a write that must follow every move runs
+// while open work remains in the source milestone.
+func (f *milestoneFixture) requireMoved(write string) {
+	for _, item := range f.items {
+		if item.state == "open" && item.milestone == 17 {
+			f.t.Fatalf("%s while #%d is still open in the source milestone", write, item.number)
+		}
+	}
+}
+
 func (f *milestoneFixture) write(_ context.Context, name string, args ...string) ([]byte, error) {
-	if name != "gh" || len(args) != 6 || !slices.Equal(args[:2], []string{"api", "--method"}) {
+	if name != "gh" || len(args) < 4 || len(args)%2 != 0 || !slices.Equal(args[:2], []string{"api", "--method"}) {
 		f.t.Fatalf("unexpected command %s %v", name, args)
 	}
 	f.writes++
-	method, endpoint, kind, field := args[2], args[3], args[4], args[5]
-	switch {
-	case method == "PATCH" && kind == "-F" && field == "milestone=21":
-		for _, item := range f.items {
-			if endpoint == fmt.Sprintf("repos/example/katl/issues/%d", item.number) && item.state == "open" && item.milestone == 17 {
-				item.milestone = 21
-				return nil, nil
+	method, endpoint, fields := args[2], args[3], args[4:]
+	if number, ok := strings.CutPrefix(endpoint, "repos/example/katl/issues/"); ok && method == "PATCH" {
+		n, _ := strconv.Atoi(number)
+		item := f.items[n]
+		if item == nil || item.state != "open" {
+			f.t.Fatalf("PATCH of an item that is not open: %s", endpoint)
+		}
+		f.moves[n] = append(f.moves[n], fields)
+		if failures := f.moveFailures[n]; len(failures) > 0 {
+			f.moveFailures[n] = failures[1:]
+			return nil, failures[0]
+		}
+		// Apply the fields as GitHub does: labels sent with a PATCH replace
+		// the item's labels.
+		var labels []string
+		for i := 0; i < len(fields); i += 2 {
+			key, value, _ := strings.Cut(fields[i+1], "=")
+			switch strings.TrimSuffix(key, "[]") {
+			case "milestone":
+				item.milestone, _ = strconv.Atoi(value)
+			case "labels":
+				labels = append(labels, value)
+				item.labels = labels
 			}
 		}
+		return nil, nil
+	}
+	if len(fields) != 2 {
+		f.t.Fatalf("unexpected GitHub write %v", args)
+	}
+	kind, field := fields[0], fields[1]
+	switch {
 	case method == "POST" && endpoint == "repos/example/katl/issues/44/comments" && kind == "-f":
+		f.requireMoved("comment")
 		body, ok := strings.CutPrefix(field, "body=")
 		if !ok || body == "" {
 			f.t.Fatalf("missing comment body: %q", field)
@@ -202,10 +274,11 @@ func (f *milestoneFixture) write(_ context.Context, name string, args ...string)
 		f.comments = append(f.comments, body)
 		if f.loseCommentResponse {
 			f.loseCommentResponse = false
-			return nil, errors.New("response lost after posting")
+			return nil, ghExit("gh: Bad Gateway (HTTP 502)")
 		}
 		return nil, nil
 	case method == "PATCH" && endpoint == "repos/example/katl/milestones/17" && kind == "-f" && field == "state=closed":
+		f.requireMoved("close")
 		if len(f.comments) != 1 {
 			f.t.Fatalf("closed before the single plan comment: %v", f.comments)
 		}

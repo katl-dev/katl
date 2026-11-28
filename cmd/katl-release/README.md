@@ -357,7 +357,8 @@ scripts/katl-release merge-milestone 2026.12.1 2026.12.2
 The preview lists the open issues and PRs to move, the plan issue to
 comment on, and the milestone to close. A published final release prevents
 the merge. A published candidate is compatible with abandoning its final
-version.
+version. The command refuses, before any write, while the plan issue is
+open; close it as not planned, then rerun.
 
 ```sh
 scripts/katl-release merge-milestone --apply 2026.12.1 2026.12.2

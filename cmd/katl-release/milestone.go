@@ -85,10 +85,11 @@ func mergeMilestone(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return err
 	}
-	plan, err := r.milestonePlanIssue(ctx, source)
+	planIssue, err := r.milestonePlanIssue(ctx, source)
 	if err != nil {
 		return err
 	}
+	plan := planIssue.Number
 	comments := r.repo(fmt.Sprintf("issues/%d/comments", plan))
 	prefix := fmt.Sprintf("Milestone %s was merged forward into ", source.Title)
 	comment := fmt.Sprintf("%s[%s](%s). Follow that milestone for the remaining work.", prefix, target.Title, target.URL)
@@ -110,6 +111,11 @@ func mergeMilestone(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		fmt.Fprintf(stdout, "%s is already merged into %s (plan issue #%d).\n", source.Title, target.Title, plan)
 		return nil
+	}
+	// The abandoned version's own release issues must not move into the
+	// following milestone, so the merge waits until they are closed.
+	if planIssue.State != "closed" {
+		return fmt.Errorf("%s still has an open release issue: issue #%d %q; close each as not planned, then rerun", source.Title, plan, planIssue.Title)
 	}
 
 	items, err := r.openMilestoneItems(ctx, source.Number)
@@ -168,34 +174,34 @@ func (r *reader) milestonesForMerge(ctx context.Context, from, to string) (sourc
 	return source, target, nil
 }
 
-func (r *reader) milestonePlanIssue(ctx context.Context, source versionMilestone) (int, error) {
-	// The source description carries the plan's identity even if the plan
-	// issue itself moves with the open work during a partial merge.
+func (r *reader) milestonePlanIssue(ctx context.Context, source versionMilestone) (milestoneItem, error) {
+	// The source description carries the plan's identity.
 	prefix := r.server + "/" + r.repository + "/issues/"
 	link := regexp.MustCompile(regexp.QuoteMeta(prefix) + `([1-9][0-9]*)(?:[[:space:])>.,]|$)`)
-	var plan int
+	var plan milestoneItem
 	for _, match := range link.FindAllStringSubmatch(source.Description, -1) {
 		number, err := strconv.Atoi(match[1])
 		if err != nil {
-			return 0, err
+			return plan, err
 		}
-		if number == plan {
+		if number == plan.Number {
 			continue
 		}
 		var issue milestoneItem
 		if err := r.decode(ctx, r.repo(fmt.Sprintf("issues/%d", number)), &issue); err != nil {
-			return 0, err
+			return plan, err
 		}
 		if issue.PullRequest != nil || issue.Title != "plan: "+source.Title+" scope and priorities" {
 			continue
 		}
-		if plan != 0 {
-			return 0, fmt.Errorf("%s links multiple plan issues", source.Title)
+		if plan.Number != 0 {
+			return plan, fmt.Errorf("%s links multiple plan issues", source.Title)
 		}
-		plan = number
+		issue.Number = number
+		plan = issue
 	}
-	if plan == 0 {
-		return 0, fmt.Errorf("link the plan issue titled %q in the %s milestone description", "plan: "+source.Title+" scope and priorities", source.Title)
+	if plan.Number == 0 {
+		return plan, fmt.Errorf("link the plan issue titled %q in the %s milestone description", "plan: "+source.Title+" scope and priorities", source.Title)
 	}
 	return plan, nil
 }
@@ -221,9 +227,14 @@ func (r *reader) openMilestoneItems(ctx context.Context, number int) ([]mileston
 
 func (m milestoneMerge) apply(ctx context.Context, stdout io.Writer, r *reader, call func(context.Context, string, ...string) ([]byte, error)) error {
 	// Read all pages before moving anything, because each move changes the
-	// pagination of the source. Send only the milestone field.
+	// pagination of the source. Send only the milestone field. Setting the
+	// same milestone again is idempotent, so a move is retried like a read.
 	for _, item := range m.items {
-		if _, err := writeGitHub(ctx, call, "PATCH", r.repo(fmt.Sprintf("issues/%d", item.Number)), "-F", fmt.Sprintf("milestone=%d", m.target.Number)); err != nil {
+		err := r.retry(ctx, func(ctx context.Context) error {
+			_, err := writeGitHub(ctx, call, "PATCH", r.repo(fmt.Sprintf("issues/%d", item.Number)), "-F", fmt.Sprintf("milestone=%d", m.target.Number))
+			return err
+		})
+		if err != nil {
 			return fmt.Errorf("move %s: %w", item, err)
 		}
 		fmt.Fprintf(stdout, "Moved %s to %s.\n", item, m.target.Title)
