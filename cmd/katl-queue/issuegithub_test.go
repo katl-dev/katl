@@ -4,20 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestIssueCommand(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("INTAKE_FIXTURE", dir)
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := workstationtest.Tool(t, "sh")
 	script := fmt.Sprintf(`#!%s
 set -eu
 case "$1 $2" in
@@ -56,7 +54,7 @@ esac
 		"--kind", "enhancement", "--area", "dev-tooling", "--priority", "p1",
 	}
 	var out, stderr strings.Builder
-	err = run(t.Context(), args, &out, &stderr)
+	err := run(t.Context(), args, &out, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "strong open matches #2 require") || strings.Contains(out.String(), "#3") {
 		t.Fatalf("initial request: %v\n%s%s", err, &out, &stderr)
 	}
