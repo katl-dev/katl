@@ -19,7 +19,6 @@ type githubFixture struct {
 	t           *testing.T
 	run         workflowRun
 	artifacts   []artifact
-	refs        []map[string]string
 	rerun       bool
 	replaced    bool
 	corrupt     bool
@@ -55,10 +54,6 @@ func (f *githubFixture) call(name string, args ...string) ([]byte, error) {
 		// Keep GitHub's wire fields independent of the production JSON tags.
 		var value any
 		switch strings.TrimPrefix(args[1], "repos/"+repository+"/") {
-		case "commits/main":
-			value = map[string]string{"sha": testCommit}
-		case "git/matching-refs/tags/v2026.10.2":
-			value = f.refs
 		case "actions/runs/42":
 			value = map[string]any{
 				"id": f.run.ID, "run_attempt": f.run.Attempt, "head_branch": f.run.Tag,
@@ -144,34 +139,6 @@ func writeBundle(t *testing.T, dir string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
 			t.Fatal(err)
 		}
-	}
-}
-
-func TestPrepare(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		edit func(*githubFixture)
-		want string
-	}{
-		{"available", func(f *githubFixture) {}, ""},
-		{"prefix tag", func(f *githubFixture) { f.refs = []map[string]string{{"ref": "refs/tags/v2026.10.20"}} }, ""},
-		{"used tag", func(f *githubFixture) { f.refs = []map[string]string{{"ref": "refs/tags/v2026.10.2"}} }, "already exists"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fixture := newFixture(t)
-			tc.edit(fixture)
-			var output bytes.Buffer
-			err := run([]string{"prepare", "2026.10.2"}, &output, io.Discard, fixture.call)
-			if tc.want != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.want) {
-					t.Fatalf("error = %v; want %s", err, tc.want)
-				}
-				return
-			}
-			if err != nil || !strings.Contains(output.String(), testCommit) || !strings.Contains(output.String(), "v2026.10.2") {
-				t.Fatalf("prepare = %s, %v", output.String(), err)
-			}
-		})
 	}
 }
 

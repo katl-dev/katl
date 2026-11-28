@@ -1,7 +1,7 @@
 # Release State Machine
 
-The **Release** workflow implements this design. The legacy tag-triggered
-procedure is documented in [Release KatlOS](../development/releases.md).
+The **Release** workflow implements this design. The release procedure is
+documented in [Release KatlOS](../development/releases.md).
 
 One GitHub workflow, **Release** (`release.yml`), is dispatched on a release
 branch and takes the next step of that version's release. It tags and
@@ -299,8 +299,8 @@ extension bundles, and publishes the draft last, which creates the tag. A
 missing final tag therefore proves no final release is public, and an
 existing one proves the release was published whole. No state has a final tag
 waiting for its release, so the final is never resumed from an earlier run.
-The legacy tag-triggered jobs skip tags made by the `katl-release` App
-because Release has already qualified and published those versions.
+A tag push starts no workflow, so neither the App's tags nor a stray tag
+publish anything.
 
 **Retry never touches published bytes.** Retry exists only in rows 20 and 25,
 where the record is `building` or `failed`. A `qualified` candidate is only

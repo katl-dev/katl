@@ -35,7 +35,7 @@ runs:
         EXPECTED_APP_SLUG: katl-release
       run: |
         if [[ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]]; then
-          printf '::error::The release App slug is "%s", but release-artifacts.yml skips legacy tag-push runs only for "%s[bot]"; rename the App or update that guard.\n' "$APP_SLUG" "$EXPECTED_APP_SLUG"
+          printf '::error::The release App slug is "%s", but release-artifacts.yml at commits from before the removal of its tag trigger skips tag-push runs only for "%s[bot]", so the App must keep that identity while such commits can still be tagged.\n' "$APP_SLUG" "$EXPECTED_APP_SLUG"
           exit 1
         fi
     - name: Verify installation scope and repository access

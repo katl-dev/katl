@@ -27,9 +27,7 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{name: "stable tag", args: []string{"version", "push", "tag", "v2026.7.0"}, want: "2026.7.0"},
-		{name: "development tag", args: []string{"version", "push", "tag", "v2026.7.0-dev.0"}, want: "2026.7.0-dev.0"},
-		{name: "alpha tag", args: []string{"version", "push", "tag", "v2026.7.0-alpha.1"}, want: "2026.7.0-alpha.1"},
+		{name: "called alpha", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-alpha.1"}, want: "2026.7.0-alpha.1"},
 		{name: "manual", args: []string{"version", "workflow_dispatch", "branch", "main", "2026.7.0-dev.1"}, want: "2026.7.0-dev.1"},
 		{name: "scheduled", args: []string{"version", "schedule", "branch", "main", "2026.7.1-dev.0"}, want: "2026.7.1-dev.0"},
 		{name: "called candidate", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-rc.2"}, want: "2026.7.0-rc.2"},
@@ -37,15 +35,13 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 		{name: "called without version", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", ""}, wantErr: "version is empty"},
 		{name: "called leading-zero candidate", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-rc.01"}, wantErr: "not canonical"},
 		{name: "scheduled without version", args: []string{"version", "schedule", "branch", "main", ""}, wantErr: "version is empty"},
-		{name: "series branch", args: []string{"version", "push", "branch", "release/2026.12.x"}, wantErr: "unsupported push ref type"},
-		{name: "versioned branch", args: []string{"version", "push", "branch", "release/2026.7.0-rc.1"}, wantErr: "unsupported push ref type"},
-		{name: "semantic version", args: []string{"version", "push", "tag", "v0.1.0"}, wantErr: "not canonical"},
-		{name: "nightly label", args: []string{"version", "push", "tag", "nightly"}, wantErr: "not canonical"},
-		{name: "zero-padded month", args: []string{"version", "push", "tag", "v2026.07.0"}, wantErr: "not canonical"},
-		{name: "invalid month", args: []string{"version", "push", "tag", "v2026.13.0"}, wantErr: "not canonical"},
-		{name: "leading-zero sequence", args: []string{"version", "push", "tag", "v2026.7.0-rc.01"}, wantErr: "not canonical"},
-		{name: "unsupported prerelease", args: []string{"version", "workflow_dispatch", "branch", "main", "2026.7.0-test.1"}, wantErr: "not canonical"},
-		{name: "unsafe manual", args: []string{"version", "workflow_dispatch", "branch", "main", ".hidden"}, wantErr: "not canonical"},
+		{name: "tag push", args: []string{"version", "push", "tag", "v2026.7.0"}, wantErr: "unsupported release event: push"},
+		{name: "semantic version", args: []string{"version", "workflow_call", "branch", "release/0.1.0", "0.1.0"}, wantErr: "not canonical"},
+		{name: "nightly label", args: []string{"version", "schedule", "branch", "main", "nightly"}, wantErr: "not canonical"},
+		{name: "zero-padded month", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.07.0"}, wantErr: "not canonical"},
+		{name: "invalid month", args: []string{"version", "workflow_call", "branch", "release/2026.13.0", "2026.13.0"}, wantErr: "not canonical"},
+		{name: "unsupported prerelease", args: []string{"version", "workflow_call", "branch", "release/2026.7.0", "2026.7.0-test.1"}, wantErr: "not canonical"},
+		{name: "unsafe version", args: []string{"version", "schedule", "branch", "main", ".hidden"}, wantErr: "not canonical"},
 		{name: "empty manual", args: []string{"version", "workflow_dispatch", "branch", "main", ""}, wantErr: "version is empty"},
 	}
 

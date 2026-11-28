@@ -106,7 +106,7 @@ func TestReleaseWriters(t *testing.T) {
 	})
 	slices.Sort(got)
 	release := filepath.Base(releasestate.ReleaseWorkflow)
-	want := []string{"release-artifacts.yml:publish-tag", release + ":publish", release + ":publish-candidate"}
+	want := []string{release + ":publish", release + ":publish-candidate"}
 	if !slices.Equal(got, want) {
 		t.Errorf("release writers = %v, want %v", got, want)
 	}
@@ -298,11 +298,6 @@ func releaseAppSlugStep(t *testing.T) releaseCredentialStep {
 	}
 	t.Fatal("release credential action has no expected App slug")
 	return releaseCredentialStep{}
-}
-
-func expectedReleaseAppSlug(t *testing.T) string {
-	t.Helper()
-	return releaseAppSlugStep(t).Env["EXPECTED_APP_SLUG"]
 }
 
 func TestReleaseCredentialSlug(t *testing.T) {
@@ -506,7 +501,7 @@ func TestReleaseBuildCall(t *testing.T) {
 	if err := build.Permissions.Decode(&permissions); err != nil {
 		t.Fatal(err)
 	}
-	if want := (map[string]string{"actions": "read", "attestations": "write", "contents": "write", "id-token": "write", "packages": "write"}); !maps.Equal(permissions, want) {
+	if want := (map[string]string{"actions": "read", "attestations": "write", "contents": "read", "id-token": "write"}); !maps.Equal(permissions, want) {
 		t.Errorf("build permissions = %v, want %v", permissions, want)
 	}
 

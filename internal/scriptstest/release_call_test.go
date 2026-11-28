@@ -19,17 +19,12 @@ import (
 const calledCommit = "0123456789abcdef0123456789abcdef01234567"
 
 // releaseTriggers are the expression contexts of each way release-artifacts.yml
-// starts. A called run sees its caller's github context, so the call cases
-// carry the caller's event. An unset number input compares equal to zero in
-// GitHub Actions, so runs without qualify_run carry "0".
+// starts. A called run sees its caller's github context, so the call carries
+// the dispatched Release run's event.
 var releaseTriggers = map[string]map[string]string{
-	"tag":            {"github.event_name": "push", "github.ref_type": "tag", "inputs.qualify_run": "0", "needs.identity.outputs.regression": "run"},
-	"tag, CI passed": {"github.event_name": "push", "github.ref_type": "tag", "inputs.qualify_run": "0", "needs.identity.outputs.regression": "skip"},
-	"nightly":        {"github.event_name": "schedule", "inputs.qualify_run": "0"},
-	"dispatch":       {"github.event_name": "workflow_dispatch", "github.ref_type": "branch", "inputs.qualify_run": "0"},
-	"requalify":      {"github.event_name": "workflow_dispatch", "github.ref_type": "branch", "inputs.qualify_run": "12345"},
-	"call":           {"github.event_name": "workflow_dispatch", "github.ref_type": "branch", "inputs.qualify_run": "0", "inputs.commit": calledCommit},
-	"call from tag":  {"github.event_name": "push", "github.ref_type": "tag", "inputs.qualify_run": "0", "inputs.commit": calledCommit},
+	"nightly":  {"github.event_name": "schedule"},
+	"dispatch": {"github.event_name": "workflow_dispatch", "github.ref_type": "branch"},
+	"call":     {"github.event_name": "workflow_dispatch", "github.ref_type": "branch", "inputs.commit": calledCommit},
 }
 
 func conditionHolds(t *testing.T, condition string, ctx map[string]string) bool {
@@ -137,9 +132,8 @@ func publishes(t *testing.T, job workflowJob) bool {
 	return permissions["contents"] == "write" || permissions["packages"] == "write"
 }
 
-// The tag, nightly and dispatch triggers keep the job graph they had before the
-// workflow became callable, and a call runs the nightly's build and
-// qualification graph with no publication, whichever event started its caller.
+// A dispatch and a call run the nightly's build and qualification graph, and
+// none of them runs a publication job.
 func TestReleaseTriggerJobs(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 
@@ -148,15 +142,10 @@ func TestReleaseTriggerJobs(t *testing.T) {
 		"qualification-lts", "qualification-standard", "qualified-bytes",
 		"release-validation", "unit", "vmtests",
 	}
-	publish := append(slices.Clone(qualify), "publish-extensions", "publish-tag")
 	want := map[string][]string{
-		"tag":            publish,
-		"tag, CI passed": slices.DeleteFunc(slices.Clone(publish), func(name string) bool { return name == "vmtests" }),
-		"nightly":        qualify,
-		"dispatch":       qualify,
-		"requalify":      {"existing-bundle", "requalify"},
-		"call":           qualify,
-		"call from tag":  qualify,
+		"nightly":  qualify,
+		"dispatch": qualify,
+		"call":     qualify,
 	}
 	for trigger, ctx := range releaseTriggers {
 		t.Run(trigger, func(t *testing.T) {
@@ -167,12 +156,10 @@ func TestReleaseTriggerJobs(t *testing.T) {
 				t.Errorf("jobs run = %v, want %v", jobs, expected)
 			}
 
-			publication := false
 			for _, name := range jobs {
-				publication = publication || publishes(t, workflow.Jobs[name])
-			}
-			if want := strings.HasPrefix(trigger, "tag"); publication != want {
-				t.Errorf("a publication job runs = %v, want %v", publication, want)
+				if publishes(t, workflow.Jobs[name]) {
+					t.Errorf("publication job %s runs", name)
+				}
 			}
 		})
 	}
@@ -314,7 +301,6 @@ func TestReleaseCallIdentity(t *testing.T) {
 		{name: "candidate", event: "workflow_dispatch", commit: calledCommit, version: "2026.12.0-rc.1"},
 		{name: "final", event: "workflow_dispatch", commit: calledCommit, version: "2026.12.0"},
 		{name: "scheduled caller", event: "schedule", commit: calledCommit, version: "2026.12.0-rc.2"},
-		{name: "tag caller", event: "push", commit: calledCommit, version: "2026.12.0-rc.3"},
 		{name: "other commit", event: "workflow_dispatch", commit: "89abcdef0123456789abcdef0123456789abcdef", version: "2026.12.0-rc.1", wantErr: "this run builds " + calledCommit + " from v2026.11.5. Dispatch the Release workflow on the release branch whose head is 89abcdef0123456789abcdef0123456789abcdef."},
 		{name: "invalid version", event: "workflow_dispatch", commit: calledCommit, version: "2026.12.0-rc.01", wantErr: "not canonical"},
 	} {
@@ -347,9 +333,9 @@ func TestReleaseCallIdentity(t *testing.T) {
 	}
 }
 
-// The tag, nightly and dispatch groups are unchanged. A called run's github
-// context is its caller's, so its group must differ from any group its caller
-// would take from the same context, or the two would wait on each other.
+// A called run's github context is its caller's, so its group must differ from
+// any group its caller would take from the same context, or the two would wait
+// on each other.
 func TestReleaseCallConcurrency(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 	var concurrency struct{ Group string }
@@ -363,7 +349,6 @@ func TestReleaseCallConcurrency(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct{ got, want string }{
-		"tag":      {group("push", "refs/tags/v2026.11.6-rc.1", "1", ""), "wf-refs/tags/v2026.11.6-rc.1"},
 		"nightly":  {group("schedule", "refs/heads/main", "2", ""), "wf-nightly"},
 		"dispatch": {group("workflow_dispatch", "refs/heads/main", "3", ""), "wf-3"},
 	} {
@@ -381,9 +366,6 @@ func TestReleaseCallConcurrency(t *testing.T) {
 	if other := group("workflow_dispatch", "refs/heads/release/2026.12.0", "5", calledCommit); other == call {
 		t.Errorf("calls from two runs share group %q", call)
 	}
-	if fromTag := group("push", "refs/heads/release/2026.12.0", "6", calledCommit); fromTag == group("push", "refs/heads/release/2026.12.0", "7", calledCommit) {
-		t.Errorf("calls from two pushes of one ref share group %q, so GitHub would cancel the queued one", fromTag)
-	}
 
 	release, _ := readReleaseWorkflow(t)
 	var caller struct{ Group string }
@@ -394,34 +376,5 @@ func TestReleaseCallConcurrency(t *testing.T) {
 		"github.ref": "refs/heads/release/2026.12.0", "github.run_id": "4", "inputs.commit": calledCommit}
 	if got, called := expandExpressions(t, caller.Group, ctx), expandExpressions(t, concurrency.Group, ctx); got == called {
 		t.Errorf("Release and its called build share concurrency group %q", got)
-	}
-}
-
-func TestReleaseAppActorGuards(t *testing.T) {
-	_, source := readWorkflow(t, "release-artifacts.yml")
-	guards := regexp.MustCompile(`\bgithub\.actor\s*!=\s*'([^']*)'`).FindAllStringSubmatch(source, -1)
-	if len(guards) == 0 {
-		t.Fatal("release-artifacts.yml has no App actor guards")
-	}
-
-	want := expectedReleaseAppSlug(t) + "[bot]"
-	for _, guard := range guards {
-		if guard[1] != want {
-			t.Errorf("release-artifacts.yml guard %q must use %q from the release credential action", guard[0], want)
-		}
-	}
-}
-
-// A tag created by the release App has already been built and published by
-// Release. Its push event must not start the legacy build or publication jobs.
-func TestReleaseAppTagPush(t *testing.T) {
-	workflow, _ := readWorkflow(t, "release-artifacts.yml")
-	ctx := map[string]string{"github.event_name": "push", "github.ref_type": "tag", "github.actor": expectedReleaseAppSlug(t) + "[bot]", "inputs.qualify_run": "0"}
-	if got := jobsRun(t, workflow, ctx); len(got) != 0 {
-		t.Errorf("App tag push runs legacy jobs %v", got)
-	}
-	ctx["inputs.commit"] = calledCommit
-	if got, want := jobsRun(t, workflow, ctx), jobsRun(t, workflow, releaseTriggers["call from tag"]); !slices.Equal(got, want) {
-		t.Errorf("called workflow runs jobs %v in the App's context, want %v", got, want)
 	}
 }

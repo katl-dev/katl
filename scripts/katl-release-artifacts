@@ -281,26 +281,15 @@ build_katlctl() {
     done
 }
 
+# The ref arguments are unused: every remaining event supplies its version.
 version_for_ref() {
     local event="$1"
-    local ref_type="$2"
-    local ref_name="$3"
     local manual_version="${4:-}"
     local version
 
     case "$event" in
         workflow_dispatch|schedule|workflow_call)
             version="$manual_version"
-            ;;
-        push)
-            case "$ref_type" in
-                tag)
-                    version="$ref_name"
-                    ;;
-                *)
-                    fail "unsupported push ref type: $ref_type"
-                    ;;
-            esac
             ;;
         *)
             fail "unsupported release event: $event"

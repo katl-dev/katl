@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -347,14 +348,10 @@ func TestReleaseBuildsBothKernelFlavours(t *testing.T) {
 	}
 }
 
-func TestReleasePublishesKernelExtensions(t *testing.T) {
+func TestReleaseValidationNeeds(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 
 	requireNeeds(t, workflow, [][2]string{
-		{"publish-tag", "publish-extensions"},
-		{"publish-extensions", "build-standard"},
-		{"publish-extensions", "build-lts"},
-		{"publish-extensions", "release-validation"},
 		{"release-validation", "bundle"},
 		{"release-validation", "vmtests"},
 		{"release-validation", "qualification-standard"},
@@ -366,30 +363,13 @@ func TestReleasePublishesKernelExtensions(t *testing.T) {
 		{"qualified-bytes", "qualification-standard"},
 		{"qualified-bytes", "qualification-lts"},
 	})
-	for _, name := range []string{"publish-extensions", "publish-tag"} {
-		job := workflow.Jobs[name]
-		if job.ContinueOnError {
-			t.Errorf("%s must block release assets on failure", name)
-		}
-		for trigger, ctx := range releaseTriggers {
-			if got, want := conditionHolds(t, job.If, ctx), trigger == "tag" || trigger == "tag, CI passed"; got != want {
-				t.Errorf("%s runs on %s = %v, want %v: only tag pushes publish", name, trigger, got, want)
-			}
-		}
-	}
-	found := false
-	for _, step := range workflow.Jobs["publish-extensions"].Steps {
-		found = found || strings.Contains(step.Run, "publish-release-extensions")
-	}
-	if !found {
-		t.Error("release does not publish its extension closures")
-	}
 }
 
 func TestReleaseKeepsAttestationAndBuildsOutOfLine(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 
-	for _, removed := range []string{"runtime", "extensions", "images", "installer", "katlctl", "assemble", "extension-inventory", "qualification"} {
+	for _, removed := range []string{"runtime", "extensions", "images", "installer", "katlctl", "assemble", "extension-inventory", "qualification",
+		"existing-bundle", "requalify", "publish-extensions", "publish-tag"} {
 		if _, ok := workflow.Jobs[removed]; ok {
 			t.Errorf("release workflow still defines %s", removed)
 		}
@@ -399,9 +379,9 @@ func TestReleaseKeepsAttestationAndBuildsOutOfLine(t *testing.T) {
 		if strings.HasPrefix(step.Uses, "actions/attest@") {
 			attested = true
 			for trigger, ctx := range releaseTriggers {
-				want := strings.HasPrefix(trigger, "tag") || strings.HasPrefix(trigger, "call")
+				want := trigger == "call"
 				if got := conditionHolds(t, step.If, ctx); got != want {
-					t.Errorf("attestation on %s = %v, want %v: tag pushes and calls attest the bytes they hand to publication", trigger, got, want)
+					t.Errorf("attestation on %s = %v, want %v: calls attest the bytes they hand to publication", trigger, got, want)
 				}
 			}
 		}
@@ -471,7 +451,7 @@ func TestReleaseValidation(t *testing.T) {
 		}{{"success", true}, {"failure", false}, {"skipped", false}, {"cancelled", false}} {
 			t.Run(dependency+"/"+tc.state, func(t *testing.T) {
 				command := exec.Command("bash", "-euo", "pipefail", "-c", strings.Join(scripts, "\n"))
-				command.Env = append(os.Environ(), "REGRESSION_DECISION=run", "UNIT=success", "BUNDLE=success", "REGRESSION=success", "PRODUCTION_STANDARD=success", "PRODUCTION_LTS=success", "QUALIFIED=success", dependency+"="+tc.state)
+				command.Env = append(os.Environ(), "UNIT=success", "BUNDLE=success", "REGRESSION=success", "PRODUCTION_STANDARD=success", "PRODUCTION_LTS=success", "QUALIFIED=success", dependency+"="+tc.state)
 				output, err := command.CombinedOutput()
 				if (err == nil) != tc.pass {
 					t.Fatalf("validation result = %v, want pass=%v: %s", err, tc.pass, output)
@@ -575,118 +555,6 @@ func TestWorkflowsRunPatternsAreCheckable(t *testing.T) {
 	}
 }
 
-// Re-running every job of a tag rebuilds its artifacts, which are not
-// byte-identical, so replacing the assets of a published release would change
-// what operators already downloaded. The upload may replace assets only after
-// the published checksums are shown to match the rebuilt ones.
-func TestReleaseUploadGuardsPublishedAssets(t *testing.T) {
-	workflow, _ := readWorkflow(t, "release-artifacts.yml")
-
-	var found bool
-	for _, job := range workflow.Jobs {
-		for _, step := range job.Steps {
-			if !strings.Contains(step.Run, "gh release upload") {
-				continue
-			}
-			found = true
-			upload := strings.Index(step.Run, "gh release upload")
-			download := strings.Index(step.Run, "hosted-download release")
-			compare := strings.Index(step.Run, "cmp -s")
-			fail := strings.Index(step.Run, "exit 1")
-			if download < 0 || compare < download || fail < compare || upload < fail {
-				t.Errorf("replacing release assets must follow a failing comparison with the published SHA256SUMS: %q", step.Run)
-			}
-			if !strings.Contains(step.Run, "SHA256SUMS") || !strings.Contains(step.Run, "dist/SHA256SUMS") {
-				t.Errorf("published checksums must be compared with dist/SHA256SUMS: %q", step.Run)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("no step uploads to an existing release")
-	}
-}
-
-func TestReleaseRegressionFollowsDecision(t *testing.T) {
-	workflow, _ := readWorkflow(t, "release-artifacts.yml")
-
-	regression := workflow.Jobs["vmtests"]
-	if !regression.needs("identity") || !strings.Contains(regression.If, "needs.identity.outputs.regression != 'skip'") {
-		t.Errorf("VM regression must run unless the identity job decided skip: needs identity=%v if=%q", regression.needs("identity"), regression.If)
-	}
-	if !strings.Contains(regression.If, "inputs.qualify_run == 0") {
-		t.Errorf("VM regression lost its requalification condition: %q", regression.If)
-	}
-
-	// Scheduled and dispatched runs have no decision (empty), so they always run the lanes.
-	if strings.Contains(regression.If, "event_name") || strings.Contains(regression.If, "ref_type") {
-		t.Errorf("VM regression is conditional on the trigger, so a schedule or dispatch could skip it: %q", regression.If)
-	}
-
-	// The release bytes embed the version, so no decision may skip building or qualifying them.
-	for _, name := range []string{"build-standard", "build-lts", "qualification-standard", "qualification-lts", "bundle", "qualified-bytes"} {
-		if job := workflow.Jobs[name]; strings.Contains(job.If, "regression") || strings.Contains(job.If, "decision") {
-			t.Errorf("%s depends on the regression decision: %q", name, job.If)
-		}
-	}
-
-	decided := false
-	for _, step := range workflow.Jobs["identity"].Steps {
-		if !strings.Contains(step.Run, "scripts/katl-release regression") {
-			continue
-		}
-		decided = true
-		if step.Env["GH_TOKEN"] != "${{ github.token }}" || !strings.Contains(step.Run, `"$GITHUB_SHA"`) ||
-			!strings.Contains(step.Run, `decision="$(jq -er '.decision`) || !strings.Contains(step.Run, `echo "decision=$decision" >> "$GITHUB_OUTPUT"`) {
-			t.Errorf("decision step must judge the tagged commit and export the JSON decision: %+v", step)
-		}
-		for trigger, ctx := range releaseTriggers {
-			if got, want := conditionHolds(t, step.If, ctx), strings.HasPrefix(trigger, "tag"); got != want {
-				t.Errorf("VM regression decision on %s = %v, want %v: only tag pushes may skip the lanes", trigger, got, want)
-			}
-		}
-	}
-	if !decided {
-		t.Error("the identity job does not decide the VM regression")
-	}
-	if !strings.Contains(workflow.Jobs["identity"].Outputs["regression"], "steps.regression.outputs.decision") {
-		t.Error("the identity job does not export the decision")
-	}
-}
-
-func TestReleaseValidationRegressionSkip(t *testing.T) {
-	workflow, _ := readWorkflow(t, "release-artifacts.yml")
-
-	var script string
-	for _, step := range workflow.Jobs["release-validation"].Steps {
-		script = step.Run
-		if want := "${{ needs.identity.outputs.regression }}"; step.Env["REGRESSION_DECISION"] != want {
-			t.Errorf("REGRESSION_DECISION = %q, want %q", step.Env["REGRESSION_DECISION"], want)
-		}
-	}
-	for _, tc := range []struct {
-		decision, result string
-		pass             bool
-	}{
-		{"run", "success", true},
-		{"run", "skipped", false},
-		{"", "skipped", false},
-		{"", "success", true},
-		{"skip", "skipped", true},
-		{"skip", "success", false},
-		{"skip", "failure", false},
-	} {
-		t.Run(tc.decision+"/"+tc.result, func(t *testing.T) {
-			command := exec.Command("bash", "-euo", "pipefail", "-c", script)
-			command.Env = append(os.Environ(), "UNIT=success", "BUNDLE=success", "PRODUCTION_STANDARD=success", "PRODUCTION_LTS=success", "QUALIFIED=success",
-				"REGRESSION="+tc.result, "REGRESSION_DECISION="+tc.decision)
-			output, err := command.CombinedOutput()
-			if (err == nil) != tc.pass {
-				t.Fatalf("validation result = %v, want pass=%v: %s", err, tc.pass, output)
-			}
-		})
-	}
-}
-
 func TestNightlyCandidateScheduled(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 	var on struct {
@@ -699,24 +567,20 @@ func TestNightlyCandidateScheduled(t *testing.T) {
 		t.Fatalf("release artifacts schedules = %v, want one nightly candidate", on.Schedule)
 	}
 
-	// A scheduled run has no inputs; an unset number input compares equal to zero.
 	vmtests, ok := workflow.Jobs["vmtests"]
 	if !ok {
 		t.Fatal("release artifacts has no vmtests job")
 	}
-	condition := expandExpressions(t, "${{ "+vmtests.If+" }}", map[string]string{
-		"github.event_name": "schedule", "inputs.qualify_run": "0",
-	})
-	if condition != "true" {
-		t.Errorf("vmtests if %q evaluates to %s on schedule, want true so the nightly runs the VM regression suite", vmtests.If, condition)
+	if !conditionHolds(t, vmtests.If, releaseTriggers["nightly"]) {
+		t.Errorf("vmtests if %q is false on schedule, want true so the nightly runs the VM regression suite", vmtests.If)
 	}
 	if scenarios := vmtests.With["scenarios"]; scenarios != "" {
 		t.Errorf("vmtests passes scenarios %q, want the complete suite so the VM images are built", scenarios)
 	}
 }
 
-// The nightly candidate retains its artifacts for a week. Tags and dispatches
-// keep them for the full publication window.
+// The nightly candidate retains its artifacts for a week. Other runs keep them
+// for the full publication window.
 func TestNightlyArtifactRetention(t *testing.T) {
 	release, _ := readWorkflow(t, "release-artifacts.yml")
 	for _, job := range []string{"build-standard", "build-lts"} {
@@ -744,7 +608,7 @@ func TestNightlyArtifactRetention(t *testing.T) {
 }
 
 // The nightly candidate must not cancel, queue behind or share a group with a
-// tag run, a dispatch or another ref's run, and two nights must not overlap.
+// dispatch or a called run, and two nights must not overlap.
 func TestNightlyCandidateConcurrency(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 	var concurrency struct {
@@ -754,21 +618,19 @@ func TestNightlyCandidateConcurrency(t *testing.T) {
 	if err := workflow.Concurrency.Decode(&concurrency); err != nil {
 		t.Fatal(err)
 	}
-	group := func(event, ref, runID string) string {
+	group := func(event, ref, runID, commit string) string {
 		return expandExpressions(t, concurrency.Group, map[string]string{
-			"github.workflow": "wf", "github.event_name": event, "github.ref": ref, "github.run_id": runID,
+			"github.workflow": "wf", "github.event_name": event, "github.ref": ref, "github.run_id": runID, "inputs.commit": commit,
 		})
 	}
 
-	night := group("schedule", "refs/heads/main", "1")
-	if again := group("schedule", "refs/heads/main", "2"); night != again {
+	night := group("schedule", "refs/heads/main", "1", "")
+	if again := group("schedule", "refs/heads/main", "2", ""); night != again {
 		t.Errorf("consecutive nightly runs use groups %q and %q, want one group so they never overlap", night, again)
 	}
 	for name, other := range map[string]string{
-		"push to main":    group("push", "refs/heads/main", "3"),
-		"tag push":        group("push", "refs/tags/v2026.11.2-rc.1", "4"),
-		"dispatch":        group("workflow_dispatch", "refs/heads/main", "5"),
-		"dispatch on tag": group("workflow_dispatch", "refs/tags/v2026.11.2", "6"),
+		"dispatch":   group("workflow_dispatch", "refs/heads/main", "3", ""),
+		"called run": group("workflow_dispatch", "refs/heads/main", "4", calledCommit),
 	} {
 		if night == other {
 			t.Errorf("nightly candidate shares group %q with a %s", night, name)
@@ -779,8 +641,8 @@ func TestNightlyCandidateConcurrency(t *testing.T) {
 	}
 }
 
-// The scheduled run has no input and no tag, so it derives its development
-// version from the pinned upgrade source; a tag run keeps the tag's version.
+// The scheduled run has no input, so it derives its development version from
+// the pinned upgrade source; a dispatch keeps the version it was given.
 func TestReleaseIdentityVersion(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 	steps := workflow.Jobs["identity"].Steps
@@ -809,7 +671,6 @@ func TestReleaseIdentityVersion(t *testing.T) {
 		version                               string
 	}{
 		{"nightly", "schedule", "branch", "main", "", "2026.11.6-dev.0"},
-		{"tag", "push", "tag", "v2026.11.6", "", "2026.11.6"},
 		{"dispatch", "workflow_dispatch", "branch", "main", "2026.12.0-beta.1", "2026.12.0-beta.1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -833,4 +694,115 @@ func TestReleaseIdentityVersion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// tagPushStarts reports whether an on: block starts the workflow for a tag
+// push. A push trigger without a branch or tag filter matches tags as well as
+// branches; one with only branch filters matches no tag.
+func tagPushStarts(t *testing.T, on yaml.Node) bool {
+	t.Helper()
+	switch on.Kind {
+	case yaml.ScalarNode:
+		return on.Value == "push"
+	case yaml.SequenceNode:
+		return slices.ContainsFunc(on.Content, func(event *yaml.Node) bool { return event.Value == "push" })
+	case yaml.MappingNode:
+		for i := 0; i < len(on.Content); i += 2 {
+			if on.Content[i].Value != "push" {
+				continue
+			}
+			var filters map[string]yaml.Node
+			if err := on.Content[i+1].Decode(&filters); err != nil {
+				t.Fatal(err)
+			}
+			_, tags := filters["tags"]
+			_, tagsIgnore := filters["tags-ignore"]
+			_, branches := filters["branches"]
+			_, branchesIgnore := filters["branches-ignore"]
+			return tags || tagsIgnore || !branches && !branchesIgnore
+		}
+	}
+	return false
+}
+
+var publicationCommand = regexp.MustCompile(`\b(?:git[ \t]+(?:push|tag)|docker[ \t]+push|oras[ \t]+push|skopeo[ \t]+copy)\b|publish-release-extensions`)
+
+// workflowPublishes returns the jobs of a workflow, and of the workflows it
+// calls, that write releases, tags or packages or ask for permission to.
+func workflowPublishes(t *testing.T, workflow workflowFile, read func(string) workflowFile) []string {
+	t.Helper()
+	var found []string
+	if workflow.Permissions["contents"] == "write" || workflow.Permissions["packages"] == "write" {
+		found = append(found, "workflow permissions")
+	}
+	for id, job := range workflow.Jobs {
+		if called, ok := strings.CutPrefix(job.Uses, "./.github/workflows/"); ok {
+			for _, inner := range workflowPublishes(t, read(called), read) {
+				found = append(found, id+" / "+inner)
+			}
+			continue
+		}
+		if publishes(t, job) || slices.ContainsFunc(job.Steps, func(step workflowStep) bool {
+			return writesRelease(step) || apiWrites(step.Run, "/git/") || publicationCommand.MatchString(step.Run)
+		}) {
+			found = append(found, id)
+		}
+	}
+	return found
+}
+
+// A tag push starts no publication: only a dispatched Release run publishes,
+// so a stray tag publishes nothing.
+func TestNoPublicationOnTagPush(t *testing.T) {
+	parse := func(text string) workflowFile {
+		t.Helper()
+		var workflow workflowFile
+		if err := yaml.Unmarshal([]byte(text), &workflow); err != nil {
+			t.Fatal(err)
+		}
+		return workflow
+	}
+	for _, tc := range []struct {
+		on   string
+		want bool
+	}{
+		{"push", true},
+		{"[push, pull_request]", true},
+		{"{push: {tags: ['v*']}}", true},
+		{"{push: {tags-ignore: ['v*-*']}}", true},
+		{"{push: {paths: ['docs/**']}}", true},
+		{"{push: null}", true},
+		{"{push: {branches: [main]}}", false},
+		{"{push: {branches-ignore: [wip]}}", false},
+		{"{push: {branches: [main], tags: ['v*']}}", true},
+		{"{schedule: [{cron: '0 0 * * *'}], workflow_dispatch: null}", false},
+	} {
+		if got := tagPushStarts(t, parse("on: "+tc.on).On); got != tc.want {
+			t.Errorf("on: %s starts on a tag push = %v, want %v", tc.on, got, tc.want)
+		}
+	}
+	legacy := parse(`
+on: {push: {tags: ['v*']}}
+jobs:
+  build: {uses: ./.github/workflows/build.yml}
+  publish: {steps: [{run: 'gh release create "$GITHUB_REF_NAME" dist/*'}]}
+`)
+	called := parse(`jobs: {push: {steps: [{run: docker push ghcr.io/katl-dev/katl}]}}`)
+	read := func(string) workflowFile { return called }
+	if got := workflowPublishes(t, legacy, read); !slices.Equal(slices.Sorted(slices.Values(got)), []string{"build / push", "publish"}) {
+		t.Errorf("legacy tag workflow publication jobs = %v, want the release and the called registry push", got)
+	}
+
+	read = func(name string) workflowFile {
+		workflow, _ := readWorkflow(t, name)
+		return workflow
+	}
+	allWorkflows(t, func(file string, workflow workflowFile) {
+		if !tagPushStarts(t, workflow.On) {
+			return
+		}
+		if jobs := workflowPublishes(t, workflow, read); len(jobs) != 0 {
+			t.Errorf("%s starts on a tag push and publishes from %v", file, jobs)
+		}
+	})
 }

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/url"
@@ -54,7 +53,7 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release journeys VERSION PREVIOUS_TAG\n       scripts/katl-release status VERSION\n       scripts/katl-release cut VERSION REVISION\n       scripts/katl-release cut-branch VERSION REVISION\n       scripts/katl-release release VERSION [--retry REASON]\n       scripts/katl-release wait VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release require-candidate VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n       "+mergeMilestoneUsage+"\n       scripts/katl-release check-checkout\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release journeys VERSION PREVIOUS_TAG\n       scripts/katl-release status VERSION\n       scripts/katl-release cut VERSION REVISION\n       scripts/katl-release cut-branch VERSION REVISION\n       scripts/katl-release release VERSION [--retry REASON]\n       scripts/katl-release wait VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release require-candidate VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n       "+mergeMilestoneUsage+"\n       scripts/katl-release check-checkout\n\nThe Release workflow publishes after successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "check-checkout" {
@@ -65,9 +64,6 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 		return nil
 	}
 	checkoutcheck.Warn(context.Background(), stderr, checkoutcheck.Release)
-	if args[0] == "prepare" {
-		return prepare(args[1:], stdout, stderr, call)
-	}
 	if args[0] == "regression" {
 		return regression(context.Background(), args[1:], stdout, stderr, newGitHubReader(call))
 	}
@@ -115,7 +111,7 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 		return requireQualified(args[1], args[2:])
 	}
 	if (args[0] != "inspect" || len(args) != 2) && (args[0] != "download" || len(args) != 3) {
-		return errors.New("expected prepare, inspect RUN_ID, download RUN_ID DIRECTORY, verify TAG COMMIT DIRECTORY, checksums DIRECTORY, or equivalent BUNDLE FLAVOUR=SHA256SUMS...; use --help")
+		return errors.New("expected inspect RUN_ID, download RUN_ID DIRECTORY, verify TAG COMMIT DIRECTORY, checksums DIRECTORY, or equivalent BUNDLE FLAVOUR=SHA256SUMS...; use --help")
 	}
 	id, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || id <= 0 {
@@ -135,8 +131,9 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	return encoder.Encode(candidate)
 }
 
-// verify checks a release bundle that is already on disk, such as the bundle
-// the tag workflow is about to publish.
+// verify checks a release bundle that is already on disk. A bundle built by
+// Release is attested from its release branch; one built by the retired tag
+// workflow is attested from its tag.
 func verify(args []string, stderr io.Writer, call command) error {
 	branch := len(args) > 0 && args[0] == "--branch"
 	if branch {
@@ -192,46 +189,6 @@ func resolveCommit(revision string, decode func(string, any) error) (string, err
 		return "", errors.New("GitHub did not return a full source commit SHA")
 	}
 	return source.SHA, nil
-}
-
-func prepare(args []string, stdout, stderr io.Writer, call command) error {
-	flags := flag.NewFlagSet("prepare", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	ref := flags.String("ref", "main", "published source ref or full commit SHA")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 1 || *ref == "" {
-		return errors.New("usage: scripts/katl-release prepare [--ref main] VERSION")
-	}
-	version := flags.Arg(0)
-	if _, err := validateVersion(version); err != nil {
-		return fmt.Errorf("invalid release version: %w", err)
-	}
-	source, err := resolveCommit(*ref, func(endpoint string, value any) error {
-		return api(call, endpoint, value)
-	})
-	if err != nil {
-		return err
-	}
-	var refs []struct{ Ref string }
-	tag := "v" + version
-	if err := api(call, "git/matching-refs/tags/"+tag, &refs); err != nil {
-		return err
-	}
-	for _, ref := range refs {
-		if ref.Ref == "refs/tags/"+tag {
-			return fmt.Errorf("tag %s already exists; inspect its run or choose a new version", tag)
-		}
-	}
-	fmt.Fprintf(stdout, "Release: %s\nSource:  %s (%s)\nPublication: automatic after regression and production VM qualification\n\nReview release guidance in docs/releases/%s.md or, until it is published, docs/releases/next.md.\nAfter source review, start the candidate build with:\n\n", tag, source, *ref, version)
-	if _, err := os.Stat(".jj"); err == nil {
-		fmt.Fprintf(stdout, "jj git fetch --remote origin\njj tag set %s --revision %s\njj git push --remote origin --tag %s\n", tag, source, tag)
-	} else {
-		fmt.Fprintf(stdout, "git fetch origin\ngit tag %s %s\ngit push origin refs/tags/%s\n", tag, source, tag)
-	}
-	fmt.Fprintln(stdout, "\nThen find the tag run in GitHub Actions and use:\nscripts/katl-release inspect RUN_ID\nscripts/katl-release download RUN_ID DIRECTORY\n\nFollow docs/development/releases.md and monitor Release validation through publication.")
-	return nil
 }
 
 type workflowRun struct {
