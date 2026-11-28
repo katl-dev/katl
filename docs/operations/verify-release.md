@@ -62,15 +62,23 @@ same release. Do not edit a release artifact or its metadata.
 
 ## Verify build provenance
 
-Authenticate each executable or image asset against the exact tag and Katl
-release workflow:
+Authenticate each executable or image asset against the Katl release workflow
+and the source ref the release was built from:
+
+| Release | Source ref |
+| --- | --- |
+| 2026.11.7 and later | `refs/heads/release/<version>`, for example `refs/heads/release/2026.11.7` |
+| 2026.11.6 and earlier | `refs/tags/<tag>`, for example `refs/tags/v2026.11.6` |
+
+A release candidate is built from its release's branch, so `v2026.11.7-rc.1`
+uses `refs/heads/release/2026.11.7`.
 
 ```sh
-TAG=v2026.11.0
+SOURCE_REF=refs/heads/release/2026.11.7
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
-  --source-ref "refs/tags/$TAG"
+  --source-ref "$SOURCE_REF"
 ```
 
 Repeat for `katlctl`, a loose PXE artifact, or the upgrade SquashFS you will
