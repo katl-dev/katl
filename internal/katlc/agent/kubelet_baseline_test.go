@@ -302,6 +302,15 @@ func TestKubeletApplyBaseline(t *testing.T) {
 			after: func(_ int, now time.Time) kubeletReport { return readyReport(now) }, cri: configPendingCRI, want: "ready",
 			minWait: settledReportAge, maxWait: settledReportAge + 2*time.Second,
 		},
+		{
+			// A nodeStatusReportFrequency under 30s reposts the unchanged report with a fresh heartbeat.
+			name: "unchanged NotReady report with fresh heartbeats settles within the window", startAge: 2 * time.Second,
+			before: func(_ int, now time.Time) kubeletReport {
+				return notReadyReport("["+missingCNINodeMessage+", PLEG is not healthy: pleg has yet to be successful]", now)
+			},
+			after: func(_ int, now time.Time) kubeletReport { return readyReport(now) }, cri: configPendingCRI, want: "ready",
+			minWait: settledReportAge, maxWait: settledReportAge + 2*time.Second,
+		},
 		{name: "fresh sole CNI", startAge: 2 * time.Second, before: cniOnly, after: cniOnly, cri: configPendingCRI, want: "cni-uninitialized"},
 		{
 			name: "NotReady report that keeps changing", startAge: 2 * time.Second, before: changing, after: changing,
