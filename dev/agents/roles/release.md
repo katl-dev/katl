@@ -11,9 +11,8 @@ Take part in the Coordinator's washup.
 and open blockers, and any explicit maintainer authority from the Orchestrator.
 
 **Qualification and publication.** At the cut, use the CI cost check described
-under [Orchestrator](orchestrator.md). Run the outstanding-journey query in
-AGENTS.md and confirm that no journey release blockers remain before cutting
-a candidate. Qualify the candidate from the release branch. Review the
+under [Orchestrator](orchestrator.md). Run `scripts/katl-release journeys VERSION PREVIOUS_TAG`
+and confirm that it succeeds before cutting a candidate. Qualify the candidate from the release branch. Review the
 generated `RELEASE_NOTES.md` for the exact version before each tag that
 triggers publication. Publish the release candidate through the
 [tagging path](#tagging) and verify its published run, then promote the

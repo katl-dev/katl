@@ -59,7 +59,6 @@ func journeys(ctx context.Context, args []string, stdout io.Writer, r *reader) e
 	if err != nil {
 		return err
 	}
-	blockers = slices.DeleteFunc(blockers, func(issue journeyIssue) bool { return issue.PullRequest != nil })
 
 	if len(prs) == 0 && len(blockers) == 0 {
 		fmt.Fprintf(stdout, "Journey gate clear for %s since %s.\n", branch, previous.Tag())

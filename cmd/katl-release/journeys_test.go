@@ -113,7 +113,8 @@ func TestJourneys(t *testing.T) {
 	args := []string{"2026.11.8", "v2026.11.7"}
 	var out bytes.Buffer
 	const header = "Outstanding journeys for release/2026.11.8 since v2026.11.7\n"
-	const gap = "  Gap fix #22 Fix the failed journey (https://github.com/katl-dev/katl/issues/22)\n"
+	const gap = "  Gap fix #21 Open PR with both labels (https://github.com/katl-dev/katl/pull/21)\n" +
+		"  Gap fix #22 Fix the failed journey (https://github.com/katl-dev/katl/issues/22)\n"
 	const outstanding = "  PR #12 Admitted to the release branch (https://github.com/katl-dev/katl/pull/12)\n"
 	if err := journeys(t.Context(), args, &out, r); err == nil || out.String() != header+outstanding+gap {
 		t.Fatalf("journeys = %q, %v", out.String(), err)
@@ -125,7 +126,7 @@ func TestJourneys(t *testing.T) {
 		t.Fatalf("journeys with only a gap fix = %q, %v", out.String(), err)
 	}
 
-	f.pages[gapList] = f.pages[gapList][:1]
+	f.pages[gapList] = []any{[]any{}}
 	out.Reset()
 	const clear = "Journey gate clear for release/2026.11.8 since v2026.11.7.\n"
 	if err := journeys(t.Context(), args, &out, r); err != nil || out.String() != clear {

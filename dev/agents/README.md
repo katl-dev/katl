@@ -172,7 +172,8 @@ decisions and any explicit maintainer authority to the Release agent. The
 Release agent keeps the milestone and checkpoint current and routes admitted
 fixes through the orchestrator on `main` first. The orchestrator hands back
 merged revisions for the Release agent to cherry-pick through a PR targeting
-`release/<version>`. Keep a PR's source branch outside the
+`release/<version>`. A backport of a `user-facing` change carries the labels
+the [journey gate](../../AGENTS.md#user-journey-validation) requires. Keep a PR's source branch outside the
 `release/[0-9]*` ruleset, for example `backport/2026.12.1-fix`. Cut the next
 version from the then-current `origin/main` SHA because reusing a branch
 with cherry-picks would require a force-push or a merge from `main`, both
