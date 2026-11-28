@@ -30,7 +30,10 @@ type publication struct {
 	call func(context.Context, string, ...string) ([]byte, error)
 }
 
-const publicationAttempts = 3
+const (
+	publicationAttempts = 3
+	publicationTimeout  = 2 * time.Minute
+)
 
 func runPublication(ctx context.Context, args []string, stderr io.Writer, r *reader, call func(context.Context, string, ...string) ([]byte, error)) error {
 	if len(args) != 4 {
@@ -69,12 +72,12 @@ func runPublication(ctx context.Context, args []string, stderr io.Writer, r *rea
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Hour)
 		defer cancel()
 		backoff := p.backoff()
+		// A draft that changed under a stale listing is retried so the next
+		// attempt lists the release it became.
 		return backoff.DoAttempts(ctx, publicationAttempts, func(ctx context.Context) error {
 			return p.draft(ctx, stderr)
-		}, transient)
+		}, func(err error) bool { return transient(err) || errors.Is(err, errNotDraft) })
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
 	return p.publish(ctx, stderr)
 }
 
@@ -113,6 +116,12 @@ func (p publication) listed(ctx context.Context) (published *restRelease, drafts
 	return published, drafts, nil
 }
 
+func (p publication) listForPublish(ctx context.Context) (*restRelease, []restRelease, error) {
+	ctx, cancel := context.WithTimeout(ctx, publicationTimeout)
+	defer cancel()
+	return p.listed(ctx)
+}
+
 func (p publication) draft(ctx context.Context, stderr io.Writer) error {
 	published, drafts, err := p.listed(ctx)
 	if err != nil {
@@ -134,7 +143,7 @@ func (p publication) draft(ctx context.Context, stderr io.Writer) error {
 	}
 	for _, draft := range drafts {
 		// A fresh draft keeps an interrupted upload from supplying any assets.
-		if _, err := p.write(ctx, "DELETE", p.releaseEndpoint(draft.ID)); err != nil {
+		if err := p.deleteDraft(ctx, draft.ID); err != nil {
 			return err
 		}
 	}
@@ -178,7 +187,7 @@ func (p publication) draft(ctx context.Context, stderr io.Writer) error {
 }
 
 func (p publication) publish(ctx context.Context, stderr io.Writer) error {
-	published, drafts, err := p.listed(ctx)
+	published, drafts, err := p.listForPublish(ctx)
 	if err != nil {
 		return err
 	}
@@ -187,7 +196,7 @@ func (p publication) publish(ctx context.Context, stderr io.Writer) error {
 			return p.differentContents()
 		}
 		fmt.Fprintln(stderr, p.version.Tag(), "is already published.")
-		return p.confirmPublished(ctx, published.ID)
+		return p.finishPublish(ctx, published.ID, drafts)
 	}
 	if len(drafts) == 0 {
 		return fmt.Errorf("no draft of %s exists. Run katl-release draft first", p.version.Tag())
@@ -206,18 +215,25 @@ func (p publication) publish(ctx context.Context, stderr io.Writer) error {
 	fmt.Fprintln(stderr, "Publishing", p.version.Tag())
 
 	publishedID := draft.ID
+	var orphaned []restRelease
 	backoff := p.backoff()
 	sameDraft := false
 	err = backoff.DoAttempts(ctx, publicationAttempts, func(ctx context.Context) error {
 		sameDraft = false
-		_, patchErr := p.write(ctx, "PATCH", p.releaseEndpoint(draft.ID), fields...)
+		patchCtx, cancel := context.WithTimeout(ctx, publicationTimeout)
+		_, patchErr := p.write(patchCtx, "PATCH", p.releaseEndpoint(draft.ID), fields...)
+		patchContextErr := patchCtx.Err()
+		cancel()
 		if patchErr == nil {
 			return nil
+		}
+		if patchContextErr != nil {
+			patchErr = errors.Join(patchErr, patchContextErr)
 		}
 
 		// A failed response may follow a successful publish. Retry only while
 		// the same verified draft is still the unique release to publish.
-		published, drafts, err := p.listed(ctx)
+		published, currentDrafts, err := p.listForPublish(ctx)
 		if err != nil {
 			return errors.Join(patchErr, fmt.Errorf("check publication after PATCH: %w", err))
 		}
@@ -226,15 +242,48 @@ func (p publication) publish(ctx context.Context, stderr io.Writer) error {
 				return p.differentContents()
 			}
 			publishedID = published.ID
+			orphaned = currentDrafts
+			// A different release won. Check the original by ID even if
+			// it was omitted from the reconciliation listing.
+			if publishedID != draft.ID && !slices.ContainsFunc(orphaned, func(r restRelease) bool { return r.ID == draft.ID }) {
+				orphaned = append(orphaned, draft)
+			}
 			return nil
 		}
-		sameDraft = len(drafts) == 1 && drafts[0].ID == draft.ID && p.matches(drafts[0])
+		sameDraft = len(currentDrafts) == 1 && currentDrafts[0].ID == draft.ID && p.matches(currentDrafts[0])
 		return patchErr
-	}, func(err error) bool { return sameDraft && transient(err) })
+	}, func(err error) bool { return sameDraft && (transient(err) || errors.Is(err, context.DeadlineExceeded)) })
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w; rerun `scripts/katl-release publish %s %s %s` to reconcile", err, p.version, p.commit, p.dir)
+	}
 	if err != nil {
 		return err
 	}
-	return p.confirmPublished(ctx, publishedID)
+	return p.finishPublish(ctx, publishedID, orphaned)
+}
+
+func (p publication) finishPublish(ctx context.Context, publishedID int64, drafts []restRelease) error {
+	ctx, cancel := context.WithTimeout(ctx, publicationTimeout)
+	defer cancel()
+	if err := p.confirmPublished(ctx, publishedID); err != nil {
+		return err
+	}
+	for _, draft := range drafts {
+		if draft.ID == publishedID {
+			continue
+		}
+		backoff := p.backoff()
+		err := backoff.DoAttempts(ctx, publicationAttempts, func(ctx context.Context) error {
+			return p.deleteDraft(ctx, draft.ID)
+		}, transient)
+		if errors.Is(err, errNotDraft) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("confirmed %s, but could not remove orphaned draft %d: %w", p.version.Tag(), draft.ID, err)
+		}
+	}
+	return nil
 }
 
 func (p publication) confirmPublished(ctx context.Context, id int64) error {
@@ -285,6 +334,36 @@ func (p publication) differentContents() error {
 
 func (p publication) releaseEndpoint(id int64) string {
 	return p.repo("releases/" + strconv.FormatInt(id, 10))
+}
+
+// errNotDraft reports that a listed release is no longer a draft of this
+// version's tag, so it was not deleted.
+var errNotDraft = errors.New("release is no longer a draft of this version")
+
+// deleteDraft deletes release id only while it is still a draft of this
+// version's tag. A listing can be stale, so the bound ID is read again
+// immediately before the DELETE. A release that is already gone counts as
+// deleted.
+func (p publication) deleteDraft(ctx context.Context, id int64) error {
+	current, err := p.readRelease(ctx, id)
+	if notFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current.ID != id {
+		return fmt.Errorf("GitHub returned release ID %d when reading release %d", current.ID, id)
+	}
+	if !current.Draft || current.TagName != p.version.Tag() {
+		return fmt.Errorf("release %d: %w", id, errNotDraft)
+	}
+
+	_, err = p.write(ctx, "DELETE", p.releaseEndpoint(id))
+	if notFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (p publication) readRelease(ctx context.Context, id int64) (restRelease, error) {

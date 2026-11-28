@@ -268,7 +268,16 @@ asset digests and publishes it, creating the tag at the source commit if
 needed. If the request fails, it checks whether GitHub published the release
 and retries a transient failure only while the same verified draft remains.
 It reads back the tag, release and checksum file. A candidate publishes as a
-pre-release. An already-published matching release is verified without a write.
+pre-release. If a timeout leaves the outcome unresolved, the error says to
+rerun the same command, which reconciles from GitHub's current state.
+
+An already-published matching release is verified without publishing again.
+If GitHub published the release under a different ID than the draft, the
+command confirms that release's tag, commit and checksum file before
+removing any stale draft. On that path, and when a rerun finds the release
+already published, it removes leftover drafts of the same tag. Each draft is
+read again by ID first and deleted only while it is still a draft of that
+tag.
 
 ### `candidate-artifacts`
 
