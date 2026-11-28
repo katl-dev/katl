@@ -84,7 +84,7 @@ func TestCutReleaseWorkflow(t *testing.T) {
 				"VERSION":  "${{ inputs.version }}",
 				"REVISION": "${{ inputs.revision }}",
 			}
-			if !maps.Equal(step.Env, want) || strings.TrimSpace(step.Run) != `scripts/katl-release cut-branch "$VERSION" "$REVISION"` {
+			if !maps.Equal(step.Env, want) || strings.TrimSpace(step.Run) != `"$RUNNER_TEMP/katl-release" cut-branch "$VERSION" "$REVISION"` {
 				t.Error("cut-branch must receive the App token and the two dispatch inputs through its environment")
 			}
 		}
@@ -92,6 +92,60 @@ func TestCutReleaseWorkflow(t *testing.T) {
 	if credential < 1 || create <= credential {
 		t.Fatal("want the main guard before the credential step, followed by cut-branch")
 	}
+}
+
+func TestCutReleaseRestoresNoCache(t *testing.T) {
+	// A poisoned cache entry would run attacker-built code beside the
+	// release App token, so the token job builds katl-release from source.
+	workflow, _ := readWorkflow(t, "cut-release.yml")
+	setupGo, build := 0, -1
+	for i, step := range workflow.Jobs["cut"].Steps {
+		for _, uses := range reachableUses(t, step.Uses) {
+			if strings.HasPrefix(uses, "actions/cache") || uses == "./.github/actions/image-caches" ||
+				uses == "./.github/actions/setup-go" {
+				t.Errorf("step %d reaches %s, which restores a cache", i, uses)
+			}
+		}
+		if strings.HasPrefix(step.Uses, "actions/setup-go@") {
+			setupGo++
+			if step.With["cache"] != "false" {
+				t.Errorf("setup-go in step %d must set cache: false", i)
+			}
+		}
+		if strings.TrimSpace(step.Run) == `go build -o "$RUNNER_TEMP/katl-release" ./cmd/katl-release` {
+			build = i
+		}
+	}
+	if setupGo != 1 || build < 0 {
+		t.Fatalf("want one uncached setup-go and a go build of katl-release, got %d setup-go steps and build step %d", setupGo, build)
+	}
+}
+
+// reachableUses returns uses and every action that the local composite
+// actions it names use in turn.
+func reachableUses(t *testing.T, uses string) []string {
+	t.Helper()
+	if uses == "" {
+		return nil
+	}
+	reached := []string{uses}
+	if !strings.HasPrefix(uses, "./") {
+		return reached
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), uses, "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action struct {
+		Runs struct{ Steps []workflowStep }
+	}
+	if err := yaml.Unmarshal(data, &action); err != nil {
+		t.Fatalf("parse %s: %v", uses, err)
+	}
+	for _, step := range action.Runs.Steps {
+		reached = append(reached, reachableUses(t, step.Uses)...)
+	}
+	return reached
 }
 
 func TestCutReleaseEnvironment(t *testing.T) {

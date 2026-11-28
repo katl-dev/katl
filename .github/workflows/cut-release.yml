@@ -37,7 +37,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-go
+      # This job holds the release App token, so it restores no cache and
+      # runs only a katl-release built here from the checked-out source.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build katl-release
+        run: go build -o "$RUNNER_TEMP/katl-release" ./cmd/katl-release
       - name: Select the branch creation credential
         id: credential
         uses: ./.github/actions/release-credential
@@ -49,4 +56,4 @@ jobs:
           GH_TOKEN: ${{ steps.credential.outputs.token }}
           VERSION: ${{ inputs.version }}
           REVISION: ${{ inputs.revision }}
-        run: scripts/katl-release cut-branch "$VERSION" "$REVISION"
+        run: '"$RUNNER_TEMP/katl-release" cut-branch "$VERSION" "$REVISION"'

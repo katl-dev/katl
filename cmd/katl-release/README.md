@@ -30,10 +30,10 @@ the run URL.
 
 ### `cut-branch`
 
-The **Cut release** workflow runs
-`scripts/katl-release cut-branch VERSION REVISION` with a full commit SHA. It
-uses the same checks, creates the branch if needed, and reads it back. Use
-`cut` to start the workflow from a checkout.
+The **Cut release** workflow builds `katl-release` from the checkout without
+any restored cache and runs `katl-release cut-branch VERSION REVISION` with a
+full commit SHA. It uses the same checks, creates the branch if needed, and
+reads it back. Use `cut` to start the workflow from a checkout.
 
 ## Prepare and retrieve a candidate
 
