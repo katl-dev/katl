@@ -35,6 +35,11 @@ func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 }
 
 func TestMkosiRuntimeCacheUsesIncludedBinaryIdentity(t *testing.T) {
+	const (
+		unrelated = "./internal/vmtest/testcmd/net-client"
+		included  = "./cmd/katl-host-config-activate"
+		guest     = "./cmd/katl-vmtest-agent"
+	)
 	repo := scriptRepoFixture(t)
 	tmp := t.TempDir()
 	buildDir := filepath.Join(tmp, "mkosi-build")
@@ -42,7 +47,7 @@ func TestMkosiRuntimeCacheUsesIncludedBinaryIdentity(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
 	}
-	podmanArgs := filepath.Join(tmp, "podman-args.txt")
+	builderCalled := filepath.Join(tmp, "builder-called")
 	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
   exit 0
 fi
@@ -50,113 +55,68 @@ if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
   printf 'fake-builder-image-id\n'
   exit 0
 fi
-printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
+[[ "$1" == run ]]
+touch "$KATL_FAKE_BUILDER_CALLED"
 `)
+	stubMkosiGoBuilds(t, bin, unrelated, included, guest)
 	seedRuntimeCacheOutputs(t, buildDir)
 	env := append(
 		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
-		"KATL_FAKE_PODMAN_ARGS="+podmanArgs,
+		"KATL_FAKE_BUILDER_CALLED="+builderCalled,
 		"KATL_BUILD_COMMIT=cache-test",
 		"KATL_VERSION=0.0.0-cache-test",
 		"TMPDIR="+tmp,
 	)
 	env = append(env, activeGoCacheEnv(t)...)
 
-	first := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
-	first.Dir = repo
-	first.Env = env
-	output, err := runInGroup(t, first, scriptTimeout)
-	if err != nil {
-		t.Fatalf("initial scripts/mkosi build-runtime failed: %v\n%s", err, output)
-	}
-	if strings.Contains(string(output), "mkosi cache hit: runtime") {
-		t.Fatalf("initial build unexpectedly hit cache:\n%s", output)
-	}
-	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
-		t.Fatalf("initial build did not invoke fake podman")
+	build := func(t *testing.T, imageSupport string, wantHit bool) {
+		t.Helper()
+		cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+		cmd.Dir = repo
+		cmd.Env = append(env, "KATL_VMTEST_IMAGE_SUPPORT="+imageSupport)
+		output, err := runInGroup(t, cmd, scriptTimeout)
+		if err != nil {
+			t.Fatalf("scripts/mkosi build-runtime failed: %v\n%s", err, output)
+		}
+		if hit := strings.Contains(string(output), "mkosi cache hit: runtime artifacts match the current repo"); hit != wantHit {
+			t.Fatalf("runtime cache hit = %t, want %t:\n%s", hit, wantHit, output)
+		}
+		// Each step observes only its own builder invocation.
+		err = os.Remove(builderCalled)
+		if wantHit && !os.IsNotExist(err) || !wantHit && err != nil {
+			t.Fatalf("builder call log on cache hit=%t: %v", wantHit, err)
+		}
 	}
 
-	unrelatedSource := filepath.Join(repo, "internal", "vmtest", "testcmd", "net-client", "cache_identity_probe.go")
-	writeTemporaryFile(t, unrelatedSource, "package main\n\nconst cacheIdentityProbe = \"unrelated\"\n")
-	if err := os.Remove(podmanArgs); err != nil {
-		t.Fatalf("remove podman args: %v", err)
-	}
-	second := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
-	second.Dir = repo
-	second.Env = env
-	output, err = runInGroup(t, second, scriptTimeout)
-	if err != nil {
-		t.Fatalf("cached scripts/mkosi build-runtime failed: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), "mkosi cache hit: runtime artifacts match the current repo") {
-		t.Fatalf("unrelated Go source edit did not hit cache:\n%s", output)
-	}
-	if _, err := os.Stat(podmanArgs); !os.IsNotExist(err) {
-		t.Fatalf("fake podman ran for unrelated Go source edit: %v", err)
-	}
+	build(t, "0", false)
+	t.Run("unrelated source", func(t *testing.T) {
+		writeTemporaryFile(t, filepath.Join(repo, unrelated, "cache_identity_probe.go"), "package main\n\nfunc init() { println(\"unrelated change\") }\n")
+		build(t, "0", true)
+	})
 
 	for _, artifact := range []string{"katl-runtime.efi", "katl-kernel-inputs.tar"} {
-		if err := os.WriteFile(filepath.Join(buildDir, artifact), []byte("corrupt"), 0o644); err != nil {
-			t.Fatalf("corrupt runtime artifact: %v", err)
-		}
-		corrupt := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
-		corrupt.Dir = repo
-		corrupt.Env = env
-		output, err = runInGroup(t, corrupt, scriptTimeout)
-		if err != nil {
-			t.Fatalf("scripts/mkosi with corrupt cached artifact failed: %v\n%s", err, output)
-		}
-		if strings.Contains(string(output), "mkosi cache hit: runtime") {
-			t.Fatalf("corrupt cached artifact unexpectedly hit cache:\n%s", output)
-		}
-		if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
-			t.Fatal("corrupt cached artifact did not invoke fake podman")
-		}
+		t.Run("corrupt "+artifact, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(buildDir, artifact), []byte("corrupt"), 0o644); err != nil {
+				t.Fatalf("corrupt runtime artifact: %v", err)
+			}
+			build(t, "0", false)
+		})
 		seedRuntimeCacheOutputs(t, buildDir)
 	}
 
-	includedSource := filepath.Join(repo, "cmd", "katl-host-config-activate", "cache_identity_probe.go")
-	writeTemporaryFile(t, includedSource, "package main\n\nvar cacheIdentityProbeHostConfig = \"changed\"\n")
-	third := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
-	third.Dir = repo
-	third.Env = env
-	output, err = runInGroup(t, third, scriptTimeout)
-	if err != nil {
-		t.Fatalf("changed-binary scripts/mkosi build-runtime failed: %v\n%s", err, output)
-	}
-	if strings.Contains(string(output), "mkosi cache hit: runtime") {
-		t.Fatalf("included binary edit unexpectedly hit cache:\n%s", output)
-	}
-	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
-		t.Fatalf("changed included binary did not invoke fake podman")
-	}
+	writeTemporaryFile(t, filepath.Join(repo, included, "cache_identity_probe.go"), "package main\n\nfunc init() { println(\"included binary change\") }\n")
+	t.Run("included source", func(t *testing.T) {
+		build(t, "0", false)
+	})
 
 	t.Run("instrumented guest agent", func(t *testing.T) {
-		build := func() string {
-			t.Helper()
-			cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
-			cmd.Dir = repo
-			cmd.Env = append(env, "KATL_VMTEST_IMAGE_SUPPORT=1")
-			output, err := runInGroup(t, cmd, scriptTimeout)
-			if err != nil {
-				t.Fatalf("instrumented runtime build failed: %v\n%s", err, output)
-			}
-			return string(output)
-		}
-		build()
-		const hit = "mkosi cache hit: runtime artifacts match the current repo"
-		if output := build(); !strings.Contains(output, hit) {
-			t.Fatalf("unchanged instrumented runtime missed cache:\n%s", output)
-		}
-
-		probe := filepath.Join(repo, "cmd", "katl-vmtest-agent", "cache_identity_probe.go")
-		writeTemporaryFile(t, probe, "package main\n\nfunc init() { println(\"changed instrumented guest agent\") }\n")
-		if output := build(); strings.Contains(output, hit) {
-			t.Fatalf("instrumented-only guest agent edit hit cache:\n%s", output)
-		}
+		build(t, "1", false)
+		build(t, "1", true)
+		writeTemporaryFile(t, filepath.Join(repo, guest, "cache_identity_probe.go"), "package main\n\nfunc init() { println(\"changed instrumented guest agent\") }\n")
+		build(t, "1", false)
 	})
 }
 
@@ -165,9 +125,6 @@ func TestMkosiRuntimeCacheMissesWhenBinaryIdentityUnavailable(t *testing.T) {
 	tmp := t.TempDir()
 	buildDir := filepath.Join(tmp, "mkosi-build")
 	bin := filepath.Join(tmp, "bin")
-	if err := os.MkdirAll(filepath.Join(buildDir, ".katl-stamps"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(stamps) error = %v", err)
-	}
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
 	}
@@ -181,17 +138,8 @@ if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
 fi
 printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 `)
-	realGo := workstationtest.Tool(t, "go")
-	writeFakeExecutable(t, bin, "go", `if [[ "$*" == "run -buildvcs=false ./cmd/katl-kernel-release "* ]]; then
-  exec `+realGo+` "$@"
-fi
-exit 42
-`)
+	stubMkosiGoBuilds(t, bin)
 	seedRuntimeCacheOutputs(t, buildDir)
-	stamp := filepath.Join(buildDir, ".katl-stamps", "runtime.sha256")
-	if err := os.WriteFile(stamp, []byte(strings.Repeat("a", 64)+"\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", stamp, err)
-	}
 	env := append(
 		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -204,22 +152,33 @@ exit 42
 	)
 	env = append(env, activeGoCacheEnv(t)...)
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
-	cmd.Dir = repo
-	cmd.Env = env
-	output, err := runInGroup(t, cmd, scriptTimeout)
-	if err != nil {
-		t.Fatalf("scripts/mkosi build-runtime with failing identity probe failed: %v\n%s", err, output)
+	build := func(overrides ...string) string {
+		t.Helper()
+		cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+		cmd.Dir = repo
+		cmd.Env = append(env, overrides...)
+		output, err := runInGroup(t, cmd, scriptTimeout)
+		if err != nil {
+			t.Fatalf("scripts/mkosi build-runtime failed: %v\n%s", err, output)
+		}
+		return string(output)
 	}
-	if strings.Contains(string(output), "mkosi cache hit: runtime") {
+
+	build()
+	stamp := filepath.Join(buildDir, ".katl-stamps", "runtime.sha256")
+	before := mustReadFile(t, stamp)
+	if err := os.Remove(podmanArgs); err != nil {
+		t.Fatalf("remove initial builder log: %v", err)
+	}
+
+	if output := build("KATL_FAKE_GO_BUILD_FAIL=1"); strings.Contains(output, "mkosi cache hit: runtime") {
 		t.Fatalf("binary identity failure still hit cache:\n%s", output)
 	}
 	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
 		t.Fatalf("binary identity failure did not invoke fake podman")
 	}
-	stampData := strings.TrimSpace(string(mustReadFile(t, stamp)))
-	if stampData != strings.Repeat("a", 64) {
-		t.Fatalf("binary identity failure overwrote cache stamp with %q", stampData)
+	if after := mustReadFile(t, stamp); !bytes.Equal(after, before) {
+		t.Fatalf("binary identity failure changed cache stamp from %q to %q", before, after)
 	}
 }
 
@@ -254,16 +213,7 @@ func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
 `)
 	writeFakeExecutable(t, bin, "podman", `if [[ "${2:-}" == inspect ]]; then printf 'builder-id\n'; fi
 `)
-	realGo := workstationtest.Tool(t, "go")
-	writeFakeExecutable(t, bin, "go", `if [[ "$*" == "run -buildvcs=false ./cmd/katl-kernel-release "* ]]; then
-  exec `+realGo+` "$@"
-fi
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == -o ]]; then printf 'binary\n' > "$2"; exit 0; fi
-  shift
-done
-exit 1
-`)
+	stubMkosiGoBuilds(t, bin)
 	log := filepath.Join(tmp, "assembly.log")
 	env := append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -311,6 +261,34 @@ exit 1
 			t.Fatalf("selection %q: assembly count = %d, want %d", step.selection, got, step.builds)
 		}
 	}
+}
+
+// Cache tests need deterministic binary bytes to hash. Compile packages whose
+// sources they change and leave go run (including kernel preparation) intact.
+func stubMkosiGoBuilds(t *testing.T, bin string, realPackages ...string) {
+	t.Helper()
+	goPath := workstationtest.Tool(t, "go")
+	if err := os.Symlink(goPath, filepath.Join(bin, "real-go")); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeExecutable(t, bin, "go", `
+package="${@: -1}"
+if [[ "$1" != build || " `+strings.Join(realPackages, " ")+` " == *" $package "* ]]; then
+  exec "${0%/*}/real-go" "$@"
+fi
+if [[ "${KATL_FAKE_GO_BUILD_FAIL:-0}" == 1 ]]; then
+  exit 42
+fi
+while [[ $# -gt 1 ]]; do
+  if [[ "$1" == -o ]]; then
+    printf '%s\n' "$package" > "$2"
+    exit 0
+  fi
+  shift
+done
+echo 'mkosi fixture expected go build with -o' >&2
+exit 2
+`)
 }
 
 func writeFakeExecutable(t *testing.T, dir, name, body string) string {
@@ -432,6 +410,7 @@ func TestMkosiFlavourInvalidatesArtifacts(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	stubMkosiGoBuilds(t, bin)
 	calls := filepath.Join(tmp, "calls")
 	writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
   [[ "$2" != inspect ]] || echo fake-image
@@ -609,6 +588,7 @@ func TestMkosiNestedBuildsReuseLock(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	stubMkosiGoBuilds(t, bin)
 	writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
   [[ "$2" != inspect ]] || echo fake-image
 fi
