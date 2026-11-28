@@ -7,6 +7,11 @@ checkpoint lets a new session recover the work.
 
 Find tool usage and setup in the [development tool index](../README.md).
 
+File GitHub issues only through `scripts/katl-issue new`. Review its matches
+before confirming a distinct issue, recording a recurrence, or adding detail to
+an existing issue. Planners can run `scripts/katl-issue report` or read the
+daily Issue intake workflow summary. See the [issue command reference](../issue-intake.md).
+
 ## Model and effort
 
 Each role belongs to a tier, and the tier table names the model for that

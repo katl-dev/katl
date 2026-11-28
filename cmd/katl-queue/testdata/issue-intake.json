@@ -1,0 +1,75 @@
+[
+  {
+    "Number": 805,
+    "Title": "vmtest: report the real reason when a libvirt lease wait times out",
+    "Body": "WaitLibvirtLease in internal/vmtest/libvirt_lease.go reports the last virsh net-dhcp-leases call as signal: killed when a deadline expires. Report no DHCP lease for the MAC and the elapsed timeout instead."
+  },
+  {
+    "Number": 862,
+    "Title": "vmtest: report the last lease lookup when the lease wait times out",
+    "Body": "WaitLibvirtLease (internal/vmtest/libvirt_lease.go) reports signal: killed from the virsh net-dhcp-leases call instead of the last informative result. Report no DHCP lease for the MAC and the elapsed wait."
+  },
+  {
+    "Number": 529,
+    "Title": "vmtest: capture virtio carrier loss before a DHCP lease arrives",
+    "Body": "The guest lost carrier before TestInstalledRuntimeConfigApplyModesSmoke could obtain a libvirt DHCP lease. Capture the tap, bridge and link transitions while running the recovery test."
+  },
+  {
+    "Number": 550,
+    "Title": "katlctl: check the running version before uploading an upgrade image",
+    "Body": "katlctl node upgrade --artifact uploads the whole runtime image even when the node already runs that version. Compare artifact version and digest against running and staged generations before uploading."
+  },
+  {
+    "Number": 845,
+    "Title": "katlctl: refuse node upgrade before uploading the image",
+    "Body": "katlctl node upgrade uploads the whole runtime image before a preflight refusal. Run preflight before uploading the image and report the refusal and next step."
+  },
+  {
+    "Number": 618,
+    "Title": "Recovery workflows for management authentication",
+    "Body": "Document and test management trust recovery."
+  },
+  {
+    "Number": 663,
+    "Parent": 618,
+    "Title": "katlctl: recover management trust after lost secrets",
+    "Body": "Recover lost management secrets with katlctl management identity recover over root SSH. Read the CA fingerprint and rotate authority with katlc agent rotate-management."
+  },
+  {
+    "Number": 664,
+    "Parent": 618,
+    "Title": "katlctl: recover management trust after lost secrets",
+    "Body": "Recover lost management secrets with katlctl management identity recover over root SSH. Read the CA fingerprint and rotate authority with katlc agent rotate-management."
+  },
+  {
+    "Number": 949,
+    "Title": "ci: gate merge-queue entry on one admission verdict",
+    "Body": "A Hold line or auto-merge state must never leave a PR unexplained. Every reason names the owner and what clears it. Every ready PR is queued, awaiting review, or has a hold. Absorbs the hold workflow from #795.\n\n<!-- katl-issue links -->\nSupersedes: #795"
+  },
+  {
+    "Number": 795,
+    "Title": "katl-queue: own PR holds and their labels end to end",
+    "Body": "Turning auto-merge off leaves a PR unexplained. Every ready PR is queued, awaiting review, or has a Hold line naming what clears it."
+  },
+  {
+    "Number": 994,
+    "Closed": true,
+    "Labels": ["bug"],
+    "Title": "katl-queue: resolve the GitHub repository once",
+    "Body": "Two owners resolve repository identity independently. A fixed repository and a remote lookup disagree outside this checkout. Bind one repository once and reuse the selection for every request."
+  },
+  {
+    "Number": 995,
+    "Closed": true,
+    "Labels": ["flaky-test"],
+    "Title": "release: keep one owner for GitHub repository identity",
+    "Body": "Publisher requests resolve repository identity independently. A configured repository and a remote lookup disagree outside the checkout. Bind one repository once and reuse the selection for each request."
+  },
+  {
+    "Number": 996,
+    "Closed": true,
+    "Labels": ["bug"],
+    "Title": "release: show repository status",
+    "Body": "Display the GitHub repository name and release milestone in the progress table when reading artifact status."
+  }
+]

@@ -44,7 +44,14 @@ type gh struct {
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, error) {
+	return runGHWithInput(ctx, "", args...)
+}
+
+func runGHWithInput(ctx context.Context, input string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -61,7 +68,11 @@ func newGH() *gh {
 }
 
 func (g *gh) api(ctx context.Context, args ...string) ([]byte, error) {
-	return runGH(ctx, append(append([]string{"api"}, args...), "--hostname", g.host)...)
+	return g.apiWithInput(ctx, "", args...)
+}
+
+func (g *gh) apiWithInput(ctx context.Context, input string, args ...string) ([]byte, error) {
+	return runGHWithInput(ctx, input, append(append([]string{"api"}, args...), "--hostname", g.host)...)
 }
 
 // ghError is a failed gh invocation. It keeps gh's standard error, which is
@@ -730,7 +741,14 @@ func (g *gh) comments(ctx context.Context, number int) ([]reviewrecord.Comment, 
 }
 
 func (g *gh) comment(ctx context.Context, number int, body string) error {
-	_, err := runGH(ctx, "pr", "comment", fmt.Sprint(number), "--body", body, "--repo", g.repo())
+	// PR conversations and issues share the issue comment API.
+	payload, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{body})
+	if err != nil {
+		return err
+	}
+	_, err = g.apiWithInput(ctx, string(payload), "--method", "POST", fmt.Sprintf("%s/issues/%d/comments", g.repoPath(), number), "--input", "-")
 	return err
 }
 
