@@ -324,14 +324,10 @@ func TestStuckSlotSelection(t *testing.T) {
 }
 
 // TestStuckSlotStepsMatchReleaseNotes keeps the commands of steps 3 and 4 that
-// katlctl prints identical to those in docs/releases/next.md. The notes exist
-// only until the release that carries them, so the comparison runs while they
-// do.
+// katlctl prints identical to those in docs/releases/2026.11.5.md, the release
+// guidance that carries them.
 func TestStuckSlotStepsMatchReleaseNotes(t *testing.T) {
-	notes, err := os.ReadFile("../../docs/releases/next.md")
-	if errors.Is(err, os.ErrNotExist) {
-		t.Skip("no release notes in this tree")
-	}
+	notes, err := os.ReadFile("../../docs/releases/2026.11.5.md")
 	if err != nil {
 		t.Fatal(err)
 	}
