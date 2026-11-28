@@ -75,7 +75,7 @@ func explainHostUpgradeError(err error) error {
 // always labels the staged slot katl_1. The type to restore is the one the
 // other root slot carries in the same dump, because `/` is a dm-verity device
 // and says nothing about the partition it came from. The same commands appear in
-// docs/releases/next.md.
+// docs/releases/2026.11.5.md.
 func stuckRootSlotGuidance(disk string) string {
 	return fmt.Sprintf(`
 This node cannot be upgraded because an earlier failed upgrade left its inactive root slot half-installed. The repair is one-time and per node: only nodes whose upgrade failed need it, and healthy nodes are unaffected.
