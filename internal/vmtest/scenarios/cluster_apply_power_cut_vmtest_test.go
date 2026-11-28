@@ -112,9 +112,23 @@ func runPowerCutJourney(ctx context.Context, katlctl katlctlRunner, dir string, 
 		return fmt.Errorf("reboot-cut: generation changed from %s to %s without an apply", generation, next)
 	}
 
-	// Later journeys expect the shared configuration on every node.
-	if _, stderr, err := runProofKatlctl(ctx, katlctl, dir, "restore", "cluster", "apply", "--config", validConfig, "--node", node.Name, "-o", "json"); err != nil {
+	// Later journeys expect the shared configuration running on every node.
+	// Removing the sysctl file applies at the next boot.
+	stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "restore", "cluster", "apply", "--config", validConfig, "--node", node.Name, "-o", "json")
+	if err != nil {
 		return fmt.Errorf("restore %s configuration: %w: %s", node.Name, err, stderr)
+	}
+	var restore struct {
+		RebootRequired bool `json:"rebootRequired"`
+	}
+	if err := json.Unmarshal(stdout, &restore); err != nil {
+		return fmt.Errorf("restore %s configuration: %w", node.Name, err)
+	}
+	if !restore.RebootRequired {
+		return nil
+	}
+	if _, stderr, err := runProofKatlctl(ctx, katlctl, dir, "restore-reboot", "node", "reboot", node.Name, "--config", validConfig); err != nil {
+		return fmt.Errorf("reboot %s into restored configuration: %w: %s", node.Name, err, stderr)
 	}
 	return nil
 }
