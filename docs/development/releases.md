@@ -37,9 +37,9 @@ publication under the
 
    The **Cut release** workflow creates the branch in the `release-cut`
    environment. The command follows the run and verifies the resulting branch
-   head. GitHub can still accept hand-pushed release branches until an
-   administrator applies `.github/rulesets/release-branch-creation.json`.
-   Use the workflow for every cut. See the
+   head. The release branch creation ruleset,
+   `.github/rulesets/release-branch-creation.json`, enforces this path: only
+   the App that the workflow uses can create release branches. See the
    [release rulesets](https://github.com/katl-dev/katl/blob/main/docs/development/release-rulesets.md).
 
    After the cut, check the journey gate with the previous final release tag.
