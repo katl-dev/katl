@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/tls"
 	_ "embed"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -801,6 +804,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 const (
 	bootMoveIntentPath = "/var/lib/katl/boot/move-intent.json"
 	loaderOneShotVar   = "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+	loaderDefaultVar   = "/sys/firmware/efi/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 )
 
 // plantedBootMoveIntent returns a persisted intent that publishes desired at
@@ -859,25 +863,36 @@ func activationReconciled(t *testing.T, ctx context.Context, guest *GuestControl
 	return ""
 }
 
-// bootctlDefaultEntry returns the loader entry ID that firmware boots by default.
-func bootctlDefaultEntry(t *testing.T, ctx context.Context, guest *GuestControl) string {
+// efiLoaderEntry returns the loader entry ID that a systemd-boot EFI variable
+// names. It reads the variable itself because bootctl marks the next boot's
+// entry as its default, so a set one-shot would hide the persistent default.
+func efiLoaderEntry(t *testing.T, ctx context.Context, guest *GuestControl, variable string) string {
 	t.Helper()
-	output := guestCommandOutput(t, ctx, guest, "bootctl-default-entry", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
-		"/usr/bin/bootctl", "--no-pager", "list", "--json=short")
-	var entries []struct {
-		ID        string `json:"id"`
-		IsDefault bool   `json:"isDefault"`
+	name, _, _ := strings.Cut(filepath.Base(variable), "-")
+	dump := guestCommandOutput(t, ctx, guest, "efi-"+name, "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/od", "-An", "-v", "-tx1", variable)
+	data, err := hex.DecodeString(strings.Join(strings.Fields(dump), ""))
+	if err != nil {
+		t.Fatalf("decode %s dump: %v\n%s", name, err, dump)
 	}
-	if err := json.Unmarshal([]byte(output), &entries); err != nil {
-		t.Fatalf("decode bootctl list: %v\n%s", err, output)
+
+	// efivarfs prefixes the NUL-terminated UTF-16LE value with four attribute bytes.
+	const attributesSize = 4
+	if len(data) <= attributesSize || len(data)%2 != 0 {
+		t.Fatalf("%s holds %d bytes, want attributes and a UTF-16LE entry ID", name, len(data))
 	}
-	for _, entry := range entries {
-		if entry.IsDefault {
-			return entry.ID
-		}
+	units := make([]uint16, 0, (len(data)-attributesSize)/2)
+	for i := attributesSize; i < len(data); i += 2 {
+		units = append(units, binary.LittleEndian.Uint16(data[i:]))
 	}
-	t.Fatalf("bootctl list names no default entry:\n%s", output)
-	return ""
+	if end := slices.Index(units, 0); end >= 0 {
+		units = units[:end]
+	}
+	entry := string(utf16.Decode(units))
+	if entry == "" {
+		t.Fatalf("%s names no loader entry", name)
+	}
+	return entry
 }
 
 func assertDeadmanTimerInactive(t *testing.T, ctx context.Context, guest *GuestControl, name string) {
@@ -888,14 +903,16 @@ func assertDeadmanTimerInactive(t *testing.T, ctx context.Context, guest *GuestC
 }
 
 // runInterruptedBootMoveSmoke plants boot-move intents that this runtime must
-// complete, each followed by a reboot: interrupted persistent selections of
-// the settled default and of another known-good generation, and a next-boot
-// trial that firmware never booted.
+// complete, each followed by a reboot: an interrupted move that republishes
+// the settled selection unchanged, an interrupted persistent selection of
+// another known-good generation, and a next-boot trial that firmware never
+// booted.
 func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallback, desired string) (*GuestControl, *AgentClient) {
 	t.Helper()
 
-	// An interrupted re-selection of the fallback, which is the settled
-	// default. EFI already matches, so activation completes it.
+	// An interrupted move that republishes the settled selection, with the
+	// fallback as its default and no queued target. EFI already matches, so
+	// activation completes it.
 	current := bootSelectionFromGuest(t, ctx, guest)
 	if current.DefaultGenerationID != fallback || current.TrialGenerationID != "" || current.TargetBootGenerationID != "" {
 		t.Fatalf("settled selection = %+v, want default %s without a one-shot", current, fallback)
@@ -903,10 +920,10 @@ func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *Runnin
 	fallbackSpec := generationFromGuest(t, ctx, guest, fallback)
 	assertGuestMissing(t, ctx, guest, bootMoveIntentPath)
 	previousBootID := guestBootID(t, ctx, client)
-	const reselectOperation = "vmtest-interrupted-reselect"
-	writeGuestFile(t, ctx, guest, bootMoveIntentPath, plantedBootMoveIntent(t, reselectOperation, previousBootID, current, current), 0o600)
+	const settledOperation = "vmtest-interrupted-settled"
+	writeGuestFile(t, ctx, guest, bootMoveIntentPath, plantedBootMoveIntent(t, settledOperation, previousBootID, current, current), 0o600)
 	if err := requestGuestReboot(ctx, guest); err != nil {
-		t.Fatalf("reboot with an interrupted re-selection: %v", err)
+		t.Fatalf("reboot with an interrupted settled move: %v", err)
 	}
 	_ = client.Close()
 	guest, client = reconnectGuestAfterBoot(t, ctx, node, previousBootID)
@@ -916,18 +933,18 @@ func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if got := currentGenerationFromGuest(t, ctx, guest); got != fallback {
 		t.Fatalf("booted generation = %s, want the selected default %s", got, fallback)
 	}
-	if reconciled := activationReconciled(t, ctx, guest); reconciled != reselectOperation {
-		t.Fatalf("activation reconciled = %q, want %s completed by activation", reconciled, reselectOperation)
+	if reconciled := activationReconciled(t, ctx, guest); reconciled != settledOperation {
+		t.Fatalf("activation reconciled = %q, want %s completed by activation", reconciled, settledOperation)
 	}
-	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "boot-health-result-after-reselect", "systemctl", "show", "--property=Result", "--value", "katl-boot-health.service")); got != "success" {
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "boot-health-result-after-settled", "systemctl", "show", "--property=Result", "--value", "katl-boot-health.service")); got != "success" {
 		t.Fatalf("katl-boot-health.service result = %q, want success", got)
 	}
 	assertGuestMissing(t, ctx, guest, bootMoveIntentPath)
 	resolved := bootSelectionFromGuest(t, ctx, guest)
 	if resolved.Revision != current.Revision+1 || resolved.DefaultGenerationID != fallback || resolved.DefaultBootEntry != fallbackSpec.Boot.LoaderEntryPath {
-		t.Fatalf("selection after the interrupted re-selection = %+v, want default %s at revision %d", resolved, fallback, current.Revision+1)
+		t.Fatalf("selection after the interrupted settled move = %+v, want default %s at revision %d", resolved, fallback, current.Revision+1)
 	}
-	if got, want := bootctlDefaultEntry(t, ctx, guest), filepath.Base(fallbackSpec.Boot.LoaderEntryPath); got != want {
+	if got, want := efiLoaderEntry(t, ctx, guest, loaderDefaultVar), filepath.Base(fallbackSpec.Boot.LoaderEntryPath); got != want {
 		t.Fatalf("EFI default entry = %q, want the fallback's entry %q", got, want)
 	}
 
@@ -944,7 +961,7 @@ func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *Runnin
 	selected.OneShot = false
 	selected.PreviousKnownGoodGenerationID, selected.PreviousKnownGoodBootEntry = current.DefaultGenerationID, current.DefaultBootEntry
 	selected.DefaultGenerationID, selected.DefaultBootEntry = desired, desiredSpec.Boot.LoaderEntryPath
-	priorEntry := bootctlDefaultEntry(t, ctx, guest)
+	priorEntry := efiLoaderEntry(t, ctx, guest, loaderDefaultVar)
 	previousBootID = guestBootID(t, ctx, client)
 	writeGuestFile(t, ctx, guest, bootMoveIntentPath, plantedBootMoveIntent(t, "vmtest-interrupted-select", previousBootID, current, selected), 0o600)
 	if err := requestGuestReboot(ctx, guest); err != nil {
@@ -969,7 +986,7 @@ func runInterruptedBootMoveSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if resolved.DefaultGenerationID != desired || resolved.DefaultBootEntry != desiredSpec.Boot.LoaderEntryPath {
 		t.Fatalf("selection after the interrupted selection = %+v, want default %s with its own entry", resolved, desired)
 	}
-	if got, want := bootctlDefaultEntry(t, ctx, guest), filepath.Base(desiredSpec.Boot.LoaderEntryPath); got == priorEntry || got != want {
+	if got, want := efiLoaderEntry(t, ctx, guest, loaderDefaultVar), filepath.Base(desiredSpec.Boot.LoaderEntryPath); got == priorEntry || got != want {
 		t.Fatalf("EFI default entry = %q, want %q changed from the prior default %q", got, want, priorEntry)
 	}
 	previousBootID = guestBootID(t, ctx, client)
@@ -1011,7 +1028,14 @@ spec:
 	}
 	assertGuestExists(t, ctx, guest, loaderOneShotVar)
 	assertGuestExists(t, ctx, guest, bootMoveIntentPath)
-	defaultBefore := bootctlDefaultEntry(t, ctx, guest)
+	// Staging a next-boot trial arms only the one-shot.
+	if got, want := efiLoaderEntry(t, ctx, guest, loaderOneShotVar), filepath.Base(generationFromGuest(t, ctx, guest, trial).Boot.LoaderEntryPath); got != want {
+		t.Fatalf("EFI one-shot entry = %q, want the trial's entry %q", got, want)
+	}
+	defaultBefore := efiLoaderEntry(t, ctx, guest, loaderDefaultVar)
+	if want := filepath.Base(desiredSpec.Boot.LoaderEntryPath); defaultBefore != want {
+		t.Fatalf("EFI default entry with the trial staged = %q, want the default's entry %q", defaultBefore, want)
+	}
 	// Clearing the one-shot makes firmware boot the default, so the trial
 	// never runs and its authority is still outstanding at the next boot.
 	guestCommand(t, ctx, guest, "clear-efi-one-shot", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/bootctl", "set-oneshot", "")
@@ -1041,7 +1065,7 @@ spec:
 	if resolved.DefaultGenerationID != fallback || resolved.RecoveryRequired || resolved.PendingHealthValidation || resolved.TrialGenerationID != "" {
 		t.Fatalf("selection after the unconfirmed trial = %+v, want default %s settled without recovery", resolved, fallback)
 	}
-	if got := bootctlDefaultEntry(t, ctx, guest); got != defaultBefore {
+	if got := efiLoaderEntry(t, ctx, guest, loaderDefaultVar); got != defaultBefore {
 		t.Fatalf("EFI default entry changed from %q to %q", defaultBefore, got)
 	}
 	// The health unit completed the move; recovery never ran.
@@ -1118,15 +1142,14 @@ func assertDeadlineTimerStarted(t *testing.T, ctx context.Context, guest *GuestC
 func runOrdinaryBootFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, generationID string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	const (
-		marker        = "/var/lib/katl/test-artifacts/fail-ordinary-boot"
-		failedBootID  = "/var/lib/katl/test-artifacts/failed-ordinary-boot-id"
-		requiredUnit  = "vmtest-ordinary-boot.service"
-		defaultEFIVar = "/sys/firmware/efi/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+		marker       = "/var/lib/katl/test-artifacts/fail-ordinary-boot"
+		failedBootID = "/var/lib/katl/test-artifacts/failed-ordinary-boot-id"
+		requiredUnit = "vmtest-ordinary-boot.service"
 	)
 
 	// The preceding configuration trial passed with the marker absent.
 	// Trigger the failure through its installed native systemd unit.
-	beforeDefault := guestCommandOutput(t, ctx, guest, "efi-default-before-ordinary-boot", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/od", "-An", "-v", "-tx1", defaultEFIVar)
+	beforeDefault := guestCommandOutput(t, ctx, guest, "efi-default-before-ordinary-boot", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/od", "-An", "-v", "-tx1", loaderDefaultVar)
 	writeGuestFile(t, ctx, guest, marker, []byte("fail on boot\n"), 0o600)
 	previousBootID := guestBootID(t, ctx, client)
 	_, rebootErr := runKatlctlOutcome(t, ctx, result, katlctl, "reboot-into-ordinary-unit-failure", "node", "reboot", "cp-1", "--timeout", "3m")
@@ -1158,7 +1181,7 @@ func runOrdinaryBootFailureSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if index < 0 || generations.Generations[index].GetBootState() != generation.BootStateGood || generations.Generations[index].GetHealthState() != generation.HealthStateHealthy {
 		t.Fatalf("ordinary failure changed the generation's known-good status:\n%s", jsonGenerations)
 	}
-	afterDefault := guestCommandOutput(t, ctx, guest, "efi-default-after-ordinary-boot", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/od", "-An", "-v", "-tx1", defaultEFIVar)
+	afterDefault := guestCommandOutput(t, ctx, guest, "efi-default-after-ordinary-boot", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/od", "-An", "-v", "-tx1", loaderDefaultVar)
 	if afterDefault != beforeDefault {
 		t.Fatalf("ordinary failure changed EFI default bytes from %q to %q", beforeDefault, afterDefault)
 	}

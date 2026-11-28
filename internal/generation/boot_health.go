@@ -116,9 +116,10 @@ type LivePromotionRequest struct {
 }
 
 // livePromotion builds the move that makes a live-validated candidate the
-// default. The previous known-good is the running generation, which still
-// boots from the menu after any number of live promotions in this boot. A
-// repeat of a published promotion builds nothing.
+// default. The previous known-good is the running generation when it is
+// known-good, since it still boots from the menu after any number of live
+// promotions in this boot; otherwise it is the old default. A repeat of a
+// published promotion builds nothing.
 func livePromotion(root string, selection BootSelectionRecord, running string, request LivePromotionRequest) (*bootMoveRequest, error) {
 	id := request.GenerationID
 	if id == "" || request.OperationID == "" {
@@ -156,11 +157,15 @@ func livePromotion(root string, selection BootSelectionRecord, running string, r
 		changes = append(changes, superseded...)
 		knownGood, knownGoodEntry := previousID, selection.DefaultBootEntry
 		if running != id {
-			runningSpec, _, err := ReadGeneration(root, running)
+			runningSpec, runningStatus, err := ReadGeneration(root, running)
 			if err != nil {
 				return nil, err
 			}
-			knownGood, knownGoodEntry = running, runningSpec.Boot.LoaderEntryPath
+			// A menu boot can run a generation that is not known-good, which
+			// no trial could fall back to.
+			if runningEntry := runningSpec.Boot.LoaderEntryPath; IsKnownGood(runningStatus) && runningEntry != "" {
+				knownGood, knownGoodEntry = running, runningEntry
+			}
 		}
 		selection.PreviousKnownGoodGenerationID = knownGood
 		selection.PreviousKnownGoodBootEntry = knownGoodEntry

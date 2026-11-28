@@ -579,6 +579,56 @@ func TestSecondLivePromotion(t *testing.T) {
 	}
 }
 
+// A live promotion records the running generation as the previous known-good
+// only when it is known-good, so a later trial always has a fallback that
+// recovery accepts.
+func TestLivePromotionFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		boot         func(*testing.T, *moveWorld)
+		wantFallback string
+	}{
+		{
+			// The menu boots gen2, which has not passed boot health. Only the
+			// kernel names it; activation would refuse the unselected boot.
+			name:         "menu boot of an unproven generation",
+			boot:         func(t *testing.T, w *moveWorld) { w.reboot("b-2", "gen2") },
+			wantFallback: "gen1",
+		},
+		{
+			name: "one-shot boot of a known-good generation",
+			boot: func(t *testing.T, w *moveWorld) {
+				if err := w.mover(nil).Select(context.Background(), SelectRequest{GenerationID: "outside", OneShot: true}); err != nil {
+					t.Fatalf("Select(outside, one-shot) error = %v", err)
+				}
+				activate(t, w, "b-2", "outside")
+			},
+			wantFallback: "outside",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newMoveWorld(t)
+			tc.boot(t, w)
+			if got := w.selection(); got.DefaultGenerationID != "gen1" {
+				t.Fatalf("selection before promotion = %+v, want default gen1", got)
+			}
+
+			if err := w.mover(nil).PromoteLive(LivePromotionRequest{GenerationID: "gen3", OperationID: "apply-6", Reason: "validated live"}); err != nil {
+				t.Fatalf("PromoteLive(gen3) error = %v", err)
+			}
+
+			got := w.selection()
+			wantEntry := "loader/entries/katl-" + tc.wantFallback + ".conf"
+			if got.DefaultGenerationID != "gen3" || got.PreviousKnownGoodGenerationID != tc.wantFallback || got.PreviousKnownGoodBootEntry != wantEntry {
+				t.Fatalf("selection = %+v, want default gen3 falling back to %s at %s", got, tc.wantFallback, wantEntry)
+			}
+			if _, err := w.mover(nil).ArmTrial(TrialRequest{OperationID: "apply-7", GenerationID: "gen2", Reason: "trial armed"}); err != nil {
+				t.Fatalf("ArmTrial(gen2) after promotion error = %v", err)
+			}
+		})
+	}
+}
+
 // The trial authority decides whether a trial blocks a mutation, and the
 // candidate's own boot gets no reboot advice: a reboot would end its trial.
 func TestMutationBaseDuringTrial(t *testing.T) {
