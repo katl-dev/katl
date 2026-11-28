@@ -479,7 +479,11 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.flavour == flavour.LTS && current.GetRuntimeFlavour() == "" {
 		return fmt.Errorf("this node predates kernel flavour support; first upgrade it to the standard flavour of this release, then retry with --flavour lts")
 	}
-	if err := checkBootMoveSource(current.GetRuntimeVersion(), opts.version, version); err != nil {
+	sourceFlags := opts.target.guidanceFlags()
+	if currentFlavour := current.GetRuntimeFlavour(); currentFlavour != "" && currentFlavour != flavour.Standard {
+		sourceFlags += " --flavour " + currentFlavour
+	}
+	if err := checkBootMoveSource(current.GetRuntimeVersion(), opts.version, version, target.nodeName, sourceFlags); err != nil {
 		return err
 	}
 
@@ -3881,15 +3885,16 @@ func parseUint32(value, name string) (uint32, error) {
 }
 
 // checkBootMoveSource refuses an upgrade whose target writes boot-move
-// records that the node's current runtime, its fallback after the upgrade,
-// cannot read. A target at or after this katlctl's own release writes them;
-// a katlctl whose version is outside the release grammar cannot tell and
-// leaves the decision to the node.
+// records straight from a release that predates them, and names the
+// intermediate release to upgrade through. A target at or after this
+// katlctl's own release writes them; a katlctl whose version is outside the
+// release grammar cannot tell and admits the upgrade. flags address the node
+// in the suggested command.
 //
 // The check is client-side only: an older katlctl, or a request sent straight
-// to the agent, is not stopped by it. On the node, the boot-state owner
-// refuses the move itself and writes nothing.
-func checkBootMoveSource(currentVersion, targetVersion, clientVersion string) error {
+// to the agent, is not stopped by it. The node then writes the selection in
+// the form the old release decodes while that release stays bootable.
+func checkBootMoveSource(currentVersion, targetVersion, clientVersion, node, flags string) error {
 	client, err := releaseversion.Parse(strings.TrimPrefix(clientVersion, "v"))
 	if err != nil || generation.ReadsBootMoves(currentVersion) {
 		return nil
@@ -3898,6 +3903,6 @@ func checkBootMoveSource(currentVersion, targetVersion, clientVersion string) er
 	if err != nil || target.Base().Compare(client.Base()) < 0 {
 		return nil
 	}
-	return fmt.Errorf("this node runs KatlOS %s, which cannot read the boot records KatlOS %s writes, so it could not serve as the upgrade's fallback; upgrade to %s or later first, then retry",
-		currentVersion, targetVersion, generation.FirstBootMoveReader)
+	return fmt.Errorf("this node runs KatlOS %s, which predates boot-move records; this katlctl does not upgrade it straight to KatlOS %s. First run 'katlctl node upgrade %s%s --version %s', then retry this upgrade",
+		currentVersion, targetVersion, node, flags, generation.FirstBootMoveReader)
 }
