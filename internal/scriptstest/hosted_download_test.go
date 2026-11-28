@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 var goTestTimeout = regexp.MustCompile(`-timeout (\d+)m\b`)
@@ -823,9 +825,7 @@ func TestHostedDownloadSelection(t *testing.T) {
 // TestHostedDownloadByID covers --id, which binds a download to one artifact
 // of one run and checks that the artifact is the one the caller named.
 func TestHostedDownloadByID(t *testing.T) {
-	if _, err := exec.LookPath("unzip"); err != nil {
-		t.Fatal("unzip is required: run the tests in the development shell")
-	}
+	workstationtest.Tool(t, "unzip")
 	inputs := fakeArtifact{ID: 99, Name: "inputs-abc", Files: completeFiles}
 	args := []string{"--id", "99", "artifact", "inputs-abc", "out", "7"}
 
