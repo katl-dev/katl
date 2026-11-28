@@ -21,7 +21,7 @@ import (
 )
 
 func releaseRecipes(repo string) (map[string]kernelRecipe, error) {
-	paths, err := filepath.Glob(filepath.Join(repo, "extensions", "*", "recipe.json"))
+	paths, err := filepath.Glob(filepath.Join(repo, filepath.FromSlash(extensionrelease.RecipePath("*"))))
 	if err != nil {
 		return nil, err
 	}

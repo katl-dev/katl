@@ -108,7 +108,7 @@ func qualifiedFixture(t *testing.T, f *fakeGitHub, id int64, attempt int, tag, a
 func releaseReadback(t *testing.T, publishCandidate, recordFinal, publishFinal bool) (*fakeGitHub, *reader, readbackFixture, readbackFixture) {
 	t.Helper()
 	f := readerWorld(t)
-	f.pages["orgs/katl-dev/packages?package_type=container&per_page=100"] = []any{[]any{}}
+	delete(f.registry.tags, registryPath(drbd9Repository))
 	rc := qualifiedFixture(t, f, 7, 1, "v2026.12.1-rc.1", strings.Repeat("c", 64))
 	var final readbackFixture
 	var releases []any
@@ -566,9 +566,7 @@ func TestWaitCandidateReadback(t *testing.T) {
 			case "changed digest":
 				rc.sumsAsset["digest"] = "sha256:" + strings.Repeat("e", 64)
 			case "extensions":
-				original := readerWorld(t)
-				endpoint := "orgs/katl-dev/packages?package_type=container&per_page=100"
-				f.pages[endpoint] = original.pages[endpoint]
+				f.registry.tags[registryPath(drbd9Repository)] = map[string]string{finalDRBD9Tag: finalDRBD9Digest}
 			case "superseded":
 				other := strings.Repeat("2", 40)
 				f.pages[followBranch] = []any{[]any{map[string]any{"ref": followRef, "object": map[string]any{"sha": other, "type": "commit"}}}}
