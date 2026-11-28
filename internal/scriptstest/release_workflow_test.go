@@ -696,64 +696,45 @@ func TestReleaseIdentityVersion(t *testing.T) {
 	}
 }
 
-// tagPushStarts reports whether an on: block starts the workflow for a tag
-// push. A push trigger without a branch or tag filter matches tags as well as
-// branches; one with only branch filters matches no tag.
-func tagPushStarts(t *testing.T, on yaml.Node) bool {
+// tagStarts reports whether an on: block starts the workflow for a tag. A
+// create or release event fires for tags, and a push trigger without a branch
+// or tag filter matches tags as well as branches; one with only branch filters
+// matches no tag.
+func tagStarts(t *testing.T, on yaml.Node) bool {
 	t.Helper()
+	tagEvent := func(event string) bool { return event == "push" || event == "create" || event == "release" }
 	switch on.Kind {
 	case yaml.ScalarNode:
-		return on.Value == "push"
+		return tagEvent(on.Value)
 	case yaml.SequenceNode:
-		return slices.ContainsFunc(on.Content, func(event *yaml.Node) bool { return event.Value == "push" })
+		return slices.ContainsFunc(on.Content, func(event *yaml.Node) bool { return tagEvent(event.Value) })
 	case yaml.MappingNode:
 		for i := 0; i < len(on.Content); i += 2 {
-			if on.Content[i].Value != "push" {
-				continue
+			switch on.Content[i].Value {
+			case "create", "release":
+				return true
+			case "push":
+				var filters map[string]yaml.Node
+				if err := on.Content[i+1].Decode(&filters); err != nil {
+					t.Fatal(err)
+				}
+				_, tags := filters["tags"]
+				_, tagsIgnore := filters["tags-ignore"]
+				_, branches := filters["branches"]
+				_, branchesIgnore := filters["branches-ignore"]
+				if tags || tagsIgnore || !branches && !branchesIgnore {
+					return true
+				}
 			}
-			var filters map[string]yaml.Node
-			if err := on.Content[i+1].Decode(&filters); err != nil {
-				t.Fatal(err)
-			}
-			_, tags := filters["tags"]
-			_, tagsIgnore := filters["tags-ignore"]
-			_, branches := filters["branches"]
-			_, branchesIgnore := filters["branches-ignore"]
-			return tags || tagsIgnore || !branches && !branchesIgnore
 		}
 	}
 	return false
 }
 
-var publicationCommand = regexp.MustCompile(`\b(?:git[ \t]+(?:push|tag)|docker[ \t]+push|oras[ \t]+push|skopeo[ \t]+copy)\b|publish-release-extensions`)
-
-// workflowPublishes returns the jobs of a workflow, and of the workflows it
-// calls, that write releases, tags or packages or ask for permission to.
-func workflowPublishes(t *testing.T, workflow workflowFile, read func(string) workflowFile) []string {
-	t.Helper()
-	var found []string
-	if workflow.Permissions["contents"] == "write" || workflow.Permissions["packages"] == "write" {
-		found = append(found, "workflow permissions")
-	}
-	for id, job := range workflow.Jobs {
-		if called, ok := strings.CutPrefix(job.Uses, "./.github/workflows/"); ok {
-			for _, inner := range workflowPublishes(t, read(called), read) {
-				found = append(found, id+" / "+inner)
-			}
-			continue
-		}
-		if publishes(t, job) || slices.ContainsFunc(job.Steps, func(step workflowStep) bool {
-			return writesRelease(step) || apiWrites(step.Run, "/git/") || publicationCommand.MatchString(step.Run)
-		}) {
-			found = append(found, id)
-		}
-	}
-	return found
-}
-
-// A tag push starts no publication: only a dispatched Release run publishes,
-// so a stray tag publishes nothing.
-func TestNoPublicationOnTagPush(t *testing.T) {
+// No workflow starts on a tag, so a stray tag runs nothing and only a
+// dispatched Release run publishes. A workflow that must start on a tag needs
+// an entry in tagStarted.
+func TestNoWorkflowStartsOnTags(t *testing.T) {
 	parse := func(text string) workflowFile {
 		t.Helper()
 		var workflow workflowFile
@@ -775,34 +756,30 @@ func TestNoPublicationOnTagPush(t *testing.T) {
 		{"{push: {branches: [main]}}", false},
 		{"{push: {branches-ignore: [wip]}}", false},
 		{"{push: {branches: [main], tags: ['v*']}}", true},
+		{"create", true},
+		{"[pull_request, release]", true},
+		{"{push: {branches: [main]}, create: null}", true},
+		{"{release: {types: [published]}}", true},
 		{"{schedule: [{cron: '0 0 * * *'}], workflow_dispatch: null}", false},
+		{"{pull_request: null, workflow_call: null}", false},
 	} {
-		if got := tagPushStarts(t, parse("on: "+tc.on).On); got != tc.want {
-			t.Errorf("on: %s starts on a tag push = %v, want %v", tc.on, got, tc.want)
+		if got := tagStarts(t, parse("on: "+tc.on).On); got != tc.want {
+			t.Errorf("on: %s starts on a tag = %v, want %v", tc.on, got, tc.want)
 		}
 	}
 	legacy := parse(`
 on: {push: {tags: ['v*']}}
 jobs:
-  build: {uses: ./.github/workflows/build.yml}
   publish: {steps: [{run: 'gh release create "$GITHUB_REF_NAME" dist/*'}]}
 `)
-	called := parse(`jobs: {push: {steps: [{run: docker push ghcr.io/katl-dev/katl}]}}`)
-	read := func(string) workflowFile { return called }
-	if got := workflowPublishes(t, legacy, read); !slices.Equal(slices.Sorted(slices.Values(got)), []string{"build / push", "publish"}) {
-		t.Errorf("legacy tag workflow publication jobs = %v, want the release and the called registry push", got)
+	if !tagStarts(t, legacy.On) {
+		t.Error("the legacy tag workflow does not start on a tag")
 	}
 
-	read = func(name string) workflowFile {
-		workflow, _ := readWorkflow(t, name)
-		return workflow
-	}
+	tagStarted := map[string]bool{}
 	allWorkflows(t, func(file string, workflow workflowFile) {
-		if !tagPushStarts(t, workflow.On) {
-			return
-		}
-		if jobs := workflowPublishes(t, workflow, read); len(jobs) != 0 {
-			t.Errorf("%s starts on a tag push and publishes from %v", file, jobs)
+		if tagStarts(t, workflow.On) && !tagStarted[file] {
+			t.Errorf("%s starts on a tag push, create or release event", file)
 		}
 	})
 }

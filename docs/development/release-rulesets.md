@@ -18,7 +18,10 @@ The `release/<digit>...` namespace is reserved for release branches, so use
 
 ## Check the prerequisites
 
-1. No workflow starts on a tag push.
+1. No workflow starts on a tag push. A tag push runs the workflow file at the
+   tagged commit, so a tag on a commit from before the tag trigger was removed
+   still runs the old tag workflow; the `final release tags` creation ruleset
+   is the control for those commits.
 2. The `Release` workflow's publish job uses the `katl-release` App token to
    create final tags, and the cut workflow uses it to create release branches.
    Applying `final release tags` before the publish job uses the App makes

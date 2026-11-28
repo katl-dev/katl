@@ -973,7 +973,7 @@ func TestReleaseBranchTriggers(t *testing.T) {
 
 	ci, _, _ := push("ci.yml")
 	branches, tags, ignored := push("release-artifacts.yml")
-	if artifacts, _ := readWorkflow(t, "release-artifacts.yml"); len(branches)+len(tags)+len(ignored) != 0 || tagPushStarts(t, artifacts.On) {
+	if artifacts, _ := readWorkflow(t, "release-artifacts.yml"); len(branches)+len(tags)+len(ignored) != 0 || tagStarts(t, artifacts.On) {
 		t.Error("release artifacts starts on a push; only the schedule, a dispatch and Release calls carry a version")
 	}
 	for _, tc := range []struct {
