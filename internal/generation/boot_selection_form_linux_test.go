@@ -246,6 +246,9 @@ func TestLegacyReaders(t *testing.T) {
 		{name: "recordless candidate", version: "2026.11.6", running: "gen1", setup: func(t *testing.T, root string) {
 			writeBootFixture(t, rootedPathUnchecked(root, "/var/lib/katl/generations/staging/sysext/kubernetes.raw"), []byte("sysext"))
 		}},
+		{name: "unreadable legacy metadata", version: "2026.11.6", running: "gen1", want: true, setup: func(t *testing.T, root string) {
+			writeBootFixture(t, rootedPathUnchecked(root, "/var/lib/katl/generations/legacy/metadata.json"), []byte("{"))
+		}},
 		{name: "record without status", version: "2026.11.6", running: "gen1", want: true, setup: func(t *testing.T, root string) {
 			removeFile(t, rootedPathUnchecked(root, "/var/lib/katl/generations/outside/status.json"))
 		}},
@@ -542,4 +545,54 @@ func TestLegacyFormArmFault(t *testing.T) {
 	if got := assertReadableBy11_5(t, w.root); got.TrialGenerationID != "gen2" || !got.PendingHealthValidation {
 		t.Fatalf("selection = %+v, want the gen2 trial pending", got)
 	}
+}
+
+// A prune whose removals each change the selection completes when the first
+// removal ends the v1 form, and the next move still completes.
+func TestPruneEndsLegacyForm(t *testing.T) {
+	w := newMoveWorld(t)
+	const slotB = "22222222-2222-3333-4444-555555555555"
+	at := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	// Prune visits newer generations first, so gen4, the last 2026.11.5
+	// generation, goes before gen5.
+	for _, g := range []struct {
+		id, version string
+		created     time.Time
+	}{
+		{"gen4", "2026.11.5", at.Add(-time.Hour)},
+		{"gen5", "2026.11.6", at.Add(-2 * time.Hour)},
+	} {
+		spec := SpecFromRecord(abRecord(t, g.id, "root-b", slotB, g.version, "v1.36.1", g.created))
+		spec.Boot.LoaderEntryPath = "loader/entries/katl-" + g.id + ".conf"
+		status, err := NewGenerationStatus(spec, CommitStateCommitted, BootStateGood, HealthStateHealthy, g.created)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status.UnavailableReason = "slot replaced"
+		if err := WriteGeneration(w.root, spec, status); err != nil {
+			t.Fatal(err)
+		}
+		writeBootFixture(t, rootedPathUnchecked(w.root, "/efi/"+spec.Boot.LoaderEntryPath), []byte(g.id))
+	}
+	selection := lowerSelection(w.selection())
+	selection.Generation0FallbackID, selection.FailedBootGenerationID = "gen4", "gen5"
+	selection.PreviousKnownGoodGenerationID, selection.PreviousKnownGoodBootEntry = "gen1", "loader/entries/katl-gen1.conf"
+	writeBootHealthSelection(t, w.root, selection)
+
+	removed, err := w.mover(nil).Prune(Retention{}, at)
+	if err != nil || !slices.Equal(removed, []string{"gen4", "gen5"}) {
+		t.Fatalf("Prune() = %v, %v, want gen4 and gen5 removed", removed, err)
+	}
+	assertNoIntent(t, w.root)
+	if got := w.selection(); got.Generation0FallbackID != "" || got.FailedBootGenerationID != "" {
+		t.Fatalf("selection after prune = %+v, want both pointers cleared", got)
+	}
+
+	if err := w.mover(nil).Select(context.Background(), SelectRequest{GenerationID: "gen3"}); err != nil {
+		t.Fatalf("Select(gen3) after the prune: %v", err)
+	}
+	if got := w.selection(); got.DefaultGenerationID != "gen3" || isSelectionToken(got.Revision) {
+		t.Fatalf("selection = %+v, want gen3 the default with a counter revision", got)
+	}
+	assertNoIntent(t, w.root)
 }
