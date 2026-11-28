@@ -24,6 +24,7 @@ func TestKernelInputBuilds(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	stubMkosiGoBuilds(t, bin)
 	calls := filepath.Join(tmp, "container-calls")
 	writeFakeExecutable(t, bin, "podman", `case "$1" in
 image) printf 'fake-builder\n'; exit 0 ;;
