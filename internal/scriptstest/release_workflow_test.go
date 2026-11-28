@@ -28,6 +28,7 @@ type workflowJob struct {
 	Environment     yaml.Node         `yaml:"environment"`
 	If              string            `yaml:"if"`
 	Needs           yaml.Node         `yaml:"needs"`
+	Concurrency     yaml.Node         `yaml:"concurrency"`
 	Uses            string            `yaml:"uses"`
 	ContinueOnError bool              `yaml:"continue-on-error"`
 	Permissions     yaml.Node         `yaml:"permissions"`
@@ -51,7 +52,12 @@ type workflowFile struct {
 
 func readWorkflow(t *testing.T, name string) (workflowFile, string) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", name))
+	return readWorkflowAt(t, repoRoot(t), filepath.Join(".github", "workflows", name))
+}
+
+func readWorkflowAt(t *testing.T, root, name string) (workflowFile, string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,16 +69,19 @@ func readWorkflow(t *testing.T, name string) (workflowFile, string) {
 }
 
 func (job workflowJob) needs(dependency string) bool {
-	dependencies := job.Needs.Content
-	if job.Needs.Kind == yaml.ScalarNode {
-		dependencies = []*yaml.Node{&job.Needs}
-	}
-	for _, node := range dependencies {
+	for _, node := range job.dependencies() {
 		if node.Value == dependency {
 			return true
 		}
 	}
 	return false
+}
+
+func (job workflowJob) dependencies() []*yaml.Node {
+	if job.Needs.Kind == yaml.ScalarNode {
+		return []*yaml.Node{&job.Needs}
+	}
+	return job.Needs.Content
 }
 
 func requireNeeds(t *testing.T, workflow workflowFile, edges [][2]string) {

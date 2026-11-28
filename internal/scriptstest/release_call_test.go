@@ -3,6 +3,7 @@ package scriptstest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,53 +34,94 @@ var releaseTriggers = map[string]map[string]string{
 
 func conditionHolds(t *testing.T, condition string, ctx map[string]string) bool {
 	t.Helper()
+	condition = strings.TrimSpace(condition)
 	if condition == "" {
 		return true
 	}
-	// GitHub Actions coerces a condition's value to a boolean.
-	value := expandExpressions(t, "${{ "+condition+" }}", ctx)
-	return value != "" && value != "false"
+	if expr := expressionPattern.FindStringSubmatch(condition); len(expr) != 0 && expr[0] == condition {
+		condition = expr[1]
+	}
+	return truthy(evaluateExpression(t, condition, ctx))
 }
 
-// jobsRun returns the jobs GitHub Actions starts for ctx: a job runs when its
-// condition holds and every job it needs ran, unless its condition calls
-// always(), which runs it whatever its dependencies did. Every job that runs is
-// taken to succeed.
+// jobsRun returns the jobs GitHub Actions starts for ctx.
 func jobsRun(t *testing.T, workflow workflowFile, ctx map[string]string) []string {
 	t.Helper()
-	ran := map[string]bool{}
-	var runs func(name string) bool
-	runs = func(name string) bool {
-		if result, ok := ran[name]; ok {
-			return result
-		}
-		job, ok := workflow.Jobs[name]
-		if !ok {
-			t.Fatalf("job needs undefined job %s", name)
-		}
-		dependencies := job.Needs.Content
-		if job.Needs.Kind == yaml.ScalarNode {
-			dependencies = []*yaml.Node{&job.Needs}
-		}
-		result := true
-		if !strings.Contains(job.If, "always()") {
-			for _, dependency := range dependencies {
-				result = runs(dependency.Value) && result
-			}
-		}
-		result = result && conditionHolds(t, job.If, ctx)
-		ran[name] = result
-		return result
-	}
-
 	var names []string
-	for name := range workflow.Jobs {
-		if runs(name) {
+	for name, run := range workflowJobRuns(t, workflow, ctx) {
+		if run.reached {
 			names = append(names, name)
 		}
 	}
 	slices.Sort(names)
 	return names
+}
+
+type workflowJobRun struct {
+	context map[string]string
+	reached bool
+}
+
+// Dependencies that run succeed unless the fixture supplies their result.
+func workflowJobRuns(t *testing.T, workflow workflowFile, ctx map[string]string) map[string]workflowJobRun {
+	t.Helper()
+	ran := map[string]workflowJobRun{}
+	visiting := map[string]bool{}
+	var runs func(name string) bool
+	runs = func(name string) bool {
+		if result, ok := ran[name]; ok {
+			return result.reached
+		}
+		job, ok := workflow.Jobs[name]
+		if !ok {
+			t.Fatalf("job needs undefined job %s", name)
+		}
+		if visiting[name] {
+			t.Fatalf("cyclic needs at job %s", name)
+		}
+		visiting[name] = true
+		jobCtx := maps.Clone(ctx)
+		if location := ctx["workflow-file"]; location != "" {
+			jobCtx["expression-location"] = location + " / " + name + " / (job): "
+		}
+		jobCtx["status"] = "success"
+		for _, dependency := range job.dependencies() {
+			ranDependency := runs(dependency.Value)
+			key := "needs." + dependency.Value + ".result"
+			if _, supplied := jobCtx[key]; !supplied {
+				jobCtx[key] = "skipped"
+				if ranDependency {
+					jobCtx[key] = "success"
+				}
+			}
+			switch jobCtx[key] {
+			case "failure", "cancelled":
+				jobCtx["status"] = jobCtx[key]
+			case "skipped":
+				if jobCtx["status"] == "success" {
+					jobCtx["status"] = "skipped"
+				}
+			}
+		}
+		result := conditionRuns(t, job.If, jobCtx)
+		ran[name] = workflowJobRun{jobCtx, result}
+		delete(visiting, name)
+		return result
+	}
+
+	for name := range workflow.Jobs {
+		runs(name)
+	}
+	return ran
+}
+
+var statusFunction = regexp.MustCompile(`(?i)\b(always|success|failure|cancelled)\s*\(`)
+
+func conditionRuns(t *testing.T, condition string, ctx map[string]string) bool {
+	t.Helper()
+	status := ctx["status"]
+	return (status == "" || status == "success" || statusFunction.MatchString(condition)) &&
+		conditionHolds(t, condition, ctx)
 }
 
 // Writing to repository contents or packages is what publication needs, so a

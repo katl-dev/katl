@@ -712,9 +712,8 @@ esac
 				if err != nil {
 					t.Fatal(err)
 				}
-				command := exec.Command("bash", "-euo", "pipefail", "-c", gate)
-				command.Env = append(os.Environ(), "NEEDS="+string(body))
-				return command.Run() == nil
+				_, err = runCIResult(gate, body)
+				return err == nil
 			}
 			// A job runs when planned and is skipped otherwise.
 			healthy := func() map[string]string {
@@ -744,6 +743,12 @@ esac
 			}
 		})
 	}
+}
+
+func runCIResult(script string, needs []byte) ([]byte, error) {
+	command := exec.Command("bash", "-euo", "pipefail", "-c", script)
+	command.Env = append(os.Environ(), "NEEDS="+string(needs))
+	return command.CombinedOutput()
 }
 
 // Only adding vmtest may restart CI, and no workflow triggered by a label or an

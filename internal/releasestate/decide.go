@@ -29,6 +29,11 @@ const (
 	StateFinalUnapproved            = "final-unapproved"
 )
 
+// Actions lists every outcome of a release decision.
+func Actions() []Action {
+	return []Action{Candidate, RetryCandidate, ResumeCandidate, Final, RetryFinal, Refuse}
+}
+
 // RecordSummary is a trusted record as status reports it.
 type RecordSummary struct {
 	Tag    string
