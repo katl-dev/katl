@@ -243,6 +243,12 @@ func TestLegacyReaders(t *testing.T) {
 		{name: "unreadable record", version: "2026.11.6", running: "gen1", want: true, setup: func(t *testing.T, root string) {
 			writeBootFixture(t, rootedPathUnchecked(root, "/var/lib/katl/generations/outside/status.json"), []byte("{"))
 		}},
+		{name: "recordless candidate", version: "2026.11.6", running: "gen1", setup: func(t *testing.T, root string) {
+			writeBootFixture(t, rootedPathUnchecked(root, "/var/lib/katl/generations/staging/sysext/kubernetes.raw"), []byte("sysext"))
+		}},
+		{name: "record without status", version: "2026.11.6", running: "gen1", want: true, setup: func(t *testing.T, root string) {
+			removeFile(t, rootedPathUnchecked(root, "/var/lib/katl/generations/outside/status.json"))
+		}},
 		{name: "missing entries directory", version: "2026.11.5", running: "gen1", want: true, setup: func(t *testing.T, root string) {
 			if err := os.RemoveAll(rootedPathUnchecked(root, loaderEntriesDir)); err != nil {
 				t.Fatal(err)

@@ -1156,7 +1156,8 @@ func ReadsBootMoves(runtimeVersion string) bool {
 // bootable, by a loader entry the boot menu offers, and runs a release that
 // cannot decode boot-move fields in the selection. Every doubt counts towards
 // such a reader: an unreadable record is one, and without a readable entries
-// directory every record counts as bootable.
+// directory every record counts as bootable. A directory without a record is
+// not a generation yet.
 func legacyReaders(root, running string) bool {
 	records, err := os.ReadDir(rootedPathUnchecked(root, GenerationRecordsDir))
 	if errors.Is(err, os.ErrNotExist) {
@@ -1173,6 +1174,9 @@ func legacyReaders(root, running string) bool {
 		}
 		spec, _, err := ReadGeneration(root, id)
 		if err != nil {
+			if recordless(root, id) {
+				continue
+			}
 			return true
 		}
 		if ReadsBootMoves(spec.RuntimeVersion) {
@@ -1185,6 +1189,22 @@ func legacyReaders(root, running string) bool {
 		}
 	}
 	return false
+}
+
+// recordless reports whether a generation directory holds neither spec.json
+// nor metadata.json, as a candidate does while it is staged and after an
+// interrupted apply. Every staging path on a node writes the record before
+// the loader entry, so no release boots such a directory. The installer
+// writes its target's entry first, but publishes no selection until that
+// record exists.
+func recordless(root, id string) bool {
+	dir := rootedPathUnchecked(root, filepath.Join(GenerationRecordsDir, id))
+	for _, name := range []string{"spec.json", "metadata.json"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	return true
 }
 
 // lowerSelection is the v1 form that every released runtime decodes:
