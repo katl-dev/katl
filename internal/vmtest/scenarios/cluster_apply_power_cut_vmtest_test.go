@@ -173,16 +173,31 @@ func assertPowerCutRecovery(ctx context.Context, katlctl katlctlRunner, dir, lab
 
 	var lastErr error
 	for {
+		lastErr = nil
 		probe, probeCancel := context.WithTimeout(ctx, 20*time.Second)
-		_, stderr, err := runProofKatlctl(probe, katlctl, dir, label+"-status", "node", "status", node.Name, "-o", "json")
+		stdout, stderr, err := runProofKatlctl(probe, katlctl, dir, label+"-status", "node", "status", node.Name, "-o", "json")
 		probeCancel()
-		if err == nil {
+		// The node is back once management answers and its local Kubernetes API
+		// serves again; the next leg's apply needs both.
+		var status struct {
+			APIProxy struct {
+				LocalAPIEligible bool `json:"localAPIEligible"`
+			} `json:"apiProxy"`
+		}
+		switch {
+		case err != nil:
+			lastErr = fmt.Errorf("%w: %s", err, stderr)
+		case json.Unmarshal(stdout, &status) != nil:
+			lastErr = fmt.Errorf("node status is not JSON: %s", stdout)
+		case !status.APIProxy.LocalAPIEligible:
+			lastErr = fmt.Errorf("local Kubernetes API is not eligible yet: %s", stdout)
+		}
+		if lastErr == nil {
 			break
 		}
-		lastErr = fmt.Errorf("%w: %s", err, stderr)
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("%s: node status did not answer after power cut: %w", label, lastErr)
+			return "", fmt.Errorf("%s: node did not recover its management and local API after power cut: %w", label, lastErr)
 		case <-time.After(5 * time.Second):
 		}
 	}
