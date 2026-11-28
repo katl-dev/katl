@@ -36,6 +36,16 @@ if [[ -n "$KATL_SCRIPTTEST_NO_TESTS" ]]; then
   printf 'testing: warning: no tests to run\nok  \texample/pkg\t0.0s [no tests to run]\n'
   exit 0
 fi
+if [[ -n "$KATL_SCRIPTTEST_JSON" ]]; then
+  printf '%s\n' \
+    '{"Action":"run","Test":"TestAlpha"}' \
+    '{"Action":"output","Test":"TestAlpha/sub","Output":"    --- PASS: TestAlpha/sub (0.20s)\n"}' \
+    '{"Action":"pass","Test":"TestAlpha/sub","Elapsed":0.2}' \
+    '{"Action":"output","Test":"TestAlpha","Output":"--- FAIL: TestAlpha (2.50s)\n"}' \
+    '{"Action":"fail","Test":"TestAlpha","Elapsed":2.5}' \
+    '{"Action":"fail","Package":"example/pkg","Elapsed":3}'
+  exit 1
+fi
 printf '=== RUN   TestAlpha\n'
 if [[ -n "$KATL_SCRIPTTEST_JOINED" ]]; then
   printf 'sshd-session[335]: Recei'
@@ -246,6 +256,25 @@ func TestVMTestRunCountsResultAfterUnterminatedOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(summary), "--- PASS: TestAlpha") {
 		t.Errorf("test summary = %q, want the test listed", summary)
+	}
+}
+
+func TestVMTestRunSummarizesTestEvents(t *testing.T) {
+	t.Setenv("KATL_SCRIPTTEST_JSON", "1")
+
+	runDir, output, ok := runEvidenceVMTest(t, t.TempDir(), "json-run", false)
+	if ok {
+		t.Fatalf("vmtest-run succeeded on a failing test:\n%s", output)
+	}
+
+	summary, err := os.ReadFile(filepath.Join(runDir, "test-summary.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Output events quote the result headers; only the result events count.
+	want := "    --- PASS: TestAlpha/sub (0.20s)\n--- FAIL: TestAlpha (2.50s)\n"
+	if string(summary) != want {
+		t.Errorf("test summary = %q, want %q", summary, want)
 	}
 }
 

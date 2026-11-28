@@ -2,7 +2,9 @@
 package gotestlog
 
 import (
+	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +16,7 @@ type Event struct {
 	Package     string
 	Test        string
 	Output      string
+	Elapsed     float64
 	ImportPath  string
 	FailedBuild string
 }
@@ -31,7 +34,26 @@ func MatchTextResult(line string) (Event, int) {
 	if match == nil {
 		return Event{}, -1
 	}
-	return Event{Action: strings.ToLower(line[match[2]:match[3]]), Test: line[match[4]:match[5]]}, match[0]
+	elapsed, _ := strconv.ParseFloat(line[match[6]:match[7]], 64)
+	return Event{
+		Action:  strings.ToLower(line[match[2]:match[3]]),
+		Test:    line[match[4]:match[5]],
+		Elapsed: elapsed,
+	}, match[0]
 }
 
-var textResult = regexp.MustCompile(`--- (PASS|FAIL|SKIP): (\S+) \([0-9.]+s\)`)
+var textResult = regexp.MustCompile(`--- (PASS|FAIL|SKIP): (\S+) \(([0-9.]+)s\)`)
+
+// ParseTestResult returns the test result a go test log line records, in
+// either -json or -v text form. A JSON event is never matched as text: its
+// Output field quotes the header of a result that has its own event.
+func ParseTestResult(line string) (Event, bool) {
+	if strings.HasPrefix(line, "{") {
+		var event Event
+		if json.Unmarshal([]byte(line), &event) == nil {
+			return event, event.IsResult() && event.Test != ""
+		}
+	}
+	event, offset := MatchTextResult(line)
+	return event, offset >= 0
+}

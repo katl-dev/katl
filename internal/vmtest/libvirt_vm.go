@@ -1023,14 +1023,32 @@ func serialTail(path string, maxLines int, maxBytes int) string {
 		return ""
 	}
 	lines := strings.Split(text, "\n")
-	if len(lines) > maxLines {
+	truncated := len(lines) > maxLines
+	if truncated {
 		lines = lines[len(lines)-maxLines:]
 	}
 	tail := strings.TrimSpace(strings.Join(lines, "\n"))
-	if len(tail) <= maxBytes {
+	if len(tail) > maxBytes {
+		// Keep only whole lines within the byte budget.
+		start := len(tail) - maxBytes
+		if tail[start-1] != '\n' {
+			if i := strings.IndexByte(tail[start:], '\n'); i >= 0 {
+				start += i + 1
+			} else {
+				start = len(tail)
+			}
+		}
+		tail = tail[start:]
+		truncated = true
+	}
+	if !truncated {
 		return tail
 	}
-	return tail[len(tail)-maxBytes:]
+	note := "(serial tail truncated; full serial log: " + path + ")"
+	if tail == "" {
+		return note
+	}
+	return note + "\n" + tail
 }
 
 func (r VMRunner) runSerialHooks(ctx context.Context, result Result, config VMConfig, plan VMPlan, serialText string, hooksRun []bool) error {
