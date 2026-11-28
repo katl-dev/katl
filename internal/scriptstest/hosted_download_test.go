@@ -749,6 +749,22 @@ func TestHostedDownload(t *testing.T) {
 		}
 		w.undelivered(t, "out")
 	})
+
+	t.Run("reports a listing it cannot select from", func(t *testing.T) {
+		w := newDownloadWorld(t, 42, inputs)
+		writeArtifact(t, w.dir, "listing.json", `{"artifacts": [`)
+		stderr, err := w.run(t, []string{"ok", "ok"}, "artifact", "inputs-abc", "out")
+		if err == nil {
+			t.Fatalf("download succeeded from a malformed listing:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "could not select artifacts from the listing of run 42") {
+			t.Errorf("failure does not report the selection error:\n%s", stderr)
+		}
+		if strings.Contains(stderr, "no unexpired artifact") {
+			t.Errorf("selection error reported as a missing artifact:\n%s", stderr)
+		}
+		w.undelivered(t, "out")
+	})
 }
 
 // TestHostedDownloadSelection holds name and pattern downloads to

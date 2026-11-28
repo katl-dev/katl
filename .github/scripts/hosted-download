@@ -102,15 +102,24 @@ if [[ "${1:-}" == --attempt-artifacts ]]; then
 
     # The newest unexpired artifact of each name wins, ties going to the
     # higher ID, which is how actions/download-artifact selects within a run.
+    # The C locale keeps the order independent of the runner's locale. The
+    # selection runs before the loop so that its own failure is reported as
+    # such rather than as a run with no matching artifact.
     listing="$(api --paginate "repos/$repo/actions/runs/$run_id/artifacts?per_page=100")"
+    selection="$(jq -rs '.[].artifacts[] | select(.expired | not) | [.name, .created_at, .id] | @tsv' <<< "$listing" |
+        LC_ALL=C sort -t $'\t' -k1,1 -k2,2r -k3,3nr | LC_ALL=C sort -t $'\t' -k1,1 -u -s)" || {
+        echo "could not select artifacts from the listing of run $run_id" >&2
+        exit 1
+    }
     chosen=()
-    while IFS=$'\t' read -r name _ id; do
-        # shellcheck disable=SC2053 # A pattern matches as a glob.
-        if [[ "$selector" == name && "$name" == "$subject" || "$selector" == pattern && "$name" == $subject ]]; then
-            chosen+=("$id" "$name")
-        fi
-    done < <(jq -rs '.[].artifacts[] | select(.expired | not) | [.name, .created_at, .id] | @tsv' <<< "$listing" |
-        sort -t $'\t' -k1,1 -k2,2r -k3,3nr | sort -t $'\t' -k1,1 -u -s)
+    if [[ -n "$selection" ]]; then
+        while IFS=$'\t' read -r name _ id; do
+            # shellcheck disable=SC2053 # A pattern matches as a glob.
+            if [[ "$selector" == name && "$name" == "$subject" || "$selector" == pattern && "$name" == $subject ]]; then
+                chosen+=("$id" "$name")
+            fi
+        done <<< "$selection"
+    fi
     if ((${#chosen[@]} == 0)); then
         echo "run $run_id has no unexpired artifact matching $subject" >&2
         exit 1
