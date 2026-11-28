@@ -4,11 +4,14 @@ description: >-
   for the shell's Go. Later steps run their commands through
   `.github/scripts/ci-shell`, normally as the job's default run shell.
   Composite steps cannot carry timeout-minutes, so the calling step gives
-  this action its budget of 14 minutes. The shell realisation makes at most
+  this action its budget of 11 minutes. The shell realisation makes at most
   3 attempts of 120 s, each killed 10 s after its limit, with backoffs below
   20 s and 40 s between them, so it gives up within 450 s. The Go cache
-  restore may use its own 5-minute segment download limit, which leaves the
-  Nix install about a minute.
+  restore abandons a download segment of about 128 MiB that has not finished
+  within 2 minutes, so 450 s, one stalled segment and about a minute and a
+  half for the Nix install fill the 660 s. That limit bounds one stalled
+  segment, not the whole restore: a restore that is slow across several
+  segments, or slow to extract, can still exhaust the budget and fail the job.
 outputs:
   module-cache:
     description: Go module cache path

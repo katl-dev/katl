@@ -127,7 +127,7 @@ jobs:
           persist-credentials: false
       - name: Set up tools
         uses: ./.github/actions/setup-tools
-        timeout-minutes: 14
+        timeout-minutes: 11
       - name: Allow Bubblewrap user namespaces
         timeout-minutes: 2
         run: .github/scripts/hosted-hermetic-setup

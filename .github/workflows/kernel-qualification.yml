@@ -77,7 +77,7 @@ jobs:
           persist-credentials: false
       - name: Set up tools
         uses: ./.github/actions/setup-tools
-        timeout-minutes: 14
+        timeout-minutes: 11
       - name: Restore pinned extension sources
         timeout-minutes: 5
         continue-on-error: true
@@ -105,7 +105,7 @@ jobs:
           echo "KATL_KERNEL_LOCK=$GITHUB_WORKSPACE/$lock" >> "$GITHUB_ENV"
           echo "KATL_VERSION=$(date -u +%Y.%-m).0-dev.0" >> "$GITHUB_ENV"
       - name: Build both boot artifacts and every release recipe
-        timeout-minutes: 34
+        timeout-minutes: 30
         run: |
           scripts/mkosi build-runtime
           scripts/mkosi build-installer
@@ -123,7 +123,7 @@ jobs:
       - uses: ./.github/actions/hosted-vmtest
         timeout-minutes: 2
       - name: Exercise the production DRBD driver
-        timeout-minutes: 33
+        timeout-minutes: 28
         run: |
           KATL_EXTENSION_RELEASE=_build/mkosi/release-extensions.json \
             scripts/mkosi build-katlos-upgrade-image
@@ -136,7 +136,7 @@ jobs:
           go run ./cmd/katl-mkosi-artifacts path katlos-install-image >/dev/null
           .github/scripts/hosted-vmtest-measure drbd .github/scripts/hosted-vmtest-run \
             --artifact-set=install --no-rebuild ./internal/vmtest \
-            -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 30m
+            -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 18m
       - name: Record the qualified commit and inputs
         timeout-minutes: 2
         id: record-qualification

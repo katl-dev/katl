@@ -50,7 +50,7 @@ jobs:
     # Every step has a budget, so go test's -timeout 12m fires inside its
     # 14-minute step and before this timeout whenever setup stays within
     # budget.
-    timeout-minutes: 75
+    timeout-minutes: 85
     env:
       KATL_FLAVOUR: ${{ inputs.flavour }}
       KATL_VMTEST_KVM: 'on'
@@ -72,7 +72,7 @@ jobs:
           persist-credentials: false
       - name: Set up tools
         uses: ./.github/actions/setup-tools
-        timeout-minutes: 14
+        timeout-minutes: 11
       - uses: ./.github/actions/hosted-vmtest
         timeout-minutes: 6
       - name: Download the candidate bundle

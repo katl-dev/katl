@@ -53,7 +53,7 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       runner: ${{ steps.host.outputs.runner }}
@@ -80,11 +80,11 @@ jobs:
       - name: Set up tools from the workflow revision
         uses: ./_build/workflow-actions/.github/actions/setup-tools
         if: inputs.scenarios == '' && inputs.ref != ''
-        timeout-minutes: 14
+        timeout-minutes: 11
       - name: Set up tools
         uses: ./.github/actions/setup-tools
         if: inputs.scenarios == '' && inputs.ref == ''
-        timeout-minutes: 14
+        timeout-minutes: 11
       - name: Select VM runner
         timeout-minutes: 2
         id: host
@@ -136,7 +136,7 @@ jobs:
   images:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
-    timeout-minutes: 75
+    timeout-minutes: 85
     outputs:
       mkosi-version: ${{ steps.builder.outputs.version }}
     env:
@@ -173,11 +173,11 @@ jobs:
       - name: Set up tools from the workflow revision
         uses: ./_build/workflow-actions/.github/actions/setup-tools
         if: inputs.ref != ''
-        timeout-minutes: 14
+        timeout-minutes: 11
       - name: Set up tools
         uses: ./.github/actions/setup-tools
         if: inputs.ref == ''
-        timeout-minutes: 14
+        timeout-minutes: 11
       - uses: ./.github/actions/hosted-vmtest
         timeout-minutes: 6
         with:
@@ -308,8 +308,8 @@ jobs:
     # Every step has a budget, so go test's -timeout 35m fires inside its
     # 38-minute step and before this timeout whenever setup stays within
     # budget. A lane's groups take at most laneBudget (15 minutes) in
-    # cmd/katl-vmtest-plan. Only one of the two Go setups runs.
-    timeout-minutes: 85
+    # cmd/katl-vmtest-plan. Only one of the two tool setups runs.
+    timeout-minutes: 95
     permissions:
       contents: read
       actions: read # hosted-download reads this run's inputs artifact.
@@ -350,11 +350,11 @@ jobs:
       - name: Set up tools from the workflow revision
         uses: ./_build/workflow-actions/.github/actions/setup-tools
         if: inputs.ref != ''
-        timeout-minutes: 14
+        timeout-minutes: 11
       - name: Set up tools
         uses: ./.github/actions/setup-tools
         if: inputs.ref == ''
-        timeout-minutes: 14
+        timeout-minutes: 11
       - uses: ./.github/actions/hosted-vmtest
         timeout-minutes: 10
         with:
