@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/checkoutcheck"
 )
 
 // Run gives a test package an empty workstation environment. Packages that
@@ -84,6 +86,8 @@ func Run(m *testing.M, pathCheck *func(string) error) (status int) {
 		"GIT_CONFIG_GLOBAL":   filepath.Join(dir, "gitconfig"),
 		"GIT_CONFIG_NOSYSTEM": "1",
 		"KUBECONFIG":          filepath.Join(dir, "kubeconfig"),
+		// Tools run by tests must not report on the developer's checkout.
+		checkoutcheck.TestSuppress: "1",
 	} {
 		if err := os.Setenv(name, value); err != nil {
 			fmt.Fprintln(os.Stderr, err)
