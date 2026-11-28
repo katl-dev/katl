@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/queueadmission"
 	"github.com/katl-dev/katl/internal/queuemarker"
 	"github.com/katl-dev/katl/internal/retry"
 	"github.com/katl-dev/katl/internal/reviewrecord"
@@ -418,7 +419,7 @@ func (r removalEvent) mergeRecord() bool { return r.Reason == "merged" }
 // forFailedChecks reports whether the queue removed the entry because its
 // checks failed or timed out.
 func (r removalEvent) forFailedChecks() bool {
-	return r.Reason == "failed_checks" || r.Reason == "checks_timed_out"
+	return queueadmission.Removal{Reason: r.Reason}.ForFailedChecks()
 }
 
 type failedCheck struct {

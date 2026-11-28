@@ -28,24 +28,40 @@ func TestAutomationPromotion(t *testing.T) {
 	for _, step := range workflow.Jobs["merge"].Steps {
 		scripts = append(scripts, step.Run)
 	}
-	for _, tc := range []struct {
+	type promotionCase struct {
 		name, branch, author, head, state, file, actions string
 		fork, truncated                                  bool
-	}{
-		{name: "ready", actions: "merge\n"},
+	}
+	cases := []promotionCase{
 		{name: "merged", state: "MERGED"},
 		{name: "stale revision", head: "another"},
 		{name: "different author", author: "operator"},
 		{name: "built-in token author", author: "app/github-actions"},
 		{name: "fork", fork: true},
-		{name: "unrelated file", file: ".github/workflows/release-artifacts.yml"},
 		{name: "truncated files", truncated: true},
-		{name: "builder pin", branch: "automation/mkosi-builder-test", file: "mkosi-builder.lock", actions: "merge\n"},
-		{name: "builder branch with a kernel lock", branch: "automation/mkosi-builder-test"},
-		{name: "kernel branch with the builder pin", file: "mkosi-builder.lock"},
 		{name: "builder branch with two files", branch: "automation/mkosi-builder-test", file: "mkosi-builder.lock", truncated: true},
-		{name: "other automation branch", branch: "automation/other-test", file: "mkosi-builder.lock"},
-	} {
+	}
+	// The admission policy restates the same allowlist and reads these
+	// samples too.
+	samples, err := os.ReadFile(filepath.Join(repoRoot(t), "internal/scriptstest/testdata/automation-paths.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []struct {
+		Name, Branch, File string
+		Accepted           bool
+	}
+	if err := json.Unmarshal(samples, &paths); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range paths {
+		tc := promotionCase{name: p.Name, branch: p.Branch, file: p.File}
+		if p.Accepted {
+			tc.actions = "merge\n"
+		}
+		cases = append(cases, tc)
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			directory := t.TempDir()
 			branch, author, head, state := "automation/kernels-test", "app/katl-automation", "qualified", "OPEN"

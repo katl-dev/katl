@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/queueadmission"
 	"github.com/katl-dev/katl/internal/queuemarker"
 )
 
@@ -148,10 +149,7 @@ func (pr *openPR) settle(marks []queuemarker.Marker) {
 			}
 		}
 	}
-	held := !pr.PushedAfterRemoval
-	if pr.RemovalHead != "" {
-		held = pr.RemovalHead == pr.Head
-	}
+	held := queueadmission.Removal{HeadAtRemoval: pr.RemovalHead, PushedAfter: pr.PushedAfterRemoval}.InForce(pr.Head)
 	kind := pr.removalKind()
 	pr.Ejected = kind == removalEjected && held
 	pr.Dequeued = kind == removalDequeued && held

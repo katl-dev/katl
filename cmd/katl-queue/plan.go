@@ -4,12 +4,12 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"iter"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/queueadmission"
 )
 
 // candidate is a ready pull request that could join the merge queue.
@@ -45,14 +45,7 @@ type candidate struct {
 
 // externalRef is the state of an issue or pull request that a candidate
 // depends on but that is not itself a candidate.
-type externalRef struct {
-	Pull  bool
-	State string // OPEN, CLOSED or MERGED
-}
-
-func (r externalRef) resolved() bool {
-	return r.State == "MERGED" || r.State == "CLOSED" && !r.Pull
-}
+type externalRef = queueadmission.Ref
 
 type planInput struct {
 	Base       string
@@ -101,48 +94,22 @@ func (c candidate) compare(o candidate) int {
 	)
 }
 
-var dependsOnLine = regexp.MustCompile(`(?im)^\s*depends on\b(.*)$`)
-var issueRef = regexp.MustCompile(`#(\d+)`)
-
 // declaredDeps lists the numbers on "Depends on #N" lines of a pull request
 // body.
 func declaredDeps(body string) []int {
-	var deps []int
-	for _, line := range dependsOnLine.FindAllStringSubmatch(body, -1) {
-		for _, ref := range issueRef.FindAllStringSubmatch(line[1], -1) {
-			n, _ := strconv.Atoi(ref[1])
-			deps = append(deps, n)
-		}
-	}
-	return deps
+	return queueadmission.DeclaredDeps(body)
 }
 
-var holdLine = regexp.MustCompile(`(?i)^\s*hold:\s*(\S.*?)\s*$`)
-
 // declaredHold returns the reason on the first "Hold: <reason>" line of a pull
-// request body outside a code fence, or empty when there is none.
+// request body outside a code fence, or empty when there is none. A "Hold:"
+// line that names nothing does not hold a plan.
 func declaredHold(body string) string {
-	for line := range unfencedLines(body) {
-		if m := holdLine.FindStringSubmatch(line); m != nil {
-			return m[1]
+	for _, hold := range queueadmission.HoldLines(body) {
+		if hold != "" {
+			return hold
 		}
 	}
 	return ""
-}
-
-func unfencedLines(body string) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		fenced := false
-		for line := range strings.SplitSeq(body, "\n") {
-			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-				fenced = !fenced
-				continue
-			}
-			if !fenced && !yield(line) {
-				return
-			}
-		}
-	}
 }
 
 // waits is a candidate's resolved ordering constraints. A dependency counts as
@@ -158,61 +125,41 @@ type waits struct {
 }
 
 func resolveDeps(in planInput) map[int]waits {
-	byNumber := map[int]candidate{}
-	closers := map[int][]int{}
-	for _, c := range in.Candidates {
-		byNumber[c.Number] = c
-		for _, issue := range c.Closes {
-			closers[issue] = append(closers[issue], c.Number)
-		}
+	nodes := make([]queueadmission.Node, len(in.Candidates))
+	for i, c := range in.Candidates {
+		nodes[i] = queueadmission.Node{Number: c.Number, Closes: c.Closes, Deps: c.Deps}
 	}
-	// queued maps the pull requests in the queue, and the issues they close,
-	// to the queued pull request.
-	queued := map[int]int{}
-	for _, q := range in.Queue {
-		queued[q.Number] = q.Number
-		for _, issue := range q.Closes {
-			queued[issue] = q.Number
-		}
+	queue := make([]queueadmission.Entry, len(in.Queue))
+	for i, q := range in.Queue {
+		queue[i] = queueadmission.Entry{Number: q.Number, Closes: q.Closes}
 	}
 
 	resolved := map[int]waits{}
-	for _, c := range in.Candidates {
+	for number, deps := range queueadmission.ResolveDeps(nodes, queue, in.Refs) {
 		var w waits
 		unmet := func(blocker int, format string, args ...any) {
 			if w.problem == "" {
 				w.problem, w.blocker = fmt.Sprintf(format, args...), blocker
 			}
 		}
-		for _, dep := range c.Deps {
-			if dep == c.Number || slices.Contains(c.Closes, dep) {
-				continue
-			}
-			_, isCandidate := byNumber[dep]
-			ref, known := in.Refs[dep]
-			switch {
-			case isCandidate:
-				w.on = append(w.on, dep)
-			case len(closers[dep]) > 0:
-				for _, n := range closers[dep] {
-					if n != c.Number {
-						w.on = append(w.on, n)
-					}
-				}
-			case queued[dep] != 0:
-				unmet(queued[dep], "waits for #%d, which is queued and has not merged", queued[dep])
-			case !known:
-				unmet(dep, "depends on #%d, which was not found", dep)
-			case ref.resolved():
-			case ref.State == "CLOSED":
-				unmet(dep, "depends on #%d, which was closed without merging", dep)
-			default:
-				unmet(dep, "waits for #%d, which has not merged", dep)
+		for _, d := range deps {
+			switch d.Kind {
+			case queueadmission.DepPulls:
+				w.on = append(w.on, d.On...)
+			case queueadmission.DepQueued:
+				unmet(d.On[0], "waits for #%d, which is queued and has not merged", d.On[0])
+			case queueadmission.DepUnknown, queueadmission.DepNotFound:
+				unmet(d.Number, "depends on #%d, which was not found", d.Number)
+			case queueadmission.DepSatisfied:
+			case queueadmission.DepClosed:
+				unmet(d.Number, "depends on #%d, which was closed without merging", d.Number)
+			case queueadmission.DepOpen:
+				unmet(d.Number, "waits for #%d, which has not merged", d.Number)
 			}
 		}
 		slices.Sort(w.on)
 		w.on = slices.Compact(w.on)
-		resolved[c.Number] = w
+		resolved[number] = w
 	}
 	return resolved
 }
@@ -241,25 +188,13 @@ func dependencyOrder(cands []candidate, resolved map[int]waits) (ordered []candi
 // cycleMembers returns the numbers of stuck candidates that can reach
 // themselves through their dependencies.
 func cycleMembers(stuck []candidate, resolved map[int]waits) []int {
+	on := map[int][]int{}
+	for n, w := range resolved {
+		on[n] = w.on
+	}
 	var members []int
 	for _, c := range stuck {
-		seen := map[int]bool{}
-		var reaches func(n int) bool
-		reaches = func(n int) bool {
-			for _, dep := range resolved[n].on {
-				if dep == c.Number {
-					return true
-				}
-				if !seen[dep] {
-					seen[dep] = true
-					if reaches(dep) {
-						return true
-					}
-				}
-			}
-			return false
-		}
-		if reaches(c.Number) {
+		if queueadmission.InCycle(on, c.Number) {
 			members = append(members, c.Number)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/gittest"
@@ -68,6 +69,66 @@ func TestReviewAcrossRebases(t *testing.T) {
 			})
 			if err != nil || match != test.want || record.Verdict != reviewrecord.Approved || record.Head != reviewed {
 				t.Errorf("Select = %+v, %v, %v; want original approval with match %v", record, match, err, test.want)
+			}
+		})
+	}
+}
+
+// A patch identity that hashes context lines would make the moved-context
+// rebase stale; one that ignored content would keep the changed-line rebase.
+func TestReviewPatchIdentityCountsChangedLines(t *testing.T) {
+	lines := func(changed map[int]string) string {
+		var b strings.Builder
+		for i := 1; i <= 9; i++ {
+			line, ok := changed[i]
+			if !ok {
+				line = fmt.Sprintf("line %d", i)
+			}
+			b.WriteString(line + "\n")
+		}
+		return b.String()
+	}
+	repo := fixtureRepo{t: t, dir: t.TempDir()}
+	repo.git("init", "--quiet", "--initial-branch=main")
+	repo.git("commit", "--quiet", "--allow-empty", "-m", "root")
+	base := repo.commit(repo.git("rev-parse", "HEAD"), map[string]string{"policy": lines(nil)})
+	reviewed := repo.commit(base, map[string]string{"policy": lines(map[int]string{5: "reviewed"})})
+	// main changes a line inside the reviewed change's context without
+	// touching the changed line.
+	contextBase := repo.commit(base, map[string]string{"policy": lines(map[int]string{7: "moved context"})})
+
+	repo.git("checkout", "--quiet", "--detach", reviewed)
+	repo.git("rebase", contextBase)
+	rebased := repo.git("rev-parse", "HEAD")
+	if got := repo.git("show", rebased+":policy"); got != strings.TrimSpace(lines(map[int]string{5: "reviewed", 7: "moved context"})) {
+		t.Fatalf("rebased policy = %q", got)
+	}
+	changedLine := repo.commit(contextBase, map[string]string{"policy": lines(map[int]string{5: "reviewed differently", 7: "moved context"})})
+
+	objects, err := newScratchObjects(repo.dir, gittest.Env(os.Environ(), repo.dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer objects.Close()
+	comments := []reviewrecord.Comment{{
+		ID: 1, Member: true,
+		Body: fmt.Sprintf("<!-- katl-queue:review approved:%s:%s -->", reviewed, base),
+	}}
+
+	for _, test := range []struct {
+		name string
+		head string
+		want reviewrecord.Match
+	}{
+		{"context moved", rebased, reviewrecord.EquivalentPatch},
+		{"added line changed", changedLine, reviewrecord.Stale},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, match, err := reviewrecord.Select(comments, test.head, contextBase, func(base, head string) (string, error) {
+				return objects.patchID(t.Context(), base, head)
+			})
+			if err != nil || match != test.want {
+				t.Errorf("Select match = %v, %v; want %v", match, err, test.want)
 			}
 		})
 	}
