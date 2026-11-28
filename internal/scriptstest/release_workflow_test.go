@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/flavour"
 	"github.com/katl-dev/katl/internal/gittest"
 	"gopkg.in/yaml.v3"
 )
@@ -102,6 +103,26 @@ const (
 	extensionsMatrixFn = "${{ fromJSON(needs.runtime.outputs.extensions) }}"
 )
 
+func TestWorkflowsUseReleaseExtensionInventory(t *testing.T) {
+	for _, name := range workflowNames(t) {
+		data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "katl-extension-bundles-") {
+			t.Errorf("%s spells an extension artifact name instead of using katl-release extension-bundles", name)
+		}
+	}
+
+	flavourLiteral := regexp.MustCompile(`\b(` + strings.Join(flavour.Supported(), "|") + `)\b`)
+	for _, name := range []string{"release.yml", productionBuild} {
+		_, source := readWorkflow(t, name)
+		if flavourLiteral.MatchString(source) {
+			t.Errorf("%s spells a kernel flavour instead of using the release extension inventory or the caller's flavour", name)
+		}
+	}
+}
+
 func TestProductionBuildGraph(t *testing.T) {
 	workflow, _ := readWorkflow(t, productionBuild)
 
@@ -126,6 +147,46 @@ func TestProductionBuildGraph(t *testing.T) {
 		if _, ok := matrixAxes(t, job)["flavour"]; ok {
 			t.Errorf("%s matrixes over flavour; callers choose the flavour", name)
 		}
+	}
+}
+
+func TestProductionBuildSelectsExtensionArtifact(t *testing.T) {
+	workflow, _ := readWorkflow(t, productionBuild)
+	runtime := workflow.Jobs["runtime"]
+	var resolve string
+	for _, step := range runtime.Steps {
+		if step.ID == "extension-bundle" {
+			resolve = step.Run
+		}
+	}
+	if resolve == "" {
+		t.Fatal("runtime does not resolve the extension artifact")
+	}
+
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := `#!/bin/sh
+[ "$*" = "extension-bundles $GITHUB_SHA" ] || exit 5
+printf '%s\n' '{"bundles":[{"flavour":"other","name":"inputs-first"},{"flavour":"example","name":"inputs-second"}]}'
+`
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "katl-release"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outputs := filepath.Join(dir, "output")
+	for _, track := range []string{"", "unsupported", "example"} {
+		out, err := runReleaseStep(dir, resolve, "KATL_FLAVOUR="+track, "GITHUB_SHA="+calledCommit, "GITHUB_OUTPUT="+outputs)
+		if track == "example" && err != nil {
+			t.Fatalf("select artifact: %v: %s", err, out)
+		}
+		if track != "example" && (err == nil || !strings.Contains(string(out), "Unsupported flavour:")) {
+			t.Fatalf("flavour %q: result = %v: %s, want refusal", track, err, out)
+		}
+	}
+	written, err := os.ReadFile(outputs)
+	if got, want := string(written), "name=inputs-second\n"; err != nil || got != want {
+		t.Fatalf("output = %q, %v, want %q", got, err, want)
 	}
 }
 
@@ -305,7 +366,7 @@ func TestProductionBuildExtensionBundles(t *testing.T) {
 
 	outputPath := filepath.Join(t.TempDir(), "output")
 	command := exec.Command("bash", "-euo", "pipefail", "-c", names.Run)
-	command.Env = []string{"KATL_FLAVOUR=lts", "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "GITHUB_OUTPUT=" + outputPath}
+	command.Env = []string{"KATL_FLAVOUR=lts", "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "EXTENSION_BUNDLE=runtime-selected-bundle", "GITHUB_OUTPUT=" + outputPath}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("resolve artifact names: %v\n%s", err, output)
 	}
@@ -313,8 +374,8 @@ func TestProductionBuildExtensionBundles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(output), "\nextension-bundles=katl-extension-bundles-lts-0123456789abcdef0123456789abcdef01234567\n") {
-		t.Errorf("artifact outputs = %q, want the extension bundle named for the flavour and commit", output)
+	if !strings.Contains(string(output), "\nextension-bundles=runtime-selected-bundle\n") {
+		t.Errorf("artifact outputs = %q, want the extension bundle the runtime job selected", output)
 	}
 }
 

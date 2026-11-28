@@ -8,7 +8,6 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/katl-dev/katl/internal/flavour"
 	"github.com/katl-dev/katl/internal/releasestate"
 	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/runstatus"
@@ -46,8 +45,9 @@ func candidateArtifacts(ctx context.Context, args []string, stdout io.Writer, r 
 
 	bundle := releasestate.BundleName(version, commit)
 	names := map[string]string{bundle: "bundle"}
-	for _, track := range flavour.Supported() {
-		names["katl-extension-bundles-"+track+"-"+commit] = track
+	extensions := releasestate.ExtensionBundles(commit)
+	for _, extension := range extensions {
+		names[extension.Name] = extension.Flavour
 	}
 	ids := make(map[string]int64, len(names))
 	for _, artifact := range artifacts {
@@ -64,10 +64,10 @@ func candidateArtifacts(ctx context.Context, args []string, stdout io.Writer, r 
 		return fmt.Errorf("The bundle of %s from %s has expired, so its publication cannot be finished. Push a commit to %s; the next dispatch then tags %s.",
 			version.Tag(), attempt.URL(r.server, r.repository), releasestate.Branch(version.Base()), version.Candidate(version.Number+1).Tag())
 	}
-	for _, track := range flavour.Supported() {
-		if ids[track] == 0 {
+	for _, extension := range extensions {
+		if ids[extension.Flavour] == 0 {
 			return fmt.Errorf("the %s extension inputs for %s from %s are unavailable. Push a commit to %s to qualify the next candidate.",
-				track, version.Tag(), attempt.URL(r.server, r.repository), releasestate.Branch(version.Base()))
+				extension.Flavour, version.Tag(), attempt.URL(r.server, r.repository), releasestate.Branch(version.Base()))
 		}
 	}
 	return json.NewEncoder(stdout).Encode(ids)
