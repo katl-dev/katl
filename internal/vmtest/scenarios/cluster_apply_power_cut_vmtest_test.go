@@ -33,6 +33,8 @@ var cmdlineGeneration = regexp.MustCompile(`(?:^|\s)katl\.generation=(\S+)`)
 // that changes a sysctl, and during a reboot. Each boot must come back on the
 // generation that boot selection names, healthy and reachable.
 func runPowerCutJourney(ctx context.Context, katlctl katlctlRunner, dir string, source configbundle.SourceConfig, planning configbundle.PlanningInputs, validConfig string, node *vmtest.RunningInstalledRuntimeNode, address string) error {
+	// Sources stay beside the files they name; command evidence gets its own directory.
+	sourceDir := dir
 	dir = filepath.Join(dir, "power-cut")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -49,7 +51,7 @@ func runPowerCutJourney(ctx context.Context, katlctl katlctlRunner, dir string, 
 	for i, delay := range powerCutDelays {
 		label := fmt.Sprintf("apply-delay-%ds", int(delay/time.Second))
 		value := strconv.Itoa(110 + i)
-		configPath, err := writePowerCutConfig(dir, label, source, planning, node.Name, value)
+		configPath, err := writePowerCutConfig(sourceDir, "power-cut-"+label, source, planning, node.Name, value)
 		if err != nil {
 			return err
 		}
