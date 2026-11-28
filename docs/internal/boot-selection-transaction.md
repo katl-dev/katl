@@ -170,9 +170,15 @@ reboots for that trial, and a retry never requests a second one.
 Admission refuses to write an intent when a recorded target other than the
 running generation, meaning the prior or desired default or one-shot, runs a
 release that cannot read boot-move records. `internal/generation` owns that
-rule: a runtime version that parses as a release below 2026.11.6 is refused,
-and a version that does not parse is a development build, which counts as
-having the reader, as does any pre-release of 2026.11.6 or later. The refusal
+rule: it judges only published versions, a final release or a candidate,
+and refuses one whose base is below 2026.11.6, so 2026.11.5 and
+2026.11.5-rc.1 are refused and 2026.11.6-rc.1 is not. A development build,
+meaning a `-dev.N` version or one outside the release grammar such as
+`0.0.0-dev`, counts as having the reader. Development stamps are computed
+from the release tags reachable on `main`, which lag the release branches, so
+they say nothing about the code a build contains. A development build made
+from code that predates 2026.11.6 is therefore not protected by this rule;
+development builds are unsupported outside testing. The refusal
 changes nothing and tells the operator to boot the named generation from the
 boot menu and upgrade or remove it. `katlctl node upgrade` applies the same
 predicate before it starts, refusing a source below 2026.11.6 when the target is

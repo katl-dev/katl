@@ -280,6 +280,8 @@ func TestBootMoveReaderGate(t *testing.T) {
 		refused bool
 	}{
 		{version: "2026.11.5", refused: true},
+		{version: "2026.11.5-rc.1", refused: true},
+		{version: "2026.11.5-dev.0"},
 		{version: "2026.11.6-rc.1"},
 		{version: "2026.11.6"},
 		{version: "0.0.0-dev"},
@@ -312,8 +314,11 @@ func TestBootMoveReaderGate(t *testing.T) {
 						}
 						return
 					}
-					if err == nil || !strings.Contains(err.Error(), "generation gen4 runs KatlOS 2026.11.5, which cannot read boot-move records") {
-						t.Fatalf("move = %v, want the reader refusal", err)
+					want := "generation gen4 runs KatlOS " + tc.version + ", which cannot read boot-move records; " +
+						"boot generation gen4 from the boot menu and upgrade it to 2026.11.6 or later, " +
+						"or remove it with 'katlctl node generations remove gen4 <node>', then retry"
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Fatalf("move = %v, want the reader refusal %q", err, want)
 					}
 					if intent, err := readBootMoveIntent(w.root); err != nil || intent != nil {
 						t.Fatalf("refused move left intent %#v, %v", intent, err)

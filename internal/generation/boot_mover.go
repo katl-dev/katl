@@ -1125,12 +1125,18 @@ func (m *BootMover) pendingTrialError(authority *bootMoveIntent, action string) 
 // FirstBootMoveReader is the first KatlOS release that reads boot-move records.
 var FirstBootMoveReader = releaseversion.Version{Year: 2026, Month: 11, Patch: 6}
 
-// ReadsBootMoves reports whether a runtime can read boot-move records. A
-// version outside the release grammar is a development build, which has the
-// reader, as has any prerelease of the first reader release or later.
+// ReadsBootMoves reports whether a runtime can read boot-move records. Only a
+// published version, a final or a non-development prerelease such as an rc, is
+// judged, by its base against FirstBootMoveReader. A development build, a
+// -dev.N prerelease or a version outside the release grammar, counts as a
+// reader: its stamp derives from the release tags reachable on main, which lag
+// the release branches, so it says nothing about the code the build contains.
 func ReadsBootMoves(runtimeVersion string) bool {
 	version, err := releaseversion.Parse(runtimeVersion)
-	return err != nil || version.Base().Compare(FirstBootMoveReader) >= 0
+	if err != nil || version.Stage == releaseversion.Dev {
+		return true
+	}
+	return version.Base().Compare(FirstBootMoveReader) >= 0
 }
 
 // checkReaders refuses an intent while a recorded target other than the
