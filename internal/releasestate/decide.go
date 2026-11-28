@@ -20,6 +20,15 @@ const (
 	Refuse          Action = "refuse"
 )
 
+const (
+	StateReleased                   = "released"
+	StateSuperseded                 = "superseded"
+	StateCandidateIncomplete        = "candidate-incomplete"
+	StateExtensionsAlreadyPublished = "extensions-already-published"
+	StateFinalStart                 = "final-start"
+	StateFinalUnapproved            = "final-unapproved"
+)
+
 // RecordSummary is a trusted record as status reports it.
 type RecordSummary struct {
 	Tag    string
@@ -198,7 +207,7 @@ func Decide(in Inputs) (Decision, error) {
 
 	if final != nil {
 		if H == final.Commit {
-			return set(14, "released", Refuse, "v%s is released: %s. There is nothing left to do for %s.", V, in.Releases[version.Tag()].URL, V), nil
+			return set(14, StateReleased, Refuse, "v%s is released: %s. There is nothing left to do for %s.", V, in.Releases[version.Tag()].URL, V), nil
 		}
 		return set(15, "released-branch-ahead", Refuse, "v%s is released at %s, and release/%s has moved on to %s. A released version never changes; cut the next version for the later commits.", V, short(final.Commit), V, short(H)), nil
 	}
@@ -214,7 +223,7 @@ func Decide(in Inputs) (Decision, error) {
 	if H != C {
 		if retry == "" {
 			d.Version, d.Commit = version.Candidate(K).String(), H
-			return set(17, "superseded", Candidate, ""), nil
+			return set(17, StateSuperseded, Candidate, ""), nil
 		}
 		return set(27, "retry-not-applicable", Refuse, "There is nothing to retry for %s: a dispatch without a retry reason would tag v%s-rc.%d at %s. Dispatch again without one.", V, V, K, short(H)), nil
 	}
@@ -239,20 +248,20 @@ func Decide(in Inputs) (Decision, error) {
 	if !prePublished {
 		if retry == "" {
 			d.Version, d.Commit, d.Build, d.Digest = candidateVersion, C, latest.Attempt, latest.Digest
-			return set(21, "candidate-incomplete", ResumeCandidate, ""), nil
+			return set(21, StateCandidateIncomplete, ResumeCandidate, ""), nil
 		}
 		return set(27, "retry-not-applicable", Refuse, "There is nothing to retry for %s: a dispatch without a retry reason would finish publishing v%s-rc.%d. Dispatch again without one.", V, V, N), nil
 	}
 
 	// rc.N is published at the head.
 	if len(in.ExtensionReferences) > 0 {
-		return set(22, "extensions-already-published", Refuse, "Extension bundles for %s are already published with different contents. Published bytes are never replaced. Have a repository administrator delete those package versions if no release uses them and dispatch again; otherwise abandon %s and cut the next version.", V, V), nil
+		return set(22, StateExtensionsAlreadyPublished, Refuse, "Extension bundles for %s are already published with different contents. Published bytes are never replaced. Have a repository administrator delete those package versions if no release uses them and dispatch again; otherwise abandon %s and cut the next version.", V, V), nil
 	}
 	buildFinal := func(reason string) { d.Version, d.Commit, d.Candidate, d.Reason = V, C, candidateVersion, reason }
 	switch {
 	case finalRecord == nil && retry == "":
 		buildFinal("")
-		return set(23, "final-start", Final, ""), nil
+		return set(23, StateFinalStart, Final, ""), nil
 	case finalRecord != nil && finalRecord.Phase != Qualified && retry == "":
 		return set(24, "final-failed", Refuse, "v%s did not qualify at %s: %s (%s). v%s-rc.%d is still green. If the source is at fault, push a fix to release/%s; the next dispatch then tags v%s-rc.%d. Otherwise dispatch again with a retry reason to rebuild v%s.", V, short(C), outcome(finalRecord.attempt), finalRecord.Attempt.URL(in.Server, in.Repository), V, N, V, V, K, V), nil
 	case finalRecord != nil && finalRecord.Phase != Qualified:
@@ -260,7 +269,7 @@ func Decide(in Inputs) (Decision, error) {
 		return set(25, "final-retry", RetryFinal, ""), nil
 	case finalRecord != nil && retry == "":
 		buildFinal("")
-		return set(26, "final-unapproved", Final, ""), nil
+		return set(26, StateFinalUnapproved, Final, ""), nil
 	}
 	return set(27, "retry-not-applicable", Refuse, "There is nothing to retry for %s: a dispatch without a retry reason would build v%s at %s for approval. Dispatch again without one.", V, V, short(C)), nil
 }

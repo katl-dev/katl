@@ -1,8 +1,8 @@
 # katl-release
 
-Use `scripts/katl-release` from the Katl checkout to prepare a release tag,
-inspect and download its final GitHub Actions bundle, or verify release
-evidence. The wrapper runs the checkout's Go source. Commands that consult
+Use `scripts/katl-release` from the Katl checkout to run and follow a release,
+inspect and download its GitHub Actions bundle, or verify release evidence.
+The wrapper runs the checkout's Go source. Commands that consult
 GitHub require an authenticated `gh` with access to `katl-dev/katl`.
 The [release procedure](../../docs/development/releases.md) describes source
 selection, qualification, and publication through GitHub Actions.
@@ -34,17 +34,15 @@ version.
 scripts/katl-release inspect "$RUN_ID"
 ```
 
-Set `RUN_ID` to the positive integer in the Actions URL for the pushed
-KatlOS tag. The command prints JSON with the run, attempt, source commit, and
-final artifact metadata. It accepts only tag-push runs of
-`release-artifacts.yml` and selects the final bundle named
-`katl-VERSION-x86_64-COMMITPREFIX`, where the prefix is the first 12
-characters of the source SHA.
+Set `RUN_ID` to the positive integer in the Actions run URL. The command
+accepts a dispatched Release run on `release/VERSION` or a pushed KatlOS
+tag run from `release-artifacts.yml`. It prints JSON with the run, attempt,
+source commit, and bundle artifact metadata. For a Release run, the bundle
+must be for that branch's final version or one of its release candidates.
 
-A branch or manual run is refused. If the final bundle is unavailable, check
-the run URL and status. If multiple final bundles match, resolve the ambiguity
-before qualification. An expired bundle requires a fresh build and fresh
-qualification.
+If the bundle is unavailable, check the run URL and status. If multiple
+bundles match, resolve the ambiguity before qualification. An expired bundle
+requires a fresh build and fresh qualification.
 
 ### `download`
 
@@ -55,7 +53,10 @@ scripts/katl-release download "$RUN_ID" _build/releases/2026.12.0-rc.1
 Use a destination that does not exist and create its parent directory first.
 The command selects the same final artifact as `inspect`, downloads it,
 verifies checksums and provenance, and prints the run and artifact JSON.
-It checks the run attempt, commit, and artifact again after verification.
+It verifies provenance against the source commit and release branch ref for
+a Release run, or against the source commit and tag ref for a tag-push run.
+You can download the final bundle while publication waits for approval.
+The command checks the run attempt, commit, and artifact again after verification.
 If a rerun replaced the candidate, or if the download was interrupted,
 inspect the retained directory and download into a fresh directory before
 qualifying the candidate.
@@ -146,9 +147,36 @@ the command writes on `GITHUB_SHA` and refuses unless `GITHUB_REF` is
 ## Release state
 
 The [release state machine](../../docs/internal/release-state-machine.md)
-defines both commands below. They share one decision, read from Git and
+defines the release decisions. The commands share one decision, read from Git and
 GitHub on every call; a read that fails stops the command without a
 decision.
+
+### `release`
+
+```sh
+scripts/katl-release release 2026.12.1
+scripts/katl-release release 2026.12.1 --retry 'runner lost during Production VM (lts)'
+```
+
+Start from a checkout of the head of the published release branch and supply
+its complete final version without the `v` prefix. The command prints the
+decision and dispatches Release only if the state machine allows it. Supply
+`--retry` with a reason when the decision calls for retrying a failed build.
+After dispatch, the command prints the run URL and follows it through the
+same steps as `wait`.
+
+### `wait`
+
+```sh
+scripts/katl-release wait 2026.12.1
+```
+
+Follow the newest Release run for the version, including one that has already
+completed. The command reports job progress and prints the approval URL when
+a final run is waiting. It keeps following until the run ends. If the run
+fails, the command exits with the failed jobs and run URL. After a successful
+run, it checks the publication against the release record and reports the
+published tag and digest, or that a new commit superseded the candidate.
 
 ### `status`
 

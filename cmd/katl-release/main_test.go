@@ -24,6 +24,7 @@ type githubFixture struct {
 	replaced    bool
 	corrupt     bool
 	provenance  bool
+	sourceRef   string
 	rootOffline bool
 	rootFetches int
 	verified    []string
@@ -38,6 +39,7 @@ func newFixture(t *testing.T) *githubFixture {
 		t:         t,
 		run:       workflowRun{ID: 42, Attempt: 1, Tag: "v2026.10.2", Commit: testCommit, Event: "push", Path: workflow, Status: "waiting"},
 		artifacts: []artifact{{ID: 123, Name: "katl-2026.10.2-x86_64-1234567890ab", Digest: "sha256:archive"}},
+		sourceRef: "refs/tags/v2026.10.2",
 	}
 }
 
@@ -113,7 +115,11 @@ func (f *githubFixture) call(name string, args ...string) ([]byte, error) {
 		if data, err := os.ReadFile(args[flag+1]); err != nil || string(data) != testTrustedRoot || f.rootFetches != 1 {
 			f.t.Fatalf("verified against %s after %d trusted-root fetches: %v", args[flag+1], f.rootFetches, err)
 		}
-		for _, constraint := range []string{"--repo " + repository, "--signer-workflow " + repository + "/" + workflow, "--source-ref refs/tags/v2026.10.2", "--source-digest " + testCommit} {
+		source := slices.Index(args, "--source-ref")
+		if source < 0 || source+1 >= len(args) || args[source+1] != f.sourceRef {
+			f.t.Fatalf("source ref in %q, want %q", args, f.sourceRef)
+		}
+		for _, constraint := range []string{"--repo " + repository, "--signer-workflow " + repository + "/" + workflow, "--source-digest " + testCommit} {
 			if !strings.Contains(joined, constraint) {
 				f.t.Fatalf("missing provenance constraint %s: %s", constraint, joined)
 			}
@@ -181,7 +187,7 @@ func TestInspect(t *testing.T) {
 		{"wrong workflow", func(f *githubFixture) { f.run.Path = ".github/workflows/other.yml" }, "pushed KatlOS tag"},
 		{"bundle missing", func(f *githubFixture) { f.artifacts = nil }, "unavailable"},
 		{"bundle expired", func(f *githubFixture) { f.artifacts[0].Expired = true }, "expired"},
-		{"ambiguous", func(f *githubFixture) { f.artifacts = append(f.artifacts, f.artifacts[0]) }, "multiple final bundles"},
+		{"ambiguous", func(f *githubFixture) { f.artifacts = append(f.artifacts, f.artifacts[0]) }, "multiple matching release bundles"},
 		{"wrong commit", func(f *githubFixture) { f.run.Commit = strings.Repeat("a", 40) }, "unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,6 +225,49 @@ func TestInspectPagination(t *testing.T) {
 	}
 	if fixture.artifactAPI != 2 {
 		t.Fatal("did not inspect all artifacts")
+	}
+}
+
+func TestReleaseRunBundle(t *testing.T) {
+	// Branch-built bytes attest to the release ref. Accept its final or
+	// candidate, and reject foreign runs, versions, commits and ambiguity.
+	for _, tc := range []struct {
+		name, branch, bundle, want string
+		extra                      string
+	}{
+		{"candidate", "release/2026.12.1", "katl-2026.12.1-rc.2-x86_64-1234567890ab", "", ""},
+		{"final", "release/2026.12.1", "katl-2026.12.1-x86_64-1234567890ab", "", ""},
+		{"main", "main", "katl-2026.12.1-rc.2-x86_64-1234567890ab", "a dispatched Release run", ""},
+		{"other version", "release/2026.12.1", "katl-2026.12.10-rc.2-x86_64-1234567890ab", "release bundle for v2026.12.1 at " + testCommit + " is unavailable", ""},
+		{"other stage", "release/2026.12.1", "katl-2026.12.1-beta.2-x86_64-1234567890ab", "unavailable", ""},
+		{"other commit", "release/2026.12.1", "katl-2026.12.1-rc.2-x86_64-111111111111", "unavailable", ""},
+		{"ambiguous", "release/2026.12.1", "katl-2026.12.1-rc.2-x86_64-1234567890ab", "multiple matching release bundles", "katl-2026.12.1-x86_64-1234567890ab"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.run.Tag, f.run.Event, f.run.Path = tc.branch, "workflow_dispatch", ".github/workflows/release.yml"
+			f.sourceRef = "refs/heads/release/2026.12.1"
+			f.artifacts = []artifact{{ID: 123, Name: tc.bundle}}
+			if tc.extra != "" {
+				f.artifacts = append(f.artifacts, artifact{ID: 124, Name: tc.extra})
+			}
+			var out bytes.Buffer
+			err := run([]string{"inspect", "42"}, &out, io.Discard, f.call)
+			if tc.want != "" {
+				assertErrorContains(t, err, tc.want)
+				return
+			}
+			if err != nil || !strings.Contains(out.String(), tc.bundle) {
+				t.Fatalf("inspect = %v, output = %q; want %s", err, out.String(), tc.bundle)
+			}
+			dir := filepath.Join(t.TempDir(), "bundle")
+			if err := run([]string{"download", "42", dir}, io.Discard, io.Discard, f.call); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(f.verified, []string{"RELEASE_NOTES.md", "payload", "SHA256SUMS"}) {
+				t.Fatalf("verified %q; want all bundle files", f.verified)
+			}
+		})
 	}
 }
 

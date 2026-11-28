@@ -353,15 +353,12 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 		return err
 	}
 	read := releasestate.Attempt{Run: run}
-	type jobsPage struct {
-		Jobs []struct{ Name, Conclusion string } `json:"jobs"`
-	}
-	if err := pages(ctx, r, runstatus.AttemptEndpoint(r.repository, attempt)+"/jobs?per_page=100", func(page jobsPage) {
-		for _, job := range page.Jobs {
-			read.Jobs = append(read.Jobs, releasestate.Job{Name: job.Name, Conclusion: job.Conclusion})
-		}
-	}); err != nil {
+	jobs, err := r.jobs(ctx, attempt)
+	if err != nil {
 		return err
+	}
+	for _, job := range jobs {
+		read.Jobs = append(read.Jobs, releasestate.Job{Name: job.Name, Conclusion: job.Conclusion})
 	}
 	artifacts, err := r.attemptArtifacts(ctx, attempt, run.StartedAt)
 	if err != nil {
@@ -575,9 +572,36 @@ func (r *reader) attest(ctx context.Context, version releaseversion.Version, in 
 }
 
 type restRun struct {
-	ID        int64     `json:"id"`
+	runstatus.Run
 	HTMLURL   string    `json:"html_url"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type restJob struct {
+	ID                       int64
+	Name, Status, Conclusion string
+}
+
+func (r *reader) jobs(ctx context.Context, attempt runstatus.Attempt) ([]restJob, error) {
+	var jobs []restJob
+	type jobsPage struct {
+		Jobs []restJob `json:"jobs"`
+	}
+	err := pages(ctx, r, runstatus.AttemptEndpoint(r.repository, attempt)+"/jobs?per_page=100", func(page jobsPage) {
+		jobs = append(jobs, page.Jobs...)
+	})
+	return jobs, err
+}
+
+func (r *reader) releaseRuns(ctx context.Context, branch string, filter string) ([]restRun, error) {
+	endpoint := r.repo(fmt.Sprintf("actions/workflows/%s/runs?branch=%s&%s&per_page=100",
+		url.PathEscape(path.Base(releasestate.ReleaseWorkflow)), url.QueryEscape(branch), filter))
+	var runs []restRun
+	type runsPage struct {
+		Runs []restRun `json:"workflow_runs"`
+	}
+	err := pages(ctx, r, endpoint, func(page runsPage) { runs = append(runs, page.Runs...) })
+	return runs, err
 }
 
 // active finds the oldest other Release run on the branch that is working,
@@ -585,39 +609,42 @@ type restRun struct {
 func (r *reader) active(ctx context.Context, version releaseversion.Version, in *releasestate.Inputs) error {
 	var oldest *restRun
 	for _, status := range []string{"queued", "in_progress", "waiting", "requested"} {
-		endpoint := r.repo(fmt.Sprintf("actions/workflows/%s/runs?branch=%s&status=%s&per_page=100",
-			url.PathEscape(path.Base(releasestate.ReleaseWorkflow)), url.QueryEscape(releasestate.Branch(version)), status))
-		type runsPage struct {
-			Runs []restRun `json:"workflow_runs"`
-		}
-		if err := pages(ctx, r, endpoint, func(page runsPage) {
-			for _, run := range page.Runs {
-				if run.ID != r.self && (oldest == nil || run.CreatedAt.Before(oldest.CreatedAt)) {
-					oldest = &run
-				}
-			}
-		}); err != nil {
+		runs, err := r.releaseRuns(ctx, releasestate.Branch(version), "status="+status)
+		if err != nil {
 			return err
+		}
+		for _, run := range runs {
+			if run.ID != r.self && (oldest == nil || run.CreatedAt.Before(oldest.CreatedAt)) {
+				oldest = &run
+			}
 		}
 	}
 	if oldest == nil {
 		return nil
 	}
-	in.Active = &releasestate.ActiveRun{URL: oldest.HTMLURL}
+	pending, err := r.approvalPending(ctx, oldest.ID)
+	if err != nil {
+		return err
+	}
+	in.Active = &releasestate.ActiveRun{URL: oldest.HTMLURL, ApprovalPending: pending}
+	return nil
+}
+
+func (r *reader) approvalPending(ctx context.Context, runID int64) (bool, error) {
 	var pending []struct {
 		Environment struct {
 			Name string `json:"name"`
 		} `json:"environment"`
 	}
-	if err := r.decode(ctx, r.repo(fmt.Sprintf("actions/runs/%d/pending_deployments", oldest.ID)), &pending); err != nil {
-		return err
+	if err := r.decode(ctx, r.repo(fmt.Sprintf("actions/runs/%d/pending_deployments", runID)), &pending); err != nil {
+		return false, err
 	}
 	for _, deployment := range pending {
 		if deployment.Environment.Name == releasestate.ReleaseEnvironment {
-			in.Active.ApprovalPending = true
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // extensions lists the registry tags of the repository's extension packages

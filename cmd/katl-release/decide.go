@@ -79,6 +79,18 @@ func status(ctx context.Context, args []string, stdout io.Writer, r *reader) err
 	if len(args) != 1 {
 		return errors.New("usage: scripts/katl-release status VERSION")
 	}
+	if err := r.requireReleaseWorkflow(ctx); err != nil {
+		return err
+	}
+	d, err := decide(ctx, r, releasestate.RefForVersion(args[0]), "", "")
+	if err != nil {
+		return err
+	}
+	printDecision(stdout, r, d)
+	return nil
+}
+
+func (r *reader) requireReleaseWorkflow(ctx context.Context) error {
 	// Without the workflow every run listing fails with GitHub's bare 404.
 	_, err := r.get(ctx, r.repo("actions/workflows/"+path.Base(releasestate.ReleaseWorkflow)), false, "")
 	if notFound(err) {
@@ -87,10 +99,10 @@ func status(ctx context.Context, args []string, stdout io.Writer, r *reader) err
 	if err != nil {
 		return fmt.Errorf("cannot read the release state, so nothing was decided: %w", err)
 	}
-	d, err := decide(ctx, r, "refs/heads/release/"+args[0], "", "")
-	if err != nil {
-		return err
-	}
+	return nil
+}
+
+func printDecision(stdout io.Writer, r *reader, d releasestate.Decision) {
 	fmt.Fprintf(stdout, "State: %s (row %d)\n", d.State, d.Row)
 	switch d.Action {
 	case releasestate.Refuse:
@@ -123,5 +135,4 @@ func status(ctx context.Context, args []string, stdout io.Writer, r *reader) err
 	for _, warning := range d.Warnings {
 		fmt.Fprintf(stdout, "Warning: %s\n", warning)
 	}
-	return nil
 }
