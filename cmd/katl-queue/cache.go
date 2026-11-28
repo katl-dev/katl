@@ -148,11 +148,7 @@ func cacheCommand(ctx context.Context, flags *flag.FlagSet, args []string, out, 
 	if err != nil {
 		return fmt.Errorf("read the cache policy from the checkout root: %w", err)
 	}
-	g, err := newGH(ctx)
-	if err != nil {
-		return err
-	}
-	return cache(ctx, g, local, cacheOptions{apply: *apply, asJSON: *asJSON, deletePace: deletePace, out: out, errOut: errOut})
+	return cache(ctx, newGH(), local, cacheOptions{apply: *apply, asJSON: *asJSON, deletePace: deletePace, out: out, errOut: errOut})
 }
 
 // deletePace separates deletes, which keeps a run that prunes many entries

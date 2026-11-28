@@ -427,7 +427,7 @@ esac
 	}
 }
 
-const contentsRead = "api -H Accept: application/vnd.github.raw+json repos/example/katl/contents/.github/cache-policy.json"
+const contentsRead = "api -H Accept: application/vnd.github.raw+json repos/katl-dev/katl/contents/.github/cache-policy.json --hostname github.com"
 
 // TestCacheGitHub runs an apply through the gh client against a fake gh: a
 // paginated listing, the raw contents read, a delete answered 404, a delete
@@ -440,7 +440,7 @@ func TestCacheGitHub(t *testing.T) {
 	logged := fakeGHCases(t, `
   "`+contentsRead+`")
     cat `+policy+` ;;
-  "api --paginate --slurp repos/example/katl/actions/caches?per_page=100")
+  "api --paginate --slurp repos/katl-dev/katl/actions/caches?per_page=100 --hostname github.com")
     printf '%s\n' '[
       {"total_count":4,"actions_caches":[
         {"id":1,"ref":"refs/heads/main","key":"go-a","size_in_bytes":10,"created_at":"2026-11-27T11:00:00Z","last_accessed_at":"2026-11-27T11:00:00Z"},
@@ -448,14 +448,15 @@ func TestCacheGitHub(t *testing.T) {
       {"total_count":4,"actions_caches":[
         {"id":3,"ref":"refs/heads/main","key":"other","size_in_bytes":10,"created_at":"2026-11-27T11:00:00Z","last_accessed_at":"2026-11-27T11:00:00Z"},
         {"id":4,"ref":"refs/heads/x","key":"other","size_in_bytes":10,"created_at":"2026-11-27T11:00:00Z","last_accessed_at":"2026-11-27T11:00:00Z"}]}]' ;;
-  "api -X DELETE repos/example/katl/actions/caches/2")
+  "api -X DELETE repos/katl-dev/katl/actions/caches/2 --hostname github.com")
     echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
-  "api -X DELETE repos/example/katl/actions/caches/3")
-    if [ "$(grep -c 'caches/3$' "$log")" -lt 2 ]; then echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; fi ;;
-  "api -X DELETE repos/example/katl/actions/caches/4")
+  "api -X DELETE repos/katl-dev/katl/actions/caches/3 --hostname github.com")
+    if [ "$(grep -c 'caches/3 ' "$log")" -lt 2 ]; then echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; fi ;;
+  "api -X DELETE repos/katl-dev/katl/actions/caches/4 --hostname github.com")
     echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; exit 1 ;;`)
 
-	g := &gh{owner: "example", name: "katl", readDelay: time.Millisecond}
+	g := newGH()
+	g.readDelay = time.Millisecond
 	var out, errOut bytes.Buffer
 	err := cache(t.Context(), g, []byte(testCachePolicy), cacheOptions{apply: true, asJSON: true, out: &out, errOut: &errOut})
 	if err == nil || !strings.Contains(err.Error(), "delete cache 4") || strings.Contains(err.Error(), "cache 2") || strings.Contains(err.Error(), "cache 3") {
@@ -464,8 +465,8 @@ func TestCacheGitHub(t *testing.T) {
 
 	deletes := map[string]int{}
 	for _, line := range logged() {
-		if id, ok := strings.CutPrefix(line, "api -X DELETE repos/example/katl/actions/caches/"); ok {
-			deletes[id]++
+		if id, ok := strings.CutPrefix(line, "api -X DELETE repos/katl-dev/katl/actions/caches/"); ok {
+			deletes[strings.TrimSuffix(id, " --hostname github.com")]++
 		}
 	}
 	// 1 is in policy; 2 counts as deleted on its first 404; 3 is retried
@@ -502,7 +503,8 @@ func TestCacheGitHubPolicyMissing(t *testing.T) {
   "`+contentsRead+`")
     echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;`)
 
-	g := &gh{owner: "example", name: "katl", readDelay: time.Millisecond}
+	g := newGH()
+	g.readDelay = time.Millisecond
 	var out, errOut bytes.Buffer
 	err := cache(t.Context(), g, []byte(testCachePolicy), cacheOptions{apply: true, out: &out, errOut: &errOut})
 	if err == nil || !strings.Contains(err.Error(), "refusing --apply") {
