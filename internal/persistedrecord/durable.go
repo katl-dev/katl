@@ -173,7 +173,7 @@ func syncContent(path string) error {
 // record that refers to the tree. Symlinks are durable through their
 // directory.
 func SyncTree(root string) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	return fsys.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -196,6 +196,7 @@ type fileSystem interface {
 	Rename(oldpath, newpath string) error
 	Remove(name string) error
 	SyncDir(path string) error
+	WalkDir(root string, fn fs.WalkDirFunc) error
 }
 
 type file interface {
@@ -221,6 +222,8 @@ func (osFileSystem) OpenFile(name string, flag int, perm os.FileMode) (file, err
 func (osFileSystem) Rename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
 
 func (osFileSystem) Remove(name string) error { return os.Remove(name) }
+
+func (osFileSystem) WalkDir(root string, fn fs.WalkDirFunc) error { return filepath.WalkDir(root, fn) }
 
 func (osFileSystem) SyncDir(path string) error {
 	dir, err := os.Open(path)

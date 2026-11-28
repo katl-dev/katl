@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	iofs "io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,6 +88,38 @@ func TestSyncFileCrash(t *testing.T) {
 		got, ok := fs.read(path)
 		if returned && !bytes.Equal(got, want) {
 			t.Fatalf("after a successful return the UKI is %q (present %v), want %q", got, ok, want)
+		}
+	})
+}
+
+// A tree built with ordinary writes, as a generation's content is, is wholly
+// durable once SyncTree returns. The root's own entry belongs to its parent,
+// which the caller syncs.
+func TestSyncTreeCrash(t *testing.T) {
+	root := "/var/lib/katl/generations/candidate"
+	files := map[string][]byte{
+		root + "/kernel.cmdline":                 []byte("root=PARTUUID=x\n"),
+		root + "/confext/etc/sysctl.d/katl.conf": []byte("vm.swappiness = 1\n"),
+		root + "/sysext/kubernetes.raw":          []byte("hsqs kubernetes\n"),
+	}
+	crashEachStep(t, func(fs *crashFS) {
+		fs.dir(root)
+		for _, dir := range []string{"/confext", "/confext/etc", "/confext/etc/sysctl.d", "/sysext"} {
+			fs.seedVolatileDir(root + dir)
+		}
+		for path, data := range files {
+			fs.seedVolatile(path, data)
+		}
+	}, func() error {
+		return SyncTree(root)
+	}, func(t *testing.T, fs *crashFS, returned bool) {
+		if !returned {
+			return
+		}
+		for path, want := range files {
+			if got, ok := fs.read(path); !bytes.Equal(got, want) {
+				t.Errorf("after a successful return %s is %q (present %v), want %q", path, got, ok, want)
+			}
 		}
 	})
 }
@@ -186,7 +220,8 @@ func (m crashModel) String() string {
 }
 
 // crashFS models what survives a power loss under one crashModel.
-// Directories themselves are durable once created.
+// Directories are durable once created, except those added with
+// seedVolatileDir, which survive only once their parent directory is synced.
 type crashFS struct {
 	model   crashModel
 	crashAt int
@@ -217,6 +252,8 @@ type crashInode struct {
 	data    []byte
 	durable []byte
 	path    string
+	// dir marks the entry of a directory added with seedVolatileDir.
+	dir bool
 }
 
 func newCrashFS(model crashModel, crashAt int) *crashFS {
@@ -257,6 +294,16 @@ func (fs *crashFS) seedVolatile(path string, data []byte) {
 	dir.slots[filepath.Base(path)] = crashSlot{inode: inode, size: len(data)}
 }
 
+// seedVolatileDir adds a directory another program created without syncing
+// its parent, as a materializer does with os.MkdirAll.
+func (fs *crashFS) seedVolatileDir(path string) {
+	fs.dir(path)
+	inode := &crashInode{path: path, dir: true}
+	parent := fs.dir(filepath.Dir(path))
+	parent.names[filepath.Base(path)] = inode
+	parent.slots[filepath.Base(path)] = crashSlot{inode: inode}
+}
+
 func (fs *crashFS) seed(path string, data []byte) {
 	inode := &crashInode{data: bytes.Clone(data), durable: bytes.Clone(data), path: path}
 	dir := fs.dir(filepath.Dir(path))
@@ -268,10 +315,37 @@ func (fs *crashFS) seed(path string, data []byte) {
 }
 
 func (fs *crashFS) powerLoss() {
+	var lost []string
+	for path, dir := range fs.dirs {
+		for name, inode := range dir.names {
+			if !inode.dir {
+				continue
+			}
+			_, durable := dir.durable[name]
+			if fs.model == fat {
+				_, durable = dir.durableSlots[name]
+			}
+			if !durable {
+				lost = append(lost, filepath.Join(path, name))
+			}
+		}
+	}
+	for _, gone := range lost {
+		for path := range fs.dirs {
+			if path == gone || strings.HasPrefix(path, gone+"/") {
+				delete(fs.dirs, path)
+			}
+		}
+	}
+
 	for path, dir := range fs.dirs {
 		names := map[string]*crashInode{}
 		if fs.model == fat {
 			for name, slot := range dir.durableSlots {
+				if slot.inode != nil && slot.inode.dir {
+					names[name] = slot.inode
+					continue
+				}
 				var content []byte
 				if slot.inode != nil {
 					content = bytes.Clone(slot.inode.durable[:min(slot.size, len(slot.inode.durable))])
@@ -390,6 +464,64 @@ func (fs *crashFS) SyncDir(path string) error {
 	dir.durableSlots = maps.Clone(dir.slots)
 	return nil
 }
+
+// WalkDir visits root and everything below it in lexical order. Reading the
+// namespace changes nothing durable, so it is not a crash step.
+func (fs *crashFS) WalkDir(root string, fn iofs.WalkDirFunc) error {
+	if _, ok := fs.dirs[root]; !ok {
+		return fn(root, nil, os.ErrNotExist)
+	}
+	return fs.walk(root, fn)
+}
+
+func (fs *crashFS) walk(path string, fn iofs.WalkDirFunc) error {
+	if err := fn(path, crashEntry{name: filepath.Base(path), dir: true}, nil); err != nil {
+		return err
+	}
+	var children []crashEntry
+	for name, inode := range fs.dirs[path].names {
+		if !inode.dir {
+			children = append(children, crashEntry{name: name})
+		}
+	}
+	for child := range fs.dirs {
+		if child != path && filepath.Dir(child) == path {
+			children = append(children, crashEntry{name: filepath.Base(child), dir: true})
+		}
+	}
+	slices.SortFunc(children, func(a, b crashEntry) int { return strings.Compare(a.name, b.name) })
+	for _, child := range children {
+		childPath := filepath.Join(path, child.name)
+		var err error
+		if child.dir {
+			err = fs.walk(childPath, fn)
+		} else {
+			err = fn(childPath, child, nil)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type crashEntry struct {
+	name string
+	dir  bool
+}
+
+func (e crashEntry) Name() string { return e.name }
+
+func (e crashEntry) IsDir() bool { return e.dir }
+
+func (e crashEntry) Type() iofs.FileMode {
+	if e.dir {
+		return iofs.ModeDir
+	}
+	return 0
+}
+
+func (e crashEntry) Info() (iofs.FileInfo, error) { return nil, iofs.ErrInvalid }
 
 type crashFile struct {
 	fs    *crashFS
