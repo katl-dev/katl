@@ -12,6 +12,18 @@ sudo find /var/log/libvirt/qemu -type f -exec tail -n 100 {} + > _build/hosted-e
 if [[ -f /var/log/dockerd.log ]]; then
     sudo tail -n 200 /var/log/dockerd.log > _build/hosted-evidence/dockerd.log || true
 fi
+# Host services come from the runner's packages, not the flake; record the
+# versions a run used beside the flake revision that fixed its tools.
+{
+    dpkg-query -W -f='${Package}\t${Version}\n' libvirt-daemon-system qemu-system-x86 ovmf
+    libvirtd --version
+    qemu-system-x86_64 --version
+} > _build/hosted-evidence/host-services.txt 2>&1 || true
+{
+    git rev-parse HEAD
+    git status --porcelain -- flake.nix flake.lock
+} > _build/hosted-evidence/flake-revision.txt 2>&1 || true
+cp flake.lock _build/hosted-evidence/ 2>/dev/null || true
 df -h > _build/hosted-evidence/host-after.txt
 # Whole-host availability does not describe a runner pod's resource limit.
 cat /proc/self/cgroup > _build/hosted-evidence/cgroup.txt
@@ -31,5 +43,16 @@ done
 # The run and host diagnostics directories are scratch inputs. Only the
 # redacted staging directory is eligible for upload.
 upload_dir=_build/vmtest-upload
-go run ./cmd/katl-vmtest-evidence _build/hosted-evidence "${KATL_VMTEST_RUN_DIR:?}" "$upload_dir"
+# The stager builds with the ci shell's Go and the Go cache setup-tools
+# restored. This step also runs after setup failed, when the shell may not be
+# realised; then entering it with substitution and local builds disabled fails
+# within seconds, instead of downloading the shell inside this step's budget,
+# and the job keeps the outcome of the step that failed.
+no_fetch="${NIX_CONFIG:+$NIX_CONFIG$'\n'}substitute = false"$'\n''max-jobs = 0'
+if ! command -v nix >/dev/null 2>&1 ||
+    ! NIX_CONFIG="$no_fetch" timeout --kill-after=5 30 .github/scripts/ci-shell true; then
+    echo '::warning title=VM evidence::The ci shell is unavailable, so no redacted VM evidence was staged for upload; see the setup step that failed.'
+    exit 0
+fi
+.github/scripts/ci-shell go run ./cmd/katl-vmtest-evidence _build/hosted-evidence "${KATL_VMTEST_RUN_DIR:?}" "$upload_dir"
 printf 'upload-dir=%s\n' "$upload_dir" >>"${GITHUB_OUTPUT:?}"

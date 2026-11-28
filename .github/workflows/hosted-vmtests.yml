@@ -12,7 +12,7 @@ on:
         options: [standard, lts]
         default: standard
       ref:
-        description: Source commit to qualify; blank uses the workflow revision
+        description: Source commit to qualify, which must provide the flake's ci shell; blank uses the workflow revision
         type: string
   workflow_call:
     inputs:
@@ -53,7 +53,7 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       runner: ${{ steps.host.outputs.runner }}
@@ -65,7 +65,9 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      # An explicit source ref can predate the cache policy in this workflow.
+      # An explicit source ref takes its actions from this workflow's revision.
+      # The ci shell still comes from that ref, and setup-tools rejects a ref
+      # that predates it.
       - uses: actions/checkout@v7
         timeout-minutes: 2
         if: inputs.scenarios == '' && inputs.ref != ''
@@ -74,13 +76,15 @@ jobs:
           path: _build/workflow-actions
           persist-credentials: false
           sparse-checkout: |
-            .github/actions/setup-go
-      - uses: ./_build/workflow-actions/.github/actions/setup-go
-        timeout-minutes: 2
+            .github/actions/setup-tools
+      - name: Set up tools from the workflow revision
+        uses: ./_build/workflow-actions/.github/actions/setup-tools
         if: inputs.scenarios == '' && inputs.ref != ''
-      - uses: ./.github/actions/setup-go
-        timeout-minutes: 2
+        timeout-minutes: 11
+      - name: Set up tools
+        uses: ./.github/actions/setup-tools
         if: inputs.scenarios == '' && inputs.ref == ''
+        timeout-minutes: 11
       - name: Select VM runner
         timeout-minutes: 2
         id: host
@@ -123,7 +127,7 @@ jobs:
           if [[ -n "$SCENARIOS" ]]; then
             printf '%s\n' "$SCENARIOS" > _build/vmtest-plan.json
           else
-            go run ./cmd/katl-vmtest-plan > _build/vmtest-plan.json
+            .github/scripts/ci-shell go run ./cmd/katl-vmtest-plan > _build/vmtest-plan.json
           fi
           echo "matrix=$(cat _build/vmtest-plan.json)" >> "$GITHUB_OUTPUT"
           jq -e '.include | length > 0' _build/vmtest-plan.json
@@ -132,7 +136,7 @@ jobs:
   images:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
-    timeout-minutes: 75
+    timeout-minutes: 85
     outputs:
       mkosi-version: ${{ steps.builder.outputs.version }}
     env:
@@ -141,13 +145,18 @@ jobs:
       KATL_BUILD_COMMIT: ${{ needs.plan.outputs.source }}
       KATL_VMTEST_IMAGE_SUPPORT: '1'
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-agent
+    defaults:
+      run:
+        shell: bash .github/scripts/ci-shell bash --noprofile --norc -eo pipefail {0}
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
-      # An explicit source ref can predate the cache policy in this workflow.
+      # An explicit source ref takes its actions from this workflow's revision.
+      # The ci shell still comes from that ref, and setup-tools rejects a ref
+      # that predates it.
       - uses: actions/checkout@v7
         timeout-minutes: 2
         if: inputs.ref != ''
@@ -157,16 +166,18 @@ jobs:
           persist-credentials: false
           # The builder action runs scripts/mkosi-builder from this checkout.
           sparse-checkout: |
-            .github/actions/setup-go
+            .github/actions/setup-tools
             .github/actions/image-caches
             .github/actions/mkosi-builder
             scripts
-      - uses: ./_build/workflow-actions/.github/actions/setup-go
-        timeout-minutes: 2
+      - name: Set up tools from the workflow revision
+        uses: ./_build/workflow-actions/.github/actions/setup-tools
         if: inputs.ref != ''
-      - uses: ./.github/actions/setup-go
-        timeout-minutes: 2
+        timeout-minutes: 11
+      - name: Set up tools
+        uses: ./.github/actions/setup-tools
         if: inputs.ref == ''
+        timeout-minutes: 11
       - uses: ./.github/actions/hosted-vmtest
         timeout-minutes: 6
         with:
@@ -262,6 +273,7 @@ jobs:
         id: diagnostics
         timeout-minutes: 2
         if: always()
+        shell: bash
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
@@ -296,8 +308,8 @@ jobs:
     # Every step has a budget, so go test's -timeout 35m fires inside its
     # 38-minute step and before this timeout whenever setup stays within
     # budget. A lane's groups take at most laneBudget (15 minutes) in
-    # cmd/katl-vmtest-plan. Only one of the two Go setups runs.
-    timeout-minutes: 85
+    # cmd/katl-vmtest-plan. Only one of the two tool setups runs.
+    timeout-minutes: 95
     permissions:
       contents: read
       actions: read # hosted-download reads this run's inputs artifact.
@@ -311,13 +323,18 @@ jobs:
       TEST_PACKAGE: ${{ matrix.package }}
       TEST_NAMES: ${{ matrix.tests }}
       ARTIFACT_SET: install
+    defaults:
+      run:
+        shell: bash .github/scripts/ci-shell bash --noprofile --norc -eo pipefail {0}
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
-      # An explicit source ref can predate the cache and download policy in this workflow.
+      # An explicit source ref takes its actions and download scripts from this
+      # workflow's revision. The ci shell still comes from that ref, and
+      # setup-tools rejects a ref that predates it.
       - uses: actions/checkout@v7
         if: inputs.ref != ''
         timeout-minutes: 2
@@ -327,15 +344,17 @@ jobs:
           persist-credentials: false
           # hosted-download runs scripts/retry from this checkout.
           sparse-checkout: |
-            .github/actions/setup-go
+            .github/actions/setup-tools
             .github/scripts
             scripts
-      - uses: ./_build/workflow-actions/.github/actions/setup-go
+      - name: Set up tools from the workflow revision
+        uses: ./_build/workflow-actions/.github/actions/setup-tools
         if: inputs.ref != ''
-        timeout-minutes: 2
-      - uses: ./.github/actions/setup-go
+        timeout-minutes: 11
+      - name: Set up tools
+        uses: ./.github/actions/setup-tools
         if: inputs.ref == ''
-        timeout-minutes: 2
+        timeout-minutes: 11
       - uses: ./.github/actions/hosted-vmtest
         timeout-minutes: 10
         with:
@@ -377,6 +396,7 @@ jobs:
       - name: Collect host diagnostics
         id: diagnostics
         if: always()
+        shell: bash
         timeout-minutes: 2
         run: |
           .github/scripts/hosted-vmtest-diagnostics

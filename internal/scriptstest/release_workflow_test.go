@@ -18,6 +18,7 @@ type workflowStep struct {
 	Name            string            `yaml:"name"`
 	If              string            `yaml:"if"`
 	Run             string            `yaml:"run"`
+	Shell           string            `yaml:"shell"`
 	Uses            string            `yaml:"uses"`
 	ContinueOnError bool              `yaml:"continue-on-error"`
 	Env             map[string]string `yaml:"env"`

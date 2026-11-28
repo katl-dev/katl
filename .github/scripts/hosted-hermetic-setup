@@ -7,6 +7,7 @@ probe() {
 
 bwrap="$(realpath -- "$(command -v bwrap)")"
 if output="$(probe "$bwrap" 2>&1)"; then
+    printf 'hosted-hermetic-setup: %s runs nested user namespaces\n' "$bwrap"
     exit 0
 fi
 restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
@@ -15,25 +16,19 @@ if [[ "${RUNNER_ENVIRONMENT:-}" != github-hosted || ! -r "$restriction" || "$(<"
     exit 1
 fi
 
-# An ephemeral Ubuntu runner can grant user namespaces to its CI copy of
+# An ephemeral Ubuntu runner can grant user namespaces to the ci shell's
 # Bubblewrap without changing the system restriction or the distro profile.
-# A Nix store path is immutable and no distro profile names it, so the ci
-# shell's Bubblewrap is profiled in place: every later step in the shell
-# resolves the same path ahead of anything on GITHUB_PATH.
-if [[ "$bwrap" == /nix/store/* ]]; then
-    ci_bwrap=$bwrap
-else
-    ci_bin=/opt/katl-ci/bin
-    ci_bwrap=$ci_bin/bwrap
-    sudo install -D -m 0755 -- "$bwrap" "$ci_bwrap"
+# A Nix store path is immutable and no distro profile names it, so it is
+# profiled in place, and every later step in the shell resolves the same path.
+if [[ "$bwrap" != /nix/store/* ]]; then
+    printf 'hosted-hermetic-setup: %s is not the ci shell'\''s Bubblewrap; run this through .github/scripts/ci-shell\n' "$bwrap" >&2
+    exit 1
 fi
 sudo apparmor_parser -r <<EOF
 abi <abi/4.0>,
-profile katl-ci-bwrap $ci_bwrap flags=(unconfined) {
+profile katl-ci-bwrap $bwrap flags=(unconfined) {
   userns,
 }
 EOF
-probe "$ci_bwrap"
-if [[ -n "${ci_bin:-}" ]]; then
-    printf '%s\n' "$ci_bin" >>"$GITHUB_PATH"
-fi
+probe "$bwrap"
+printf 'hosted-hermetic-setup: granted nested user namespaces to %s\n' "$bwrap"

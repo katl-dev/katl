@@ -177,7 +177,7 @@ func committedDriverDigests() (map[string]string, error) {
 	return buildinputs.Digests(fedoraRelease.Dir, "HEAD", buildinputs.Spec{
 		Domain:  "katl-driver-qualification",
 		Version: driverDigestVersion,
-		Include: driverInputs,
+		Include: slices.Concat(driverInputs, ciShellInputs),
 		Exclude: []string{".md"},
 		Salts:   locks,
 		Project: driverInputProjection,

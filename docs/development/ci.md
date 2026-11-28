@@ -219,6 +219,21 @@ artifact's ID with `--id`; the artifact must carry the expected name and
 belong to the given run. An ID that does not exist, has expired or names
 another artifact fails once, without retrying.
 
+## Job budgets
+
+`TestWorkflowBudgets` requires each job's timeout to exceed the sum of its
+step budgets, and caps every job that a pull request or merge group runs at
+100 minutes. Neither the test nor this document relates a step budget to its
+observed runs. Drivers' steps sum to 97 minutes, so its build and DRBD steps
+are sized to fit the cap: the build has 30 minutes, about 1.6 times its worst
+observed run of 1108 s, and the DRBD step has 28 minutes, about 1.7 times its
+worst of 974 s. Those 28 minutes cover four image builds and then the DRBD
+test; in the five slowest observed runs the builds took up to 439 s and the
+test, with its artifact index, up to 535 s. The test's 18-minute
+`go test -timeout`, about twice that worst, therefore fires before the step's
+budget even after the slowest builds: 7.3 + 18 = 25.3 of 28 minutes. #1079
+tracks splitting the job if these budgets prove too tight.
+
 ## Nix setup
 
 Every job that installs Nix does so through the
@@ -284,6 +299,14 @@ workflow routing, which today means manual dispatches and the nightly candidate
 on main. Before enabling it, enforce trusted workflow/ref admission
 vsock CIDs share the host kernel. Qualify the deployed pool manually before
 setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
+
+The VM jobs take their tools from the flake's ci shell, so a `katl-vmtest`
+runner has two further requirements. It must be able to run
+`cachix/install-nix-action`, which setup-tools runs through
+`.github/actions/install-nix`. The ci shell's Bubblewrap must also pass the
+nested user-namespace probe in `.github/scripts/hosted-hermetic-setup`
+unaided: that script grants an AppArmor exception only on GitHub-hosted
+runners, and fails on any other runner whose probe fails.
 
 ## Release promotion
 

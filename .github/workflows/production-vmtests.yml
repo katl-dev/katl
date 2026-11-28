@@ -47,7 +47,7 @@ jobs:
     # Every step has a budget, so go test's -timeout 12m fires inside its
     # 14-minute step and before this timeout whenever setup stays within
     # budget.
-    timeout-minutes: 75
+    timeout-minutes: 85
     env:
       KATL_FLAVOUR: ${{ inputs.flavour }}
       KATL_VMTEST_KVM: 'on'
@@ -59,13 +59,17 @@ jobs:
       KATL_VMTEST_RELEASE_DIR: ${{ github.workspace }}/dist
       KATL_VMTEST_PREVIOUS_RELEASE_DIR: ${{ github.workspace }}/previous
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/production-vmtest
+    defaults:
+      run:
+        shell: bash .github/scripts/ci-shell bash --noprofile --norc -eo pipefail {0}
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        timeout-minutes: 2
+      - name: Set up tools
+        uses: ./.github/actions/setup-tools
+        timeout-minutes: 11
       - uses: ./.github/actions/hosted-vmtest
         timeout-minutes: 6
       - name: Download the candidate bundle
@@ -107,6 +111,7 @@ jobs:
       - name: Collect diagnostics
         id: diagnostics
         if: always()
+        shell: bash
         timeout-minutes: 2
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7

@@ -76,7 +76,7 @@ runs:
       continue-on-error: true
       uses: actions/cache/restore@v6
       env:
-        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "5"
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
       with:
         path: |
           ${{ steps.paths.outputs.module }}

@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 type vmMode string
 
@@ -126,6 +129,17 @@ func affectedSelection(paths []string, loadInputs func() (vmInputs, error)) vmSe
 	return vmSelection{result, "mapped fixture paths", mappedPaths}
 }
 
+// ciShellInputs define the flake's ci shell and how jobs enter it. The VM
+// lanes and driver qualification take their tools from that shell, so a change
+// to any of these files is an input to both.
+var ciShellInputs = []string{
+	".github/actions/setup-tools/action.yml",
+	".github/scripts/ci-shell",
+	"flake.nix",
+	"flake.lock",
+	"scripts/dev-shell-env",
+}
+
 func sharedVMPath(name string) bool {
 	for _, prefix := range []string{
 		"mkosi.", "mkosi/", "kernels/", "packages/",
@@ -146,6 +160,9 @@ func sharedVMPath(name string) bool {
 		"scripts/build-endpoint-advertiser-sysext", "scripts/bind-install-manifest-image", "scripts/build-kubernetes-sysext",
 		"scripts/check-kubernetes-sysext", "scripts/kubernetes-repoquery",
 		"scripts/hermetic", "scripts/job-environment":
+		return true
+	}
+	if slices.Contains(ciShellInputs, name) {
 		return true
 	}
 	_, dedicated := fixtureSuites[name]

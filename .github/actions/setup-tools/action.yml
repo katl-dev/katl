@@ -2,12 +2,16 @@ name: Set up the CI tool shell and restore the Go cache
 description: >-
   Install Nix, realise the flake's ci shell and restore the host Go cache
   for the shell's Go. Later steps run their commands through
-  `nix develop --option builders '' .#ci -c`. Composite steps cannot carry
-  timeout-minutes, so the calling step gives this action its budget of 14
-  minutes. The shell realisation makes at most 3 attempts of 120 s, each
-  killed 10 s after its limit, with backoffs below 20 s and 40 s between
-  them, so it gives up within 450 s. The Go cache restore may use its own 5-minute
-  segment download limit, which leaves the Nix install about a minute.
+  `.github/scripts/ci-shell`, normally as the job's default run shell.
+  Composite steps cannot carry timeout-minutes, so the calling step gives
+  this action its budget of 11 minutes. The shell realisation makes at most
+  3 attempts of 120 s, each killed 10 s after its limit, with backoffs below
+  20 s and 40 s between them, so it gives up within 450 s. The Go cache
+  restore abandons a download segment of about 128 MiB that has not finished
+  within 2 minutes, so 450 s, one stalled segment and about a minute and a
+  half for the Nix install fill the 660 s. That limit bounds one stalled
+  segment, not the whole restore: a restore that is slow across several
+  segments, or slow to extract, can still exhaust the budget and fail the job.
 outputs:
   module-cache:
     description: Go module cache path
@@ -24,6 +28,19 @@ outputs:
 runs:
   using: composite
   steps:
+    # A dispatch for an explicit source ref takes this action from the
+    # workflow's revision, but the local actions and scripts it names, the
+    # shell and the shell's entry point all resolve in the source checkout.
+    # ci-shell arrived after install-nix, setup-go's go-version input,
+    # scripts/retry and devShells.ci, so a source that has it has them all.
+    # The check therefore runs first and needs neither Nix nor the network.
+    - name: Check the source has the ci shell
+      shell: bash
+      run: |
+        if [[ ! -x .github/scripts/ci-shell || ! -f flake.nix ]]; then
+          echo "::error::source ref predates the flake's ci shell; dispatch this workflow from that ref's branch"
+          exit 1
+        fi
     - name: Install Nix
       uses: ./.github/actions/install-nix
     - name: Realise the ci shell
@@ -39,7 +56,7 @@ runs:
         go_env="$(scripts/retry --attempts 3 --timeout 120 --kill-after 10 --backoff 10 \
           --title 'ci shell' --what 'Realising the ci shell' \
           --hint 'cache.nixos.org substitution failed or stalled; rerun the job, and check https://status.nixos.org if it persists' \
-          -- nix develop --option builders '' .#ci -c go env GOVERSION GOMODCACHE GOCACHE)"
+          -- .github/scripts/ci-shell go env GOVERSION GOMODCACHE GOCACHE)"
         mapfile -t go_env <<< "$go_env"
         if [[ ${#go_env[@]} != 3 ]]; then
           echo "::error title=ci shell::go env printed ${#go_env[@]} lines, not 3: ${go_env[*]}"

@@ -14,7 +14,6 @@ const (
 // for the operations that need a real GitHub release or attestation.
 var releaseExceptions = []releaseException{
 	// Hosted setup and the alternate ARC runner in the regression graph.
-	{workflowSite{".github/actions/hosted-vmtest/action.yml", "(composite)", "Prepare hermetic runner and fixture tools on ARC"}, "gap", 989, "", []string{"if inputs.prepared"}},
 	{workflowSite{".github/actions/hosted-vmtest/action.yml", "(composite)", "Provision libvirt and device access"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{".github/actions/hosted-vmtest/action.yml", "(composite)", "Record host"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{".github/actions/hosted-vmtest/action.yml", "(composite)", "Verify host capabilities"}, "gap", 989, "", []string{"shell"}},
@@ -38,6 +37,7 @@ var releaseExceptions = []releaseException{
 
 	{workflowSite{".github/actions/setup-go/action.yml", "(composite)", "Resolve Go cache"}, "gap", 935, "", []string{"shell"}},
 
+	{workflowSite{".github/actions/setup-tools/action.yml", "(composite)", "Check the source has the ci shell"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{".github/actions/setup-tools/action.yml", "(composite)", "Realise the ci shell"}, "gap", 989, "", []string{"shell"}},
 
 	// The release call runs the old standalone VM path without the CI plan.
@@ -50,27 +50,27 @@ var releaseExceptions = []releaseException{
 	}},
 	{workflowSite{hostedVMWorkflowPath, "images", "./_build/workflow-actions/.github/actions/image-caches #1"}, "gap", 989, "", []string{"if inputs.ref"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "./_build/workflow-actions/.github/actions/mkosi-builder #1"}, "gap", 989, "", []string{"if inputs.ref"}},
-	{workflowSite{hostedVMWorkflowPath, "images", "./_build/workflow-actions/.github/actions/setup-go #1"}, "gap", 989, "", []string{"if inputs.ref"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "Build shared installer and lifecycle inputs"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "Record builder identity"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "Resolve Kubernetes candidate"}, "gap", 989, "", []string{"if inputs.kubernetes-version"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "Save container Go cache"}, "gap", 937, "", []string{"if github.event_name github.ref"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "Save mkosi RPM cache"}, "gap", 937, "", []string{"if github.event_name github.ref"}},
+	{workflowSite{hostedVMWorkflowPath, "images", "Set up tools from the workflow revision"}, "gap", 989, "", []string{"if inputs.ref"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "Verify and stage Kubernetes bundle"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{hostedVMWorkflowPath, "images", "actions/checkout@v7 #2"}, "gap", 989, "", []string{"if inputs.ref"}},
-	{workflowSite{hostedVMWorkflowPath, "plan", "./.github/actions/setup-go #1"}, "gap", 989, "", []string{"if inputs.ref inputs.scenarios"}},
-	{workflowSite{hostedVMWorkflowPath, "plan", "./_build/workflow-actions/.github/actions/setup-go #1"}, "gap", 989, "", []string{"if inputs.ref inputs.scenarios"}},
 	{workflowSite{hostedVMWorkflowPath, "plan", "Select VM groups"}, "gap", 989, "", []string{"env.SCENARIOS ${{ inputs.scenarios }}", "reach", "shell"}},
 	{workflowSite{hostedVMWorkflowPath, "plan", "Select VM runner"}, "gap", 989, "", []string{
 		"run-reference GITHUB_EVENT_NAME",
 		"run-reference GITHUB_REF",
 		"shell",
 	}},
+	{workflowSite{hostedVMWorkflowPath, "plan", "Set up tools"}, "gap", 989, "", []string{"if inputs.ref inputs.scenarios"}},
+	{workflowSite{hostedVMWorkflowPath, "plan", "Set up tools from the workflow revision"}, "gap", 989, "", []string{"if inputs.ref inputs.scenarios"}},
 	{workflowSite{hostedVMWorkflowPath, "plan", "actions/checkout@v7 #2"}, "gap", 989, "", []string{"if inputs.ref inputs.scenarios"}},
-	{workflowSite{hostedVMWorkflowPath, "scenarios", "./_build/workflow-actions/.github/actions/setup-go #1"}, "gap", 989, "", []string{"if inputs.ref"}},
 	{workflowSite{hostedVMWorkflowPath, "scenarios", "Derive component and proof inputs from the install image"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{hostedVMWorkflowPath, "scenarios", "Download VM inputs"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{hostedVMWorkflowPath, "scenarios", "Run existing scenarios"}, "gap", 989, "", []string{"shell"}},
+	{workflowSite{hostedVMWorkflowPath, "scenarios", "Set up tools from the workflow revision"}, "gap", 989, "", []string{"if inputs.ref"}},
 	{workflowSite{hostedVMWorkflowPath, "scenarios", "Verify and import producer inputs"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{hostedVMWorkflowPath, "scenarios", "actions/checkout@v7 #2"}, "gap", 989, "", []string{"if inputs.ref"}},
 

@@ -6,7 +6,10 @@ if [[ "$(id -u)" == 0 ]]; then
 fi
 
 # Refresh supplementary groups for libvirt and device access after provisioning.
+# sudo replaces PATH with its secure_path even with --preserve-env, so the
+# caller's PATH, which holds the ci shell's tools, is passed through env.
 exec sudo --preserve-env --user="$(id -un)" env PATH="$PATH" bash -c '
     id
+    command -v go bwrap
     exec scripts/vmtest-run "$@"
 ' -- "$@"
